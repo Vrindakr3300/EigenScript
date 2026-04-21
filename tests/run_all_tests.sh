@@ -1173,6 +1173,22 @@ else
 fi
 echo ""
 
+# [55] Concurrency: spawn/join/channel
+echo "[55] Concurrency (6 checks)"
+CC_OUTPUT=$(./eigenscript ../tests/test_concurrent.eigs 2>&1)
+CC_PASS=$(echo "$CC_OUTPUT" | grep -c "^PASS:" || true)
+CC_FAIL=$(echo "$CC_OUTPUT" | grep -c "^FAIL:" || true)
+TOTAL=$((TOTAL + CC_PASS + CC_FAIL))
+PASS=$((PASS + CC_PASS))
+FAIL=$((FAIL + CC_FAIL))
+if [ "$CC_FAIL" -eq 0 ]; then
+    echo "  PASS: all 6 concurrency checks"
+else
+    echo "  FAIL: concurrency tests ($CC_FAIL failed)"
+    echo "$CC_OUTPUT" | grep "FAIL:" | head -5
+fi
+echo ""
+
 # [54] Example smoke tests
 echo "[54] Example Smoke Tests"
 EX_OUTPUT=$(bash "$TESTS_DIR/test_examples.sh" 2>&1)

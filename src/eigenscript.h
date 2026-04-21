@@ -197,7 +197,7 @@ typedef struct {
     int mark_string_count;
 } Arena;
 
-extern Arena g_arena;
+extern __thread Arena g_arena;
 
 /* ---- OOM-safe allocation wrappers ----
  * Abort with a diagnostic on allocation failure. Used by value constructors
@@ -251,14 +251,15 @@ Value* dict_get(Value *dict, const char *key);
 void list_append(Value *list, Value *item);
 void free_value(Value *v);
 
-/* ---- Reference counting ---- */
+/* ---- Reference counting (atomic for thread safety) ---- */
 static inline void val_incref(Value *v) {
-    if (v && !v->arena) v->refcount++;
+    if (v && !v->arena) __atomic_add_fetch(&v->refcount, 1, __ATOMIC_SEQ_CST);
 }
 static inline void val_decref(Value *v) {
-    if (v && !v->arena && v->refcount > 0) {
-        v->refcount--;
-        if (v->refcount == 0) free_value(v);
+    if (v && !v->arena) {
+        if (__atomic_sub_fetch(&v->refcount, 1, __ATOMIC_SEQ_CST) <= 0) {
+            free_value(v);
+        }
     }
 }
 
@@ -294,14 +295,14 @@ Value* eigs_json_parse_value(const char *s, int *pos);
 
 /* ---- Control flow (return statement) ---- */
 
-extern jmp_buf g_return_buf;
-extern Value *g_return_val;
-extern int g_returning;
-extern int g_parse_errors;
-extern char g_error_msg[4096];
-extern int g_has_error;
-extern int g_breaking;
-extern int g_continuing;
+extern __thread jmp_buf g_return_buf;
+extern __thread Value *g_return_val;
+extern __thread int g_returning;
+extern __thread int g_parse_errors;
+extern __thread char g_error_msg[4096];
+extern __thread int g_has_error;
+extern __thread int g_breaking;
+extern __thread int g_continuing;
 extern char g_script_dir[4096];
 
 /* ---- Cross-file functions for MODEL tensor builtins ---- */

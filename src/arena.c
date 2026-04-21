@@ -7,7 +7,7 @@
 
 #include "eigenscript.h"
 
-Arena g_arena = {0};
+__thread Arena g_arena = {0};
 
 static void x_oom(size_t size) {
     fprintf(stderr, "eigenscript: out of memory (requested %zu bytes)\n", size);

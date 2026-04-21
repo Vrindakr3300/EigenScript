@@ -1,0 +1,51 @@
+# concurrent.eigs — High-level concurrency patterns
+# Built on spawn, thread_join, channel, send, recv, close_channel, channel_closed
+
+# future(fn) — spawn and return handle
+define future(fn) as:
+    return spawn of fn
+
+# future_get(handle) — block and get result
+define future_get(handle) as:
+    return thread_join of handle
+
+# await_all(handles) — join all, return results
+define await_all(handles) as:
+    results is []
+    for i in range of (len of handles):
+        append of [results, thread_join of handles[i]]
+    return results
+
+# parallel_map(items, fn) — process items in parallel threads
+define parallel_map(items, fn) as:
+    handles is []
+    for i in range of (len of items):
+        item is items[i]
+        define worker() as:
+            return fn of item
+        append of [handles, spawn of worker]
+    return await_all of handles
+
+# parallel_each(items, fn) — run fn on each item in parallel, no return
+define parallel_each(items, fn) as:
+    handles is []
+    for i in range of (len of items):
+        item is items[i]
+        define worker() as:
+            fn of item
+            return null
+        append of [handles, spawn of worker]
+    await_all of handles
+
+# worker_pool(n, work_fn, ch) — spawn n workers reading from channel
+define worker_pool(n, work_fn, ch) as:
+    handles is []
+    for i in range of n:
+        define worker() as:
+            loop while (channel_closed of ch) == 0:
+                item is recv of ch
+                if item != null:
+                    work_fn of item
+            return null
+        append of [handles, spawn of worker]
+    return handles

@@ -6,7 +6,7 @@
 #include "eigenscript.h"
 
 /* Parse-error counter owned by eigenscript.c. */
-extern int g_parse_errors;
+extern __thread int g_parse_errors;
 const char* tok_type_name(TokType t);
 
 

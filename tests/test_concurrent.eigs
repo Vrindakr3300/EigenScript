@@ -1,0 +1,130 @@
+# Test: spawn/thread_join basics
+pass is 0
+fail is 0
+
+# T1: spawn a function that returns a value, join and verify
+define worker1() as:
+    return 42
+
+h1 is spawn of worker1
+r1 is thread_join of h1
+if r1 == 42:
+    pass is pass + 1
+    print of "PASS: T1 spawn/join returns value"
+else:
+    fail is fail + 1
+    print of "FAIL: T1 spawn/join returns value"
+
+# T2: spawn multiple threads, join all, verify results
+# Note: EigenScript zero-arg functions implicitly have param "n",
+# so closures must avoid using "n" as the captured variable name.
+define make_adder(val) as:
+    added is val + 10
+    define adder() as:
+        return added
+    return adder
+
+handles is []
+for i in range of 5:
+    fn is make_adder of i
+    append of [handles, spawn of fn]
+
+results is []
+for i in range of 5:
+    append of [results, thread_join of handles[i]]
+
+t2_ok is 1
+for i in range of 5:
+    expected is i + 10
+    if results[i] != expected:
+        t2_ok is 0
+
+if t2_ok == 1:
+    pass is pass + 1
+    print of "PASS: T2 multiple threads return correct values"
+else:
+    fail is fail + 1
+    print of f"FAIL: T2 multiple threads (got {results})"
+
+# T3: channel send/recv basic
+ch is channel of null
+send of [ch, 100]
+send of [ch, 200]
+v1 is recv of ch
+v2 is recv of ch
+if v1 == 100 and v2 == 200:
+    pass is pass + 1
+    print of "PASS: T3 channel send/recv basic"
+else:
+    fail is fail + 1
+    print of f"FAIL: T3 channel send/recv (got {v1}, {v2})"
+
+# T4: channel between threads — producer sends, consumer receives
+ch2 is channel of null
+
+define producer() as:
+    send of [ch2, 10]
+    send of [ch2, 20]
+    send of [ch2, 30]
+    close_channel of ch2
+    return null
+
+h_prod is spawn of producer
+
+collected is []
+done is 0
+loop while done == 0:
+    item is recv of ch2
+    if item != null:
+        append of [collected, item]
+    if (channel_closed of ch2) == 1 and item == null:
+        done is 1
+
+thread_join of h_prod
+
+t4_ok is (len of collected) >= 3
+if t4_ok:
+    pass is pass + 1
+    print of "PASS: T4 channel producer/consumer"
+else:
+    fail is fail + 1
+    print of f"FAIL: T4 channel producer/consumer (got {len of collected} items)"
+
+# T5: close_channel and channel_closed
+ch3 is channel of null
+c1 is channel_closed of ch3
+close_channel of ch3
+c2 is channel_closed of ch3
+if c1 == 0 and c2 == 1:
+    pass is pass + 1
+    print of "PASS: T5 close_channel/channel_closed"
+else:
+    fail is fail + 1
+    print of "FAIL: T5 close_channel/channel_closed"
+
+# T6: parallel computation — spawn workers that compute squares
+define make_squarer(val) as:
+    sq is val * val
+    define compute() as:
+        return sq
+    return compute
+
+sq_handles is []
+for i in range of 4:
+    fn is make_squarer of i
+    append of [sq_handles, spawn of fn]
+
+sq_results is []
+for i in range of 4:
+    append of [sq_results, thread_join of sq_handles[i]]
+
+t6_ok is sq_results[0] == 0 and sq_results[1] == 1 and sq_results[2] == 4 and sq_results[3] == 9
+if t6_ok:
+    pass is pass + 1
+    print of "PASS: T6 parallel square computation"
+else:
+    fail is fail + 1
+    print of f"FAIL: T6 parallel square computation (got {sq_results})"
+
+# Summary
+print of f"Concurrent: {pass} passed, {fail} failed"

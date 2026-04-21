@@ -12,7 +12,7 @@ ASTNode* make_node(ASTType type, int line);
 /* Core diagnostics defined in eigenscript.c. */
 void runtime_error(int line, const char *fmt, ...);
 const char* val_type_name(ValType t);
-extern int g_try_depth;
+extern __thread int g_try_depth;
 
 
 
@@ -85,13 +85,13 @@ static void update_observer(Value *v) {
  * linux stack. The goal is to surface runaway recursion as a catchable
  * runtime error rather than a SIGSEGV. */
 #define EIGS_MAX_EVAL_DEPTH 500
-static int g_eval_depth = 0;
+static __thread int g_eval_depth = 0;
 
 /* Unobserved-block depth. Nonzero means assignments inside this region
  * skip update_observer and attempt in-place numeric mutation. The
  * observer's existing entropy/dH/obs_age on touched Values goes stale —
  * by design. User declared they won't interrogate. */
-int g_unobserved_depth = 0;
+__thread int g_unobserved_depth = 0;
 
 static Value* eval_node_impl(ASTNode *node, Env *env);
 

@@ -27,7 +27,7 @@ Value* make_num_permanent(double n);
 const char* val_type_name(ValType t);
 int dict_has(Value *dict, const char *key);
 void dict_remove(Value *dict, const char *key);
-extern int g_try_depth;
+extern __thread int g_try_depth;
 
 Value* builtin_print(Value *arg) {
     char *s = value_to_string(arg);
@@ -2264,6 +2264,182 @@ Value* builtin_get_at(Value *arg) {
     return make_null();
 }
 
+/* ================================================================
+ * CONCURRENCY: spawn/join/channel builtins
+ * ================================================================ */
+
+typedef struct {
+    Value *fn;
+    Env *parent_env;
+    Value *result;
+    volatile int done;
+    pthread_t tid;
+} ThreadHandle;
+
+static void *thread_entry(void *arg) {
+    ThreadHandle *h = (ThreadHandle *)arg;
+    arena_init();
+    Env *env = env_new(h->parent_env);
+    Value *fn = h->fn;
+    if (fn->type == VAL_FN) {
+        Env *call_env = env_new(fn->data.fn.closure);
+        if (fn->data.fn.param_count > 0) {
+            env_set_local(call_env, fn->data.fn.params[0], make_null());
+        }
+        Value *result = make_null();
+        g_returning = 0;
+        g_return_val = NULL;
+        for (int i = 0; i < fn->data.fn.body_count; i++) {
+            result = eval_node(fn->data.fn.body[i], call_env);
+            if (g_returning) {
+                result = g_return_val;
+                g_returning = 0;
+                break;
+            }
+        }
+        h->result = result;
+        if (result) val_incref(result);
+    } else if (fn->type == VAL_BUILTIN) {
+        h->result = fn->data.builtin(make_null());
+        if (h->result) val_incref(h->result);
+    }
+    h->done = 1;
+    (void)env;
+    return NULL;
+}
+
+Value* builtin_spawn(Value *arg) {
+    if (!arg || (arg->type != VAL_FN && arg->type != VAL_BUILTIN)) {
+        runtime_error(0, "spawn requires a function");
+        return make_null();
+    }
+    ThreadHandle *h = xmalloc(sizeof(ThreadHandle));
+    h->fn = arg;
+    val_incref(arg);
+    h->parent_env = g_global_env;
+    h->result = NULL;
+    h->done = 0;
+    pthread_create(&h->tid, NULL, thread_entry, h);
+    Value *d = make_dict(8);
+    dict_set(d, "_handle", make_num((double)(uintptr_t)h));
+    dict_set(d, "done", make_num(0));
+    return d;
+}
+
+Value* builtin_thread_join(Value *arg) {
+    if (!arg || arg->type != VAL_DICT) {
+        runtime_error(0, "thread_join requires a thread handle");
+        return make_null();
+    }
+    Value *hv = dict_get(arg, "_handle");
+    if (!hv || hv->type != VAL_NUM) return make_null();
+    ThreadHandle *h = (ThreadHandle*)(uintptr_t)hv->data.num;
+    pthread_join(h->tid, NULL);
+    Value *result = h->result ? h->result : make_null();
+    val_decref(h->fn);
+    free(h);
+    return result;
+}
+
+/* ---- Channels ---- */
+
+#define CHANNEL_BUF_SIZE 64
+
+typedef struct {
+    Value *buffer[CHANNEL_BUF_SIZE];
+    int head, tail, count;
+    volatile int closed;
+    pthread_mutex_t mutex;
+    pthread_cond_t not_empty;
+    pthread_cond_t not_full;
+} Channel;
+
+static Channel* get_channel(Value *v) {
+    if (!v || v->type != VAL_DICT) return NULL;
+    Value *cv = dict_get(v, "_channel");
+    if (!cv || cv->type != VAL_NUM) return NULL;
+    return (Channel*)(uintptr_t)cv->data.num;
+}
+
+Value* builtin_channel(Value *arg) {
+    (void)arg;
+    Channel *ch = xcalloc(1, sizeof(Channel));
+    pthread_mutex_init(&ch->mutex, NULL);
+    pthread_cond_init(&ch->not_empty, NULL);
+    pthread_cond_init(&ch->not_full, NULL);
+    ch->closed = 0;
+    Value *d = make_dict(8);
+    dict_set(d, "_channel", make_num((double)(uintptr_t)ch));
+    return d;
+}
+
+Value* builtin_send(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) {
+        runtime_error(0, "send requires [channel, value]");
+        return make_null();
+    }
+    Channel *ch = get_channel(arg->data.list.items[0]);
+    if (!ch) {
+        runtime_error(0, "send: invalid channel");
+        return make_null();
+    }
+    Value *val = arg->data.list.items[1];
+    val_incref(val);
+    pthread_mutex_lock(&ch->mutex);
+    while (ch->count >= CHANNEL_BUF_SIZE && !ch->closed)
+        pthread_cond_wait(&ch->not_full, &ch->mutex);
+    if (!ch->closed) {
+        ch->buffer[ch->tail] = val;
+        ch->tail = (ch->tail + 1) % CHANNEL_BUF_SIZE;
+        ch->count++;
+        pthread_cond_signal(&ch->not_empty);
+    } else {
+        val_decref(val);
+    }
+    pthread_mutex_unlock(&ch->mutex);
+    return make_null();
+}
+
+Value* builtin_recv(Value *arg) {
+    Channel *ch = get_channel(arg);
+    if (!ch) {
+        runtime_error(0, "recv: invalid channel");
+        return make_null();
+    }
+    pthread_mutex_lock(&ch->mutex);
+    while (ch->count == 0 && !ch->closed)
+        pthread_cond_wait(&ch->not_empty, &ch->mutex);
+    Value *val = NULL;
+    if (ch->count > 0) {
+        val = ch->buffer[ch->head];
+        ch->head = (ch->head + 1) % CHANNEL_BUF_SIZE;
+        ch->count--;
+        pthread_cond_signal(&ch->not_full);
+    }
+    pthread_mutex_unlock(&ch->mutex);
+    return val ? val : make_null();
+}
+
+Value* builtin_close_channel(Value *arg) {
+    Channel *ch = get_channel(arg);
+    if (!ch) {
+        runtime_error(0, "close_channel: invalid channel");
+        return make_null();
+    }
+    pthread_mutex_lock(&ch->mutex);
+    ch->closed = 1;
+    pthread_cond_broadcast(&ch->not_empty);
+    pthread_cond_broadcast(&ch->not_full);
+    pthread_mutex_unlock(&ch->mutex);
+    return make_null();
+}
+
+Value* builtin_channel_closed(Value *arg) {
+    Channel *ch = get_channel(arg);
+    if (!ch) return make_num(1);
+    return make_num(ch->closed ? 1 : 0);
+}
+
 void register_builtins(Env *env) {
     /* ---- Core language builtins (always available) ---- */
     env_set_local(env, "print", make_builtin(builtin_print));
@@ -2404,6 +2580,15 @@ void register_builtins(Env *env) {
     env_set_local(env, "arena_mark", make_builtin(builtin_arena_mark));
     env_set_local(env, "arena_reset", make_builtin(builtin_arena_reset));
     env_set_local(env, "arena_stats", make_builtin(builtin_arena_stats));
+
+    /* ---- Concurrency builtins ---- */
+    env_set_local(env, "spawn", make_builtin(builtin_spawn));
+    env_set_local(env, "thread_join", make_builtin(builtin_thread_join));
+    env_set_local(env, "channel", make_builtin(builtin_channel));
+    env_set_local(env, "send", make_builtin(builtin_send));
+    env_set_local(env, "recv", make_builtin(builtin_recv));
+    env_set_local(env, "close_channel", make_builtin(builtin_close_channel));
+    env_set_local(env, "channel_closed", make_builtin(builtin_channel_closed));
 
 #if EIGENSCRIPT_EXT_HTTP
     register_http_builtins(env);

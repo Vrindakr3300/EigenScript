@@ -17,19 +17,19 @@
 #endif
 
 /* HTTP server globals and health thread are in ext_http.c */
-jmp_buf g_return_buf;
-Value *g_return_val = NULL;
-int g_returning = 0;
-int g_parse_errors = 0;
-char g_error_msg[4096] = "";
-int g_has_error = 0;
-int g_breaking = 0;
-int g_continuing = 0;
+__thread jmp_buf g_return_buf;
+__thread Value *g_return_val = NULL;
+__thread int g_returning = 0;
+__thread int g_parse_errors = 0;
+__thread char g_error_msg[4096] = "";
+__thread int g_has_error = 0;
+__thread int g_breaking = 0;
+__thread int g_continuing = 0;
 
 /* Set runtime error — captured by try/catch, or printed to stderr.
  * Inside try blocks, the error is silently captured.
  * Outside try blocks, it also prints to stderr. */
-int g_try_depth = 0;
+__thread int g_try_depth = 0;
 
 void runtime_error(int line, const char *fmt, ...) {
     char tmp[3900];

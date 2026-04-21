@@ -6,7 +6,7 @@
 #include "eigenscript.h"
 
 /* Parse-error counter owned by eigenscript.c. */
-extern int g_parse_errors;
+extern __thread int g_parse_errors;
 
 static void tok_add(TokenList *tl, TokType type, double num, const char *str, int line) {
     if (tl->count >= tl->capacity) {
