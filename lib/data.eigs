@@ -1,0 +1,437 @@
+# ============================================================
+# Data Library — DataFrame operations on lists of dicts
+# ============================================================
+#
+# A DataFrame is a list of dicts where each dict has the same keys.
+# Example: [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]
+#
+# How to use:
+#   import data
+#
+#   df is data.df_from_rows of [["name", "age"], [["Alice", 30], ["Bob", 25]]]
+#   filtered is data.df_where of [df, pred]
+#   data.df_sum of [df, "age"]  # 55
+
+# ---- Construction ----
+
+# df_from_csv: read CSV file, first row is headers, returns list of dicts
+define df_from_csv(path) as:
+    text is read_text of path
+    if text == "":
+        return []
+    lines is split of [text, "\n"]
+    if (len of lines) == 0:
+        return []
+    # First line is headers
+    headers is split of [trim of lines[0], ","]
+    for i in range of (len of headers):
+        set_at of [headers, i, trim of headers[i]]
+    result is []
+    for r in range of ((len of lines) - 1):
+        line is trim of lines[r + 1]
+        if (len of line) > 0:
+            vals is split of [line, ","]
+            row is {}
+            for c in range of (len of headers):
+                val is ""
+                if c < (len of vals):
+                    val is trim of vals[c]
+                # Try to convert numeric-looking values
+                nval is num of val
+                if (type of nval) == "num":
+                    dict_set of [row, headers[c], nval]
+                else:
+                    dict_set of [row, headers[c], val]
+            append of [result, row]
+    return result
+
+# df_from_rows: headers is list of strings, rows is list of lists
+define df_from_rows(headers, rows) as:
+    result is []
+    for r in range of (len of rows):
+        row_data is rows[r]
+        row is {}
+        for c in range of (len of headers):
+            val is ""
+            if c < (len of row_data):
+                val is row_data[c]
+            dict_set of [row, headers[c], val]
+        append of [result, row]
+    return result
+
+# df_new: empty dataframe (returns empty list)
+define df_new(headers) as:
+    return []
+
+# ---- Selection & Filtering ----
+
+# df_select: returns new df with only specified columns
+define df_select(df, columns) as:
+    result is []
+    for i in range of (len of df):
+        row is {}
+        for j in range of (len of columns):
+            col is columns[j]
+            if has_key of [df[i], col]:
+                dict_set of [row, col, df[i][col]]
+        append of [result, row]
+    return result
+
+# df_where: filter rows where pred(row) is truthy
+define df_where(df, pred) as:
+    result is []
+    for i in range of (len of df):
+        if pred of df[i]:
+            append of [result, df[i]]
+    return result
+
+# df_head: first n rows
+define df_head(df, n) as:
+    result is []
+    limit is n
+    if limit > (len of df):
+        limit is len of df
+    for i in range of limit:
+        append of [result, df[i]]
+    return result
+
+# df_tail: last n rows
+define df_tail(df, n) as:
+    result is []
+    total is len of df
+    start is total - n
+    if start < 0:
+        start is 0
+    for i in range of (total - start):
+        append of [result, df[start + i]]
+    return result
+
+# df_slice: rows from start index, count rows
+define df_slice(df, start, cnt) as:
+    result is []
+    total is len of df
+    for i in range of cnt:
+        idx is start + i
+        if idx < total:
+            append of [result, df[idx]]
+    return result
+
+# ---- Sorting ----
+
+# df_sort_by: sort by column value. asc=1 ascending, asc=0 descending.
+define df_sort_by(df, column, asc) as:
+    n is len of df
+    if n == 0:
+        return []
+    # Build [key, index] pairs
+    pairs is []
+    for i in range of n:
+        append of [pairs, [df[i][column], i]]
+    # Insertion sort on keys
+    for i in range of n:
+        j is i
+        loop while j > 0:
+            do_swap is 0
+            if asc == 1:
+                if pairs[j][0] < pairs[j - 1][0]:
+                    do_swap is 1
+            else:
+                if pairs[j][0] > pairs[j - 1][0]:
+                    do_swap is 1
+            if do_swap == 1:
+                tmp is pairs[j]
+                set_at of [pairs, j, pairs[j - 1]]
+                set_at of [pairs, j - 1, tmp]
+                j is j - 1
+            else:
+                j is 0
+    # Rebuild in sorted order
+    result is []
+    for i in range of n:
+        append of [result, df[pairs[i][1]]]
+    return result
+
+# ---- Transformation ----
+
+# df_map: apply fn to each value in column, return new df
+define df_map(df, column, fn) as:
+    result is []
+    for i in range of (len of df):
+        row is {}
+        ks is keys of df[i]
+        for j in range of (len of ks):
+            k is ks[j]
+            if k == column:
+                dict_set of [row, k, fn of df[i][k]]
+            else:
+                dict_set of [row, k, df[i][k]]
+        append of [result, row]
+    return result
+
+# df_add_column: add computed column where fn(row) returns value
+define df_add_column(df, name, fn) as:
+    result is []
+    for i in range of (len of df):
+        row is {}
+        ks is keys of df[i]
+        for j in range of (len of ks):
+            k is ks[j]
+            dict_set of [row, k, df[i][k]]
+        dict_set of [row, name, fn of df[i]]
+        append of [result, row]
+    return result
+
+# df_rename: rename a column
+define df_rename(df, old_name, new_name) as:
+    result is []
+    for i in range of (len of df):
+        row is {}
+        ks is keys of df[i]
+        for j in range of (len of ks):
+            k is ks[j]
+            if k == old_name:
+                dict_set of [row, new_name, df[i][k]]
+            else:
+                dict_set of [row, k, df[i][k]]
+        append of [result, row]
+    return result
+
+# df_drop: remove columns (opposite of select)
+define df_drop(df, columns) as:
+    result is []
+    for i in range of (len of df):
+        row is {}
+        ks is keys of df[i]
+        for j in range of (len of ks):
+            k is ks[j]
+            keep is 1
+            for d in range of (len of columns):
+                if k == columns[d]:
+                    keep is 0
+            if keep == 1:
+                dict_set of [row, k, df[i][k]]
+        append of [result, row]
+    return result
+
+# ---- Aggregation ----
+
+# df_group_by: group rows by column, apply agg_fn to agg_column.
+# Returns list of {key, value} dicts.
+define df_group_by(df, column, agg_column, agg_fn) as:
+    # Collect unique group keys and their agg_column values
+    group_keys is []
+    group_vals is []
+    for i in range of (len of df):
+        gk is df[i][column]
+        found is -1
+        for j in range of (len of group_keys):
+            if group_keys[j] == gk:
+                found is j
+                j is len of group_keys
+        if found == -1:
+            append of [group_keys, gk]
+            append of [group_vals, [df[i][agg_column]]]
+        else:
+            append of [group_vals[found], df[i][agg_column]]
+    # Apply agg_fn to each group
+    result is []
+    for i in range of (len of group_keys):
+        agg_result is agg_fn of group_vals[i]
+        append of [result, {"key": group_keys[i], "value": agg_result}]
+    return result
+
+# df_count: number of rows
+define df_count(df) as:
+    return len of df
+
+# df_sum: sum of column values
+define df_sum(df, column) as:
+    total is 0
+    for i in range of (len of df):
+        total is total + df[i][column]
+    return total
+
+# df_mean: mean of column values
+define df_mean(df, column) as:
+    n is len of df
+    if n == 0:
+        return 0
+    return (df_sum of [df, column]) / n
+
+# df_min: min value in column
+define df_min(df, column) as:
+    n is len of df
+    if n == 0:
+        return 0
+    best is df[0][column]
+    for i in range of n:
+        if df[i][column] < best:
+            best is df[i][column]
+    return best
+
+# df_max: max value in column
+define df_max(df, column) as:
+    n is len of df
+    if n == 0:
+        return 0
+    best is df[0][column]
+    for i in range of n:
+        if df[i][column] > best:
+            best is df[i][column]
+    return best
+
+# df_unique: unique values in column
+define df_unique(df, column) as:
+    result is []
+    for i in range of (len of df):
+        val is df[i][column]
+        found is 0
+        for j in range of (len of result):
+            if result[j] == val:
+                found is 1
+                j is len of result
+        if found == 0:
+            append of [result, val]
+    return result
+
+# ---- Joining ----
+
+# df_join: inner join on column name
+define df_join(left, right, on) as:
+    result is []
+    for i in range of (len of left):
+        lval is left[i][on]
+        for j in range of (len of right):
+            if right[j][on] == lval:
+                # Merge dicts: left keys first, then right keys
+                merged is {}
+                lks is keys of left[i]
+                for k in range of (len of lks):
+                    dict_set of [merged, lks[k], left[i][lks[k]]]
+                rks is keys of right[j]
+                for k in range of (len of rks):
+                    dict_set of [merged, rks[k], right[j][rks[k]]]
+                append of [result, merged]
+    return result
+
+# df_left_join: left join, keep all left rows
+define df_left_join(left, right, on) as:
+    result is []
+    for i in range of (len of left):
+        lval is left[i][on]
+        matched is 0
+        for j in range of (len of right):
+            if right[j][on] == lval:
+                matched is 1
+                merged is {}
+                lks is keys of left[i]
+                for k in range of (len of lks):
+                    dict_set of [merged, lks[k], left[i][lks[k]]]
+                rks is keys of right[j]
+                for k in range of (len of rks):
+                    dict_set of [merged, rks[k], right[j][rks[k]]]
+                append of [result, merged]
+        if matched == 0:
+            row is {}
+            lks is keys of left[i]
+            for k in range of (len of lks):
+                dict_set of [row, lks[k], left[i][lks[k]]]
+            append of [result, row]
+    return result
+
+# ---- Export ----
+
+# df_to_csv: write dataframe to CSV file
+define df_to_csv(df, path) as:
+    if (len of df) == 0:
+        write_text of [path, ""]
+        return null
+    headers is keys of df[0]
+    # Header line
+    line is ""
+    for i in range of (len of headers):
+        if i > 0:
+            line is line + ","
+        line is line + headers[i]
+    text is line
+    # Data rows
+    for r in range of (len of df):
+        line is ""
+        for c in range of (len of headers):
+            if c > 0:
+                line is line + ","
+            line is line + (str of df[r][headers[c]])
+        text is text + "\n" + line
+    write_text of [path, text]
+    return null
+
+# df_to_table: format as aligned text table (returns string)
+define df_to_table(df) as:
+    if (len of df) == 0:
+        return "(empty)"
+    headers is keys of df[0]
+    ncols is len of headers
+    # Compute column widths
+    widths is []
+    for i in range of ncols:
+        append of [widths, len of (str of headers[i])]
+    for r in range of (len of df):
+        for c in range of ncols:
+            w is len of (str of df[r][headers[c]])
+            if w > widths[c]:
+                set_at of [widths, c, w]
+    # Build header line
+    header_line is ""
+    sep_line is ""
+    for i in range of ncols:
+        cell is str of headers[i]
+        loop while (len of cell) < widths[i]:
+            cell is cell + " "
+        if i > 0:
+            header_line is header_line + " | "
+            sep_line is sep_line + "-+-"
+        header_line is header_line + cell
+        dashes is ""
+        for d in range of widths[i]:
+            dashes is dashes + "-"
+        sep_line is sep_line + dashes
+    result is header_line + "\n" + sep_line
+    # Data rows
+    for r in range of (len of df):
+        line is ""
+        for c in range of ncols:
+            cell is str of df[r][headers[c]]
+            loop while (len of cell) < widths[c]:
+                cell is cell + " "
+            if c > 0:
+                line is line + " | "
+            line is line + cell
+        result is result + "\n" + line
+    return result
+
+# df_column: extract single column as flat list
+define df_column(df, name) as:
+    result is []
+    for i in range of (len of df):
+        append of [result, df[i][name]]
+    return result
+
+# df_columns: return list of column names (keys of first row)
+define df_columns(df) as:
+    if (len of df) == 0:
+        return []
+    return keys of df[0]
+
+# df_describe: return dict with count, mean, min, max, sum for a numeric column
+define df_describe(df, column) as:
+    n is len of df
+    if n == 0:
+        return {"count": 0, "mean": 0, "min": 0, "max": 0, "sum": 0}
+    s is df_sum of [df, column]
+    return {
+        "count": n,
+        "mean": s / n,
+        "min": df_min of [df, column],
+        "max": df_max of [df, column],
+        "sum": s
+    }

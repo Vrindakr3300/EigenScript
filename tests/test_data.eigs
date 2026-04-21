@@ -1,0 +1,220 @@
+# Test suite for lib/data.eigs and lib/stats.eigs
+load_file of "lib/test.eigs"
+
+import data
+import stats
+
+# ============================================================
+# DataFrame tests
+# ============================================================
+
+# df_from_rows
+df is data.df_from_rows of [["name", "age", "score"], [["Alice", 30, 95], ["Bob", 25, 87], ["Carol", 35, 92]]]
+assert_eq of [len of df, 3, "df_from_rows length"]
+assert_eq of [df[0]["name"], "Alice", "df_from_rows first name"]
+assert_eq of [df[1]["age"], 25, "df_from_rows second age"]
+
+# df_columns
+cols is data.df_columns of df
+assert_eq of [len of cols, 3, "df_columns length"]
+assert_eq of [cols[0], "name", "df_columns first"]
+
+# df_column
+ages is data.df_column of [df, "age"]
+assert_eq of [ages[0], 30, "df_column first"]
+assert_eq of [ages[2], 35, "df_column third"]
+
+# df_select
+selected is data.df_select of [df, ["name", "score"]]
+assert_eq of [len of (keys of selected[0]), 2, "df_select column count"]
+assert_eq of [selected[0]["name"], "Alice", "df_select kept name"]
+assert_eq of [selected[1]["score"], 87, "df_select kept score"]
+
+# df_where
+define age_over_27(row) as:
+    return row["age"] > 27
+filtered is data.df_where of [df, age_over_27]
+assert_eq of [len of filtered, 2, "df_where count"]
+assert_eq of [filtered[0]["name"], "Alice", "df_where first match"]
+assert_eq of [filtered[1]["name"], "Carol", "df_where second match"]
+
+# df_head / df_tail
+h is data.df_head of [df, 2]
+assert_eq of [len of h, 2, "df_head length"]
+assert_eq of [h[1]["name"], "Bob", "df_head second"]
+
+t is data.df_tail of [df, 2]
+assert_eq of [len of t, 2, "df_tail length"]
+assert_eq of [t[0]["name"], "Bob", "df_tail first"]
+
+# df_slice
+sl is data.df_slice of [df, 1, 2]
+assert_eq of [len of sl, 2, "df_slice length"]
+assert_eq of [sl[0]["name"], "Bob", "df_slice first"]
+
+# df_sort_by ascending
+sorted_asc is data.df_sort_by of [df, "age", 1]
+assert_eq of [sorted_asc[0]["name"], "Bob", "df_sort_by asc first"]
+assert_eq of [sorted_asc[2]["name"], "Carol", "df_sort_by asc last"]
+
+# df_sort_by descending
+sorted_desc is data.df_sort_by of [df, "score", 0]
+assert_eq of [sorted_desc[0]["name"], "Alice", "df_sort_by desc first"]
+assert_eq of [sorted_desc[2]["name"], "Bob", "df_sort_by desc last"]
+
+# df_map
+define double_score(x) as:
+    return x * 2
+mapped is data.df_map of [df, "score", double_score]
+assert_eq of [mapped[0]["score"], 190, "df_map doubled"]
+assert_eq of [mapped[0]["name"], "Alice", "df_map untouched column"]
+
+# df_add_column
+define name_len(row) as:
+    return len of row["name"]
+with_col is data.df_add_column of [df, "name_len", name_len]
+assert_eq of [with_col[0]["name_len"], 5, "df_add_column Alice len"]
+assert_eq of [with_col[1]["name_len"], 3, "df_add_column Bob len"]
+
+# df_rename
+renamed is data.df_rename of [df, "name", "person"]
+assert_eq of [renamed[0]["person"], "Alice", "df_rename new key"]
+assert_eq of [has_key of [renamed[0], "name"], 0, "df_rename old key gone"]
+
+# df_drop
+dropped is data.df_drop of [df, ["age"]]
+assert_eq of [has_key of [dropped[0], "age"], 0, "df_drop removes column"]
+assert_eq of [dropped[0]["name"], "Alice", "df_drop keeps other columns"]
+
+# df_sum, df_mean, df_min, df_max
+assert_eq of [data.df_sum of [df, "age"], 90, "df_sum"]
+assert_eq of [data.df_mean of [df, "age"], 30, "df_mean"]
+assert_eq of [data.df_min of [df, "age"], 25, "df_min"]
+assert_eq of [data.df_max of [df, "age"], 35, "df_max"]
+assert_eq of [data.df_count of df, 3, "df_count"]
+
+# df_unique
+scores_df is data.df_from_rows of [["team", "pts"], [["A", 10], ["B", 20], ["A", 30], ["B", 40]]]
+teams is data.df_unique of [scores_df, "team"]
+assert_eq of [len of teams, 2, "df_unique count"]
+
+# df_group_by
+define sum_fn(vals) as:
+    total is 0
+    for i in range of (len of vals):
+        total is total + vals[i]
+    return total
+groups is data.df_group_by of [scores_df, "team", "pts", sum_fn]
+assert_eq of [len of groups, 2, "df_group_by count"]
+# Find team A's total
+a_total is 0
+for i in range of (len of groups):
+    if groups[i]["key"] == "A":
+        a_total is groups[i]["value"]
+assert_eq of [a_total, 40, "df_group_by team A sum"]
+
+# df_join
+employees is data.df_from_rows of [["id", "name"], [[1, "Alice"], [2, "Bob"], [3, "Carol"]]]
+salaries is data.df_from_rows of [["id", "salary"], [[1, 90000], [2, 75000]]]
+
+joined is data.df_join of [employees, salaries, "id"]
+assert_eq of [len of joined, 2, "df_join count"]
+assert_eq of [joined[0]["name"], "Alice", "df_join first name"]
+assert_eq of [joined[0]["salary"], 90000, "df_join first salary"]
+
+# df_left_join
+left_joined is data.df_left_join of [employees, salaries, "id"]
+assert_eq of [len of left_joined, 3, "df_left_join keeps all left"]
+assert_eq of [left_joined[0]["salary"], 90000, "df_left_join matched salary"]
+
+# df_describe
+desc is data.df_describe of [df, "age"]
+assert_eq of [desc["count"], 3, "df_describe count"]
+assert_eq of [desc["sum"], 90, "df_describe sum"]
+assert_eq of [desc["mean"], 30, "df_describe mean"]
+assert_eq of [desc["min"], 25, "df_describe min"]
+assert_eq of [desc["max"], 35, "df_describe max"]
+
+# df_to_table (smoke test)
+tbl is data.df_to_table of df
+assert_true of [(len of tbl) > 0, "df_to_table produces output"]
+
+# ============================================================
+# Stats tests
+# ============================================================
+
+vals is [2, 4, 4, 4, 5, 5, 7, 9]
+
+# mean
+assert_eq of [stats.mean of vals, 5, "stats.mean"]
+
+# sum
+assert_eq of [stats.sum of vals, 40, "stats.sum"]
+
+# count
+assert_eq of [stats.count of vals, 8, "stats.count"]
+
+# median (even count)
+assert_near of [stats.median of vals, 4.5, 0.001, "stats.median even"]
+
+# median (odd count)
+assert_near of [stats.median of [1, 3, 5], 3, 0.001, "stats.median odd"]
+
+# mode
+assert_eq of [stats.mode of vals, 4, "stats.mode"]
+
+# variance
+assert_near of [stats.variance of vals, 4, 0.001, "stats.variance"]
+
+# std_dev
+assert_near of [stats.std_dev of vals, 2, 0.001, "stats.std_dev"]
+
+# range_of
+assert_eq of [stats.range_of of vals, 7, "stats.range_of"]
+
+# quantile
+assert_near of [stats.quantile of [vals, 0.5], 4.5, 0.001, "stats.quantile 0.5"]
+
+# percentile
+assert_near of [stats.percentile of [vals, 50], 4.5, 0.001, "stats.percentile 50"]
+
+# iqr
+q1 is stats.quantile of [vals, 0.25]
+q3 is stats.quantile of [vals, 0.75]
+iqr_val is stats.iqr of vals
+assert_near of [iqr_val, q3 - q1, 0.001, "stats.iqr"]
+
+# normalize
+normed is stats.normalize of [0, 5, 10]
+assert_near of [normed[0], 0, 0.001, "stats.normalize min"]
+assert_near of [normed[1], 0.5, 0.001, "stats.normalize mid"]
+assert_near of [normed[2], 1, 0.001, "stats.normalize max"]
+
+# z_scores
+zs is stats.z_scores of [2, 4, 4, 4, 5, 5, 7, 9]
+assert_near of [stats.mean of zs, 0, 0.001, "z_scores mean ~0"]
+assert_near of [stats.std_dev of zs, 1, 0.001, "z_scores std_dev ~1"]
+
+# correlation
+xs is [1, 2, 3, 4, 5]
+ys is [2, 4, 6, 8, 10]
+assert_near of [stats.correlation of [xs, ys], 1.0, 0.001, "stats.correlation perfect"]
+
+# covariance
+assert_near of [stats.covariance of [xs, ys], 4.0, 0.001, "stats.covariance"]
+
+# histogram
+hist is stats.histogram of [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 2]
+assert_eq of [len of hist, 2, "stats.histogram bin count"]
+total_count is hist[0]["count"] + hist[1]["count"]
+assert_eq of [total_count, 10, "stats.histogram total count"]
+
+# describe
+d is stats.describe of vals
+assert_eq of [d["count"], 8, "stats.describe count"]
+assert_eq of [d["mean"], 5, "stats.describe mean"]
+assert_near of [d["std_dev"], 2, 0.001, "stats.describe std_dev"]
+assert_eq of [d["min"], 2, "stats.describe min"]
+assert_eq of [d["max"], 9, "stats.describe max"]
+
+test_summary of null
