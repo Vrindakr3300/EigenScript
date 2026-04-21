@@ -39,6 +39,10 @@ _focus_index is -1
 _focused_widget is null
 _window_w is 800
 _window_h is 600
+_hotkeys is []
+_clipboard is ""
+_modal_stack is []
+_dnd_state is {"active": 0, "source": null, "source_index": -1, "data": null, "mx": 0, "my": 0, "text": ""}
 
 # ============================================================
 # Widget constructors
@@ -207,6 +211,8 @@ define text_input(id, x, y, w, text, on_change) as:
         "x": x, "y": y, "w": w, "h": 24,
         "text": text,
         "cursor": len of text,
+        "sel_start": -1,
+        "sel_end": -1,
         "on_change": on_change,
         "focused": 0,
         "hover": 0,
@@ -340,6 +346,8 @@ define editable_label(id, x, y, text, on_commit) as:
         "text": text,
         "editing": 0,
         "cursor": 0,
+        "sel_start": -1,
+        "sel_end": -1,
         "on_commit": on_commit,
         "on_dblclick": null,
         "color": _theme.text_color,
@@ -383,6 +391,10 @@ define item_list(id, x, y, w, h, items, on_select) as:
         "selected": -1,
         "scroll_y": 0,
         "on_select": on_select,
+        "on_drop": null,
+        "on_reorder": null,
+        "reorder_insert": -1,
+        "draggable": 0,
         "hover_index": -1,
         "item_h": 22,
         "visible": 1
@@ -546,8 +558,60 @@ define table(id, x, y, w, h, columns, on_select) as:
         "enabled": 1
     }
 
+# ---- Tree view ----
+
+define tree(id, x, y, w, h, nodes, on_select) as:
+    return {
+        "type": "tree",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "nodes": nodes,
+        "on_select": on_select,
+        "selected_id": null,
+        "scroll_y": 0,
+        "hover_index": -1,
+        "item_h": 22,
+        "visible": 1
+    }
+
+# ---- Combobox ----
+
+define combobox(id, x, y, w, items, on_change) as:
+    return {
+        "type": "combobox",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": 24,
+        "items": items,
+        "filter_text": "",
+        "filtered": items,
+        "selected": -1,
+        "open": 0,
+        "hover_index": -1,
+        "cursor": 0,
+        "on_change": on_change,
+        "hover": 0,
+        "visible": 1,
+        "enabled": 1
+    }
+
+# ---- Color picker ----
+
+define color_picker(id, x, y, on_change) as:
+    return {
+        "type": "color_picker",
+        "id": id,
+        "x": x, "y": y, "w": 180, "h": 150,
+        "hue": 0,
+        "sat": 1.0,
+        "val": 1.0,
+        "color": [255, 0, 0],
+        "drag_part": null,
+        "on_change": on_change,
+        "visible": 1
+    }
+
 # ============================================================
-# Tree operations
+# Widget tree operations
 # ============================================================
 
 define add_child(parent, child) as:
@@ -806,6 +870,18 @@ define render(widget, ox, oy) as:
             else:
                 border is _theme.panel_border
             _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius_sm, _theme.dropdown_bg, border]
+            # Selection highlight
+            if widget.sel_start != null and widget.sel_start >= 0 and widget.sel_end != null and widget.sel_end >= 0:
+                ss is widget.sel_start
+                se is widget.sel_end
+                if ss > se:
+                    tmp is ss
+                    ss is se
+                    se is tmp
+                sel_x is ax + 6 + ss * _theme.char_w
+                sel_w is (se - ss) * _theme.char_w
+                sbg is _theme.selection_bg
+                gfx_rect of [sel_x, ay + 3, sel_w, widget.h - 6, sbg[0], sbg[1], sbg[2], 100]
             _draw_text_clipped of [ax + 6, ay + 5, widget.w - 12, widget.text, _theme.text_color, _theme.font_scale]
             # Blinking cursor
             if widget.focused == 1 and _cursor_blink < 35:
@@ -1048,6 +1124,10 @@ define render(widget, ox, oy) as:
                         _draw_text_clipped of [ax + 8, iy + 4, widget.w - 16, widget.items[i], _theme.text_color, _theme.font_scale]
                     else:
                         _draw_text_clipped of [ax + 8, iy + 4, widget.w - 16, widget.items[i], _theme.text_color, _theme.font_scale]
+            # Reorder insertion indicator
+            if widget.reorder_insert >= 0:
+                ri_y is ay - widget.scroll_y + widget.reorder_insert * widget.item_h
+                gfx_rect of [ax + 2, ri_y - 1, widget.w - 4, 2, _theme.accent[0], _theme.accent[1], _theme.accent[2]]
             gfx_clip of null
             # Scrollbar
             total_h is (len of widget.items) * widget.item_h
@@ -1317,6 +1397,121 @@ define render(widget, ox, oy) as:
                 sb_y is body_y + floor of (widget.scroll_y * (body_h - sb_h) / (total_h - body_h))
                 gfx_rrect of [ax + widget.w - 6, sb_y, 4, sb_h, 2, 80, 80, 100]
 
+        case "tree":
+            # Background
+            _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius_sm, _theme.panel_bg, _theme.panel_border]
+            gfx_clip of [ax + 1, ay + 1, widget.w - 2, widget.h - 2]
+            flat is []
+            _flatten_tree of [widget.nodes, 0, flat]
+            for fi in range of (len of flat):
+                fe is flat[fi]
+                iy is ay - widget.scroll_y + fi * widget.item_h
+                if iy + widget.item_h > ay and iy < ay + widget.h:
+                    indent is 16 * fe.depth + 8
+                    # Selection highlight
+                    if fe.node.id != null and fe.node.id == widget.selected_id:
+                        gfx_rrect of [ax + 2, iy + 1, widget.w - 4, widget.item_h - 2, 2, _theme.accent[0], _theme.accent[1], _theme.accent[2]]
+                        ntc is [255, 255, 255]
+                    elif fi == widget.hover_index:
+                        gfx_rrect of [ax + 2, iy + 1, widget.w - 4, widget.item_h - 2, 2, _theme.btn_hover[0], _theme.btn_hover[1], _theme.btn_hover[2]]
+                        ntc is _theme.text_color
+                    else:
+                        ntc is _theme.text_color
+                    # Expand arrow
+                    if fe.has_children == 1:
+                        if fe.expanded == 1:
+                            gfx_text of [ax + indent - 12, iy + 4, "v", _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], _theme.font_scale]
+                        else:
+                            gfx_text of [ax + indent - 12, iy + 4, ">", _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], _theme.font_scale]
+                    # Node text
+                    _draw_text_clipped of [ax + indent, iy + 4, widget.w - indent - 8, fe.node.text, ntc, _theme.font_scale]
+            gfx_clip of null
+            # Scrollbar
+            total_h is (len of flat) * widget.item_h
+            if total_h > widget.h:
+                sb_h is floor of (widget.h * widget.h / total_h)
+                if sb_h < 16:
+                    sb_h is 16
+                sb_y is ay + floor of (widget.scroll_y * (widget.h - sb_h) / (total_h - widget.h))
+                gfx_rrect of [ax + widget.w - 6, sb_y, 4, sb_h, 2, 80, 80, 100]
+
+        case "combobox":
+            if widget.hover == 1:
+                cbg is _theme.dropdown_hover
+            else:
+                cbg is _theme.dropdown_bg
+            if widget.open == 1:
+                cb_border is _theme.accent
+            else:
+                cb_border is _theme.panel_border
+            _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius_sm, cbg, cb_border]
+            # Display filter text when open, otherwise selected item text
+            if widget.open == 1:
+                disp_text is widget.filter_text
+            elif widget.selected >= 0 and widget.selected < (len of widget.items):
+                disp_text is widget.items[widget.selected]
+            else:
+                disp_text is widget.filter_text
+            _draw_text_clipped of [ax + 6, ay + 5, widget.w - 24, disp_text, _theme.text_color, _theme.font_scale]
+            # Arrow
+            arrow_x is ax + widget.w - 16
+            arrow_y is ay + 8
+            gfx_line of [arrow_x, arrow_y, arrow_x + 4, arrow_y + 6, _theme.dropdown_arrow[0], _theme.dropdown_arrow[1], _theme.dropdown_arrow[2]]
+            gfx_line of [arrow_x + 8, arrow_y, arrow_x + 4, arrow_y + 6, _theme.dropdown_arrow[0], _theme.dropdown_arrow[1], _theme.dropdown_arrow[2]]
+            # Cursor when open
+            if widget.open == 1 and _cursor_blink < 35:
+                cx_pos is ax + 6 + widget.cursor * _theme.char_w
+                if cx_pos < ax + widget.w - 20:
+                    gfx_line of [cx_pos, ay + 4, cx_pos, ay + widget.h - 4, _theme.accent[0], _theme.accent[1], _theme.accent[2]]
+            # Dropdown when open
+            if widget.open == 1:
+                item_h is 24
+                menu_h is (len of widget.filtered) * item_h
+                if menu_h > 200:
+                    menu_h is 200
+                if menu_h > 0:
+                    gfx_rrect of [ax, ay + widget.h + 2, widget.w, menu_h, _theme.radius_sm, _theme.menu_bg[0], _theme.menu_bg[1], _theme.menu_bg[2]]
+                    for i in range of (len of widget.filtered):
+                        iy is ay + widget.h + 2 + i * item_h
+                        if iy < ay + widget.h + 2 + menu_h:
+                            if i == widget.hover_index:
+                                gfx_rrect of [ax + 2, iy, widget.w - 4, item_h, _theme.radius_sm, _theme.menu_hover[0], _theme.menu_hover[1], _theme.menu_hover[2]]
+                            _draw_text_clipped of [ax + 8, iy + 5, widget.w - 16, widget.filtered[i], _theme.text_color, _theme.font_scale]
+
+        case "color_picker":
+            # SV square: 150x120 at top-left
+            sq_w is 150
+            sq_h is 120
+            # Draw SV square as horizontal color strips
+            for row in range of sq_h:
+                v_val is 1.0 - row / sq_h
+                for col_step in range of 15:
+                    s_val is col_step / 15.0
+                    c is _hsv_to_rgb of [widget.hue, s_val, v_val]
+                    strip_x is ax + floor of (col_step * sq_w / 15)
+                    strip_w is floor of (sq_w / 15)
+                    gfx_rect of [strip_x, ay + row, strip_w, 1, c[0], c[1], c[2]]
+            # SV crosshair
+            cx_sv is ax + floor of (widget.sat * sq_w)
+            cy_sv is ay + floor of ((1.0 - widget.val) * sq_h)
+            gfx_line of [cx_sv - 4, cy_sv, cx_sv + 4, cy_sv, 255, 255, 255]
+            gfx_line of [cx_sv, cy_sv - 4, cx_sv, cy_sv + 4, 255, 255, 255]
+            # Hue bar: 20x120 to the right of SV square
+            hue_x is ax + sq_w + 8
+            hue_w is 20
+            for row in range of sq_h:
+                h_val is row * 360 / sq_h
+                c is _hsv_to_rgb of [h_val, 1.0, 1.0]
+                gfx_rect of [hue_x, ay + row, hue_w, 1, c[0], c[1], c[2]]
+            # Hue marker
+            hue_marker_y is ay + floor of (widget.hue * sq_h / 360)
+            gfx_rect of [hue_x - 2, hue_marker_y - 1, hue_w + 4, 3, 255, 255, 255]
+            # Color preview
+            pc is widget.color
+            gfx_rrect of [ax, ay + sq_h + 6, 40, 24, 4, pc[0], pc[1], pc[2]]
+            # RGB text
+            gfx_text of [ax + 48, ay + sq_h + 12, f"R:{pc[0]} G:{pc[1]} B:{pc[2]}", _theme.text_color[0], _theme.text_color[1], _theme.text_color[2], 1]
+
     # Disabled overlay for interactive widgets
     if widget.enabled != null and widget.enabled == 0:
         _draw_disabled_overlay of [ax, ay, widget.w, widget.h]
@@ -1425,7 +1620,7 @@ define _hit_test(widget, ox, oy, mx, my) as:
         return null
 
     # Leaf widget — check bounds
-    if widget.type == "button" or widget.type == "slider" or widget.type == "vslider" or widget.type == "toggle" or widget.type == "knob" or widget.type == "canvas" or widget.type == "checkbox" or widget.type == "text_input" or widget.type == "toggle_button" or widget.type == "spinbox" or widget.type == "radio_group" or widget.type == "meter" or widget.type == "grid" or widget.type == "editable_label" or widget.type == "item_list" or widget.type == "piano_kb" or widget.type == "waveform_view" or widget.type == "scrollbar" or widget.type == "table" or widget.type == "statusbar":
+    if widget.type == "button" or widget.type == "slider" or widget.type == "vslider" or widget.type == "toggle" or widget.type == "knob" or widget.type == "canvas" or widget.type == "checkbox" or widget.type == "text_input" or widget.type == "toggle_button" or widget.type == "spinbox" or widget.type == "radio_group" or widget.type == "meter" or widget.type == "grid" or widget.type == "editable_label" or widget.type == "item_list" or widget.type == "piano_kb" or widget.type == "waveform_view" or widget.type == "scrollbar" or widget.type == "table" or widget.type == "statusbar" or widget.type == "tree" or widget.type == "color_picker":
         if _point_in_rect of [mx, my, ax, ay, widget.w, widget.h]:
             return widget
 
@@ -1434,6 +1629,17 @@ define _hit_test(widget, ox, oy, mx, my) as:
         total_h is widget.h
         if widget.open == 1:
             total_h is widget.h + (len of widget.items) * 24 + 2
+        if _point_in_rect of [mx, my, ax, ay, widget.w, total_h]:
+            return widget
+
+    # Combobox — include open dropdown area
+    if widget.type == "combobox":
+        total_h is widget.h
+        if widget.open == 1:
+            drop_h is (len of widget.filtered) * 24
+            if drop_h > 200:
+                drop_h is 200
+            total_h is widget.h + drop_h + 2
         if _point_in_rect of [mx, my, ax, ay, widget.w, total_h]:
             return widget
 
@@ -1475,6 +1681,11 @@ define _clear_hover(widget) as:
     elif widget.type == "table":
         widget.hover_row is -1
         widget.hover_col_header is -1
+    elif widget.type == "tree":
+        widget.hover_index is -1
+    elif widget.type == "combobox":
+        widget.hover is 0
+        widget.hover_index is -1
     else:
         if (type of widget) == "dict":
             widget.hover is 0
@@ -1489,6 +1700,22 @@ define dispatch(root, ev) as:
     if ev.type == "mousemove" or ev.type == "mousedown" or ev.type == "mouseup":
         mx is ev.x
         my is ev.y
+
+    # Handle DnD in progress
+    if ev.type == "mousemove" and _dnd_state.active == 1:
+        _dnd_state.mx is mx
+        _dnd_state.my is my
+        # Compute reorder insertion index if dragging over source list
+        if _dnd_state.source != null and _dnd_state.source.type == "item_list":
+            src is _dnd_state.source
+            abs_y is _find_abs_y of [root, src, 0, 0]
+            if _point_in_rect of [mx, my, _find_abs_x of [root, src, 0, 0], abs_y, src.w, src.h]:
+                src.reorder_insert is floor of ((my - abs_y + src.scroll_y) / src.item_h)
+                if src.reorder_insert > (len of src.items):
+                    src.reorder_insert is len of src.items
+            else:
+                src.reorder_insert is -1
+        return null
 
     # Handle drag in progress (slider, vslider, or knob)
     if ev.type == "mousemove" and _drag_widget != null:
@@ -1510,8 +1737,56 @@ define dispatch(root, ev) as:
             _drag_widget.split_pos is new_pos
             if _drag_widget.on_resize != null:
                 _drag_widget.on_resize of _drag_widget
+        elif _drag_widget.type == "color_picker":
+            abs_x is _find_abs_x of [root, _drag_widget, 0, 0]
+            abs_y is _find_abs_y of [root, _drag_widget, 0, 0]
+            if _drag_widget.drag_part == "sv":
+                s_val is (mx - abs_x) / 150.0
+                v_val is 1.0 - (my - abs_y) / 120.0
+                if s_val < 0:
+                    s_val is 0
+                if s_val > 1:
+                    s_val is 1
+                if v_val < 0:
+                    v_val is 0
+                if v_val > 1:
+                    v_val is 1
+                _drag_widget.sat is s_val
+                _drag_widget.val is v_val
+            elif _drag_widget.drag_part == "hue":
+                h_val is (my - abs_y) * 360 / 120.0
+                if h_val < 0:
+                    h_val is 0
+                if h_val > 359:
+                    h_val is 359
+                _drag_widget.hue is h_val
+            _drag_widget.color is _hsv_to_rgb of [_drag_widget.hue, _drag_widget.sat, _drag_widget.val]
+            if _drag_widget.on_change != null:
+                _drag_widget.on_change of _drag_widget
         else:
             _update_drag of [_drag_widget, mx]
+        return null
+
+    if ev.type == "mouseup" and _dnd_state.active == 1:
+        # DnD drop
+        hit is _hit_test of [root, 0, 0, mx, my]
+        drop_data is {"source_widget": _dnd_state.source, "source_index": _dnd_state.source_index, "data": _dnd_state.data}
+        # Self-drop reorder
+        if hit != null and _dnd_state.source != null and hit.id == _dnd_state.source.id and hit.type == "item_list" and hit.on_reorder != null:
+            insert_idx is hit.reorder_insert
+            if insert_idx >= 0:
+                hit.on_reorder of [hit, _dnd_state.source_index, insert_idx]
+            hit.reorder_insert is -1
+        elif hit != null and hit.on_drop != null:
+            hit.on_drop of [hit, drop_data]
+        # Clean up
+        if _dnd_state.source != null and _dnd_state.source.type == "item_list":
+            _dnd_state.source.reorder_insert is -1
+        _dnd_state.active is 0
+        _dnd_state.source is null
+        _dnd_state.source_index is -1
+        _dnd_state.data is null
+        _dnd_state.text is ""
         return null
 
     if ev.type == "mouseup" and _drag_widget != null:
@@ -1597,6 +1872,18 @@ define dispatch(root, ev) as:
                         rx is rx + col.width
                 else:
                     hit.hover_row is floor of ((rel_y - hit.header_h + hit.scroll_y) / hit.row_h)
+            # Tree hover
+            if hit.type == "tree":
+                abs_y is _find_abs_y of [root, hit, 0, 0]
+                hit.hover_index is floor of ((my - abs_y + hit.scroll_y) / hit.item_h)
+            # Combobox hover index
+            if hit.type == "combobox" and hit.open == 1:
+                abs_y is _find_abs_y of [root, hit, 0, 0]
+                rel_y is my - abs_y - hit.h - 2
+                if rel_y >= 0:
+                    hit.hover_index is floor of (rel_y / 24)
+                else:
+                    hit.hover_index is -1
         else:
             _tooltip_widget is null
             _tooltip_timer is 0
@@ -1609,10 +1896,10 @@ define dispatch(root, ev) as:
         _tooltip_timer is 0
         # Close any open dropdowns first
         _close_dropdowns of root
-        # Check dialogs first (they're modal)
-        dlg is _find_visible_dialog of root
-        if dlg != null:
-            _handle_dialog_click of [dlg, mx, my]
+        # Check modal stack first (they're modal)
+        if (len of _modal_stack) > 0:
+            top_modal is _modal_stack[(len of _modal_stack) - 1]
+            _handle_dialog_click of [top_modal, mx, my]
             return null
         hit is _hit_test of [root, 0, 0, mx, my]
         if hit == null:
@@ -1623,6 +1910,17 @@ define dispatch(root, ev) as:
             return null
         # Universal disabled check
         if hit.enabled != null and hit.enabled == 0:
+            return null
+        # Right-click context menu
+        btn is 1
+        if ev.button != null:
+            btn is ev.button
+        if btn == 3:
+            _close_menus of root
+            if hit.context_menu != null:
+                show_menu of [hit.context_menu, mx, my]
+            elif hit.on_right_click != null:
+                hit.on_right_click of [hit, mx, my]
             return null
         # Sync focus to clicked widget
         _sync_focus_to of hit
@@ -1736,9 +2034,20 @@ define dispatch(root, ev) as:
             abs_y is _find_abs_y of [root, hit, 0, 0]
             idx is floor of ((my - abs_y + hit.scroll_y) / hit.item_h)
             if idx >= 0 and idx < (len of hit.items):
-                hit.selected is idx
-                if hit.on_select != null:
-                    hit.on_select of hit
+                if hit.draggable == 1:
+                    # Start DnD
+                    _dnd_state.active is 1
+                    _dnd_state.source is hit
+                    _dnd_state.source_index is idx
+                    _dnd_state.data is hit.items[idx]
+                    _dnd_state.mx is mx
+                    _dnd_state.my is my
+                    _dnd_state.text is f"{hit.items[idx]}"
+                    hit.selected is idx
+                else:
+                    hit.selected is idx
+                    if hit.on_select != null:
+                        hit.on_select of hit
         elif hit.type == "scroll_panel":
             # Scrollbar click — jump to position
             if hit.content_h > hit.h:
@@ -1823,6 +2132,64 @@ define dispatch(root, ev) as:
                     hit.selected is ri
                     if hit.on_select != null:
                         hit.on_select of hit
+        elif hit.type == "tree":
+            abs_y is _find_abs_y of [root, hit, 0, 0]
+            flat is []
+            _flatten_tree of [hit.nodes, 0, flat]
+            fi is floor of ((my - abs_y + hit.scroll_y) / hit.item_h)
+            if fi >= 0 and fi < (len of flat):
+                fe is flat[fi]
+                abs_x is _find_abs_x of [root, hit, 0, 0]
+                indent is 16 * fe.depth + 8
+                rel_x is mx - abs_x
+                if fe.has_children == 1 and rel_x < indent:
+                    # Toggle expand
+                    if fe.expanded == 1:
+                        fe.node.expanded is 0
+                    else:
+                        fe.node.expanded is 1
+                else:
+                    # Select node
+                    hit.selected_id is fe.node.id
+                    if hit.on_select != null:
+                        hit.on_select of [hit, fe.node]
+        elif hit.type == "combobox" and hit.enabled == 1:
+            if hit.open == 1:
+                if hit.hover_index >= 0 and hit.hover_index < (len of hit.filtered):
+                    hit.filter_text is hit.filtered[hit.hover_index]
+                    # Find original index
+                    sel_text is hit.filtered[hit.hover_index]
+                    for oi in range of (len of hit.items):
+                        if hit.items[oi] == sel_text:
+                            hit.selected is oi
+                    hit.open is 0
+                    if hit.on_change != null:
+                        hit.on_change of hit
+                else:
+                    hit.open is 0
+            else:
+                hit.open is 1
+                hit.filter_text is ""
+                hit.filtered is hit.items
+                hit.hover_index is 0
+                hit.cursor is 0
+        elif hit.type == "color_picker":
+            abs_x is _find_abs_x of [root, hit, 0, 0]
+            abs_y is _find_abs_y of [root, hit, 0, 0]
+            rel_x is mx - abs_x
+            rel_y is my - abs_y
+            if rel_x < 150 and rel_y < 120:
+                hit.drag_part is "sv"
+                _drag_widget is hit
+                hit.sat is rel_x / 150.0
+                hit.val is 1.0 - rel_y / 120.0
+            elif rel_x >= 158 and rel_x < 178 and rel_y < 120:
+                hit.drag_part is "hue"
+                _drag_widget is hit
+                hit.hue is rel_y * 360 / 120.0
+            hit.color is _hsv_to_rgb of [hit.hue, hit.sat, hit.val]
+            if hit.on_change != null:
+                hit.on_change of hit
         # Close menus on click elsewhere
         _close_menus of root
         return null
@@ -2031,6 +2398,18 @@ define _scroll_panels(widget, dx, dy) as:
             max_sy is 0
         if widget.scroll_y > max_sy:
             widget.scroll_y is max_sy
+    elif widget.type == "tree":
+        widget.scroll_y is widget.scroll_y + dy
+        if widget.scroll_y < 0:
+            widget.scroll_y is 0
+        # Flatten to count items
+        flat is []
+        _flatten_tree of [widget.nodes, 0, flat]
+        max_sy is (len of flat) * widget.item_h - widget.h
+        if max_sy < 0:
+            max_sy is 0
+        if widget.scroll_y > max_sy:
+            widget.scroll_y is max_sy
     elif widget.type == "scroll_panel":
         # Vertical scroll
         widget.scroll_y is widget.scroll_y + dy
@@ -2079,8 +2458,58 @@ define _handle_text_key(widget, ev) as:
     shift is 0
     if ev.shift != null:
         shift is ev.shift
+    ctrl is 0
+    if ev.ctrl != null:
+        ctrl is ev.ctrl
+    # Ctrl+key shortcuts
+    if ctrl == 1:
+        if k == "a":
+            widget.sel_start is 0
+            widget.sel_end is len of widget.text
+            widget.cursor is len of widget.text
+            return null
+        if k == "c":
+            _clipboard is _get_selected_text of widget
+            return null
+        if k == "x":
+            _clipboard is _get_selected_text of widget
+            if (len of _clipboard) > 0:
+                _delete_selection of widget
+                if widget.on_change != null:
+                    widget.on_change of widget
+            return null
+        if k == "v":
+            if (len of _clipboard) > 0:
+                if widget.sel_start != null and widget.sel_start >= 0 and widget.sel_end != null and widget.sel_end >= 0:
+                    _delete_selection of widget
+                before is substr of [widget.text, 0, widget.cursor]
+                after is substr of [widget.text, widget.cursor, (len of widget.text) - widget.cursor]
+                widget.text is before + _clipboard + after
+                widget.cursor is widget.cursor + (len of _clipboard)
+                if widget.on_change != null:
+                    widget.on_change of widget
+            return null
+    # Shift+arrow extends selection
+    if shift == 1 and (k == "left" or k == "right" or k == "home" or k == "end"):
+        if widget.sel_start == null or widget.sel_start < 0:
+            widget.sel_start is widget.cursor
+            widget.sel_end is widget.cursor
+        if k == "left" and widget.cursor > 0:
+            widget.cursor is widget.cursor - 1
+        elif k == "right" and widget.cursor < (len of widget.text):
+            widget.cursor is widget.cursor + 1
+        elif k == "home":
+            widget.cursor is 0
+        elif k == "end":
+            widget.cursor is len of widget.text
+        widget.sel_end is widget.cursor
+        return null
     if k == "backspace":
-        if widget.cursor > 0:
+        if widget.sel_start != null and widget.sel_start >= 0 and widget.sel_end != null and widget.sel_end >= 0:
+            _delete_selection of widget
+            if widget.on_change != null:
+                widget.on_change of widget
+        elif widget.cursor > 0:
             before is substr of [widget.text, 0, widget.cursor - 1]
             after is substr of [widget.text, widget.cursor, (len of widget.text) - widget.cursor]
             widget.text is before + after
@@ -2088,21 +2517,29 @@ define _handle_text_key(widget, ev) as:
             if widget.on_change != null:
                 widget.on_change of widget
     elif k == "delete":
-        if widget.cursor < (len of widget.text):
+        if widget.sel_start != null and widget.sel_start >= 0 and widget.sel_end != null and widget.sel_end >= 0:
+            _delete_selection of widget
+            if widget.on_change != null:
+                widget.on_change of widget
+        elif widget.cursor < (len of widget.text):
             before is substr of [widget.text, 0, widget.cursor]
             after is substr of [widget.text, widget.cursor + 1, (len of widget.text) - widget.cursor - 1]
             widget.text is before + after
             if widget.on_change != null:
                 widget.on_change of widget
     elif k == "left":
+        _clear_selection of widget
         if widget.cursor > 0:
             widget.cursor is widget.cursor - 1
     elif k == "right":
+        _clear_selection of widget
         if widget.cursor < (len of widget.text):
             widget.cursor is widget.cursor + 1
     elif k == "home":
+        _clear_selection of widget
         widget.cursor is 0
     elif k == "end":
+        _clear_selection of widget
         widget.cursor is len of widget.text
     elif k == "return":
         if widget.type == "editable_label":
@@ -2123,7 +2560,7 @@ define _handle_text_key(widget, ev) as:
         ch is k
         if shift == 1:
             ch is str_upper of k
-            # Shift+number → symbol
+            # Shift+number -> symbol
             if k == "1":
                 ch is "!"
             elif k == "2":
@@ -2161,12 +2598,250 @@ define _handle_text_key(widget, ev) as:
         _insert_char of [widget, ch]
 
 define _insert_char(widget, ch) as:
+    # Delete selection first if any
+    if widget.sel_start != null and widget.sel_start >= 0 and widget.sel_end != null and widget.sel_end >= 0:
+        _delete_selection of widget
     before is substr of [widget.text, 0, widget.cursor]
     after is substr of [widget.text, widget.cursor, (len of widget.text) - widget.cursor]
     widget.text is before + ch + after
     widget.cursor is widget.cursor + 1
     if widget.on_change != null:
         widget.on_change of widget
+
+# ============================================================
+# Clipboard + text selection helpers
+# ============================================================
+
+define _get_selected_text(widget) as:
+    if widget.sel_start == null or widget.sel_end == null:
+        return ""
+    if widget.sel_start < 0 or widget.sel_end < 0:
+        return ""
+    s is widget.sel_start
+    e is widget.sel_end
+    if s > e:
+        tmp is s
+        s is e
+        e is tmp
+    return substr of [widget.text, s, e - s]
+
+define _delete_selection(widget) as:
+    if widget.sel_start == null or widget.sel_end == null:
+        return null
+    if widget.sel_start < 0 or widget.sel_end < 0:
+        return null
+    s is widget.sel_start
+    e is widget.sel_end
+    if s > e:
+        tmp is s
+        s is e
+        e is tmp
+    before is substr of [widget.text, 0, s]
+    after is substr of [widget.text, e, (len of widget.text) - e]
+    widget.text is before + after
+    widget.cursor is s
+    widget.sel_start is -1
+    widget.sel_end is -1
+
+define _clear_selection(widget) as:
+    if widget.sel_start != null:
+        widget.sel_start is -1
+    if widget.sel_end != null:
+        widget.sel_end is -1
+
+# ============================================================
+# Hotkey system
+# ============================================================
+
+define register_hotkey(combo, callback) as:
+    append of [_hotkeys, {"combo": combo, "callback": callback}]
+
+define unregister_hotkey(combo) as:
+    new_list is []
+    for i in range of (len of _hotkeys):
+        if _hotkeys[i].combo != combo:
+            append of [new_list, _hotkeys[i]]
+    _hotkeys is new_list
+
+define _combo_matches(combo, ctrl, shift, alt, key) as:
+    # Parse combo string like "ctrl+s", "ctrl+shift+z", "alt+f"
+    need_ctrl is 0
+    need_shift is 0
+    need_alt is 0
+    target_key is combo
+    if (contains of [combo, "ctrl+"]) == 1:
+        need_ctrl is 1
+        target_key is str_replace of [target_key, "ctrl+", ""]
+    if (contains of [combo, "shift+"]) == 1:
+        need_shift is 1
+        target_key is str_replace of [target_key, "shift+", ""]
+    if (contains of [combo, "alt+"]) == 1:
+        need_alt is 1
+        target_key is str_replace of [target_key, "alt+", ""]
+    if ctrl != need_ctrl:
+        return 0
+    if shift != need_shift:
+        return 0
+    if alt != need_alt:
+        return 0
+    if key == target_key:
+        return 1
+    return 0
+
+define _match_hotkey(ev) as:
+    ctrl is 0
+    shift is 0
+    alt is 0
+    if ev.ctrl != null:
+        ctrl is ev.ctrl
+    if ev.shift != null:
+        shift is ev.shift
+    if ev.alt != null:
+        alt is ev.alt
+    for i in range of (len of _hotkeys):
+        hk is _hotkeys[i]
+        if (_combo_matches of [hk.combo, ctrl, shift, alt, ev.key]) == 1:
+            hk.callback of null
+            return 1
+    return 0
+
+# ============================================================
+# Modal stack
+# ============================================================
+
+define push_modal(dlg, parent_w, parent_h) as:
+    dlg.x is floor of ((parent_w - dlg.w) / 2)
+    dlg.y is floor of ((parent_h - dlg.h) / 2)
+    dlg.visible is 1
+    dlg.hover_btn is -1
+    append of [_modal_stack, dlg]
+
+define pop_modal() as:
+    n is len of _modal_stack
+    if n == 0:
+        return null
+    top is _modal_stack[n - 1]
+    top.visible is 0
+    new_stack is []
+    for i in range of (n - 1):
+        append of [new_stack, _modal_stack[i]]
+    _modal_stack is new_stack
+    return top
+
+# ============================================================
+# Tree view helpers
+# ============================================================
+
+define _flatten_tree(nodes, depth, out) as:
+    for i in range of (len of nodes):
+        nd is nodes[i]
+        expanded is 0
+        if nd.expanded != null:
+            expanded is nd.expanded
+        has_children is 0
+        if nd.children != null and (len of nd.children) > 0:
+            has_children is 1
+        append of [out, {"node": nd, "depth": depth, "has_children": has_children, "expanded": expanded}]
+        if expanded == 1 and has_children == 1:
+            _flatten_tree of [nd.children, depth + 1, out]
+
+# ============================================================
+# HSV to RGB conversion
+# ============================================================
+
+define _hsv_to_rgb(h, s, v) as:
+    c is v * s
+    hp is h / 60
+    x is c * (1 - abs of (hp - 2 * floor of (hp / 2) - 1))
+    m is v - c
+    if hp < 1:
+        r is c
+        g is x
+        b is 0
+    elif hp < 2:
+        r is x
+        g is c
+        b is 0
+    elif hp < 3:
+        r is 0
+        g is c
+        b is x
+    elif hp < 4:
+        r is 0
+        g is x
+        b is c
+    elif hp < 5:
+        r is x
+        g is 0
+        b is c
+    else:
+        r is c
+        g is 0
+        b is x
+    return [floor of ((r + m) * 255), floor of ((g + m) * 255), floor of ((b + m) * 255)]
+
+# ============================================================
+# DnD render overlay
+# ============================================================
+
+define _render_dnd() as:
+    if _dnd_state.active == 0:
+        return null
+    tx is _dnd_state.mx + 10
+    ty is _dnd_state.my - 10
+    tw is (text_width of [_dnd_state.text, _theme.font_scale]) + 12
+    gfx_rrect of [tx, ty, tw, 22, _theme.radius_sm, _theme.accent[0], _theme.accent[1], _theme.accent[2], 180]
+    gfx_text of [tx + 6, ty + 4, _dnd_state.text, 255, 255, 255, _theme.font_scale]
+
+# ============================================================
+# Combobox key handler
+# ============================================================
+
+define _handle_combobox_key(widget, ev) as:
+    k is ev.key
+    if k == "escape":
+        widget.open is 0
+        return null
+    if k == "return":
+        if widget.hover_index >= 0 and widget.hover_index < (len of widget.filtered):
+            widget.filter_text is widget.filtered[widget.hover_index]
+            widget.selected is widget.hover_index
+            widget.open is 0
+            if widget.on_change != null:
+                widget.on_change of widget
+        return null
+    if k == "up":
+        widget.hover_index is widget.hover_index - 1
+        if widget.hover_index < 0:
+            widget.hover_index is 0
+        return null
+    if k == "down":
+        widget.hover_index is widget.hover_index + 1
+        if widget.hover_index >= (len of widget.filtered):
+            widget.hover_index is (len of widget.filtered) - 1
+        return null
+    if k == "backspace":
+        if (len of widget.filter_text) > 0:
+            widget.filter_text is substr of [widget.filter_text, 0, (len of widget.filter_text) - 1]
+            widget.cursor is len of widget.filter_text
+    elif k == "space":
+        widget.filter_text is widget.filter_text + " "
+        widget.cursor is len of widget.filter_text
+    elif (len of k) == 1:
+        shift is 0
+        if ev.shift != null:
+            shift is ev.shift
+        ch is k
+        if shift == 1:
+            ch is str_upper of k
+        widget.filter_text is widget.filter_text + ch
+        widget.cursor is len of widget.filter_text
+    # Re-filter
+    widget.filtered is []
+    for i in range of (len of widget.items):
+        if (len of widget.filter_text) == 0 or (contains of [str_lower of widget.items[i], str_lower of widget.filter_text]) == 1:
+            append of [widget.filtered, widget.items[i]]
+    widget.hover_index is 0
 
 define show_menu(menu_widget, x, y) as:
     menu_widget.x is x
@@ -2215,10 +2890,7 @@ define _handle_dialog_click(dlg, mx, my) as:
         i is i - 1
 
 define show_dialog(dlg, parent_w, parent_h) as:
-    dlg.x is floor of ((parent_w - dlg.w) / 2)
-    dlg.y is floor of ((parent_h - dlg.h) / 2)
-    dlg.visible is 1
-    dlg.hover_btn is -1
+    push_modal of [dlg, parent_w, parent_h]
 
 define _start_editing(widget) as:
     _unfocus_all_editable of _edit_root
@@ -2291,6 +2963,8 @@ define _radio_index_at(widget, rel_x) as:
 define _close_dropdowns(widget) as:
     if widget.type == "dropdown":
         widget.open is 0
+    elif widget.type == "combobox":
+        widget.open is 0
     elif _is_container of widget.type:
         for i in range of (len of widget.children):
             _close_dropdowns of widget.children[i]
@@ -2352,7 +3026,7 @@ define _update_scrollbar_drag(widget, mx, my) as:
 # Focus system
 # ============================================================
 
-_focusable_types is ["button", "slider", "vslider", "toggle", "knob", "checkbox", "text_input", "toggle_button", "spinbox", "radio_group", "dropdown", "item_list", "scrollbar", "table"]
+_focusable_types is ["button", "slider", "vslider", "toggle", "knob", "checkbox", "text_input", "toggle_button", "spinbox", "radio_group", "dropdown", "item_list", "scrollbar", "table", "tree", "combobox"]
 
 define _is_focusable(widget) as:
     for i in range of (len of _focusable_types):
@@ -2487,13 +3161,37 @@ define _handle_focus_key(root, ev) as:
             if w.on_select != null:
                 w.on_select of w
             return 1
-    # Escape closes dropdowns/menus/dialogs
+    # Tree navigation with arrow keys
+    if ev.key == "up" or ev.key == "down" or ev.key == "left" or ev.key == "right":
+        if w != null and w.type == "tree":
+            flat is []
+            _flatten_tree of [w.nodes, 0, flat]
+            # Find currently selected flat index
+            cur_fi is -1
+            for fi in range of (len of flat):
+                if flat[fi].node.id == w.selected_id:
+                    cur_fi is fi
+            if ev.key == "up" and cur_fi > 0:
+                w.selected_id is flat[cur_fi - 1].node.id
+                if w.on_select != null:
+                    w.on_select of [w, flat[cur_fi - 1].node]
+            elif ev.key == "down" and cur_fi < (len of flat) - 1:
+                w.selected_id is flat[cur_fi + 1].node.id
+                if w.on_select != null:
+                    w.on_select of [w, flat[cur_fi + 1].node]
+            elif ev.key == "left" and cur_fi >= 0:
+                if flat[cur_fi].expanded == 1:
+                    flat[cur_fi].node.expanded is 0
+            elif ev.key == "right" and cur_fi >= 0:
+                if flat[cur_fi].has_children == 1:
+                    flat[cur_fi].node.expanded is 1
+            return 1
+    # Escape closes dropdowns/menus
     if ev.key == "escape":
         _close_dropdowns of root
         _close_menus of root
-        dlg is _find_visible_dialog of root
-        if dlg != null:
-            dlg.visible is 0
+        if (len of _modal_stack) > 0:
+            pop_modal of null
         return 1
     return 0
 
@@ -2514,15 +3212,29 @@ define app_loop(root, on_key, on_tick) as:
         loop while ev != null:
             if ev.type == "quit":
                 _running is 0
+            elif ev.type == "resize":
+                _window_w is ev.w
+                _window_h is ev.h
+                root.w is ev.w
+                root.h is ev.h
             elif ev.type == "keydown":
-                # Text input gets first crack at keys
-                if _focused_input != null:
-                    _handle_text_key of [_focused_input, ev]
-                # Focus navigation (Tab, Enter, Space, arrows, Escape)
-                elif ev.key == "tab" or ev.key == "escape":
-                    _handle_focus_key of [root, ev]
-                elif (_focused_widget != null and _focused_input == null):
-                    _handle_focus_key of [root, ev]
+                # Hotkeys get highest priority
+                hotkey_handled is _match_hotkey of ev
+                if hotkey_handled == 0:
+                    # Escape pops modal stack
+                    if ev.key == "escape" and (len of _modal_stack) > 0:
+                        pop_modal of null
+                    # Combobox key handling when open
+                    elif _focused_widget != null and _focused_widget.type == "combobox" and _focused_widget.open == 1:
+                        _handle_combobox_key of [_focused_widget, ev]
+                    # Text input gets next crack at keys
+                    elif _focused_input != null:
+                        _handle_text_key of [_focused_input, ev]
+                    # Focus navigation (Tab, Enter, Space, arrows, Escape)
+                    elif ev.key == "tab" or ev.key == "escape":
+                        _handle_focus_key of [root, ev]
+                    elif (_focused_widget != null and _focused_input == null):
+                        _handle_focus_key of [root, ev]
                 if on_key != null:
                     result is on_key of ev
                     if result == 0:
@@ -2551,7 +3263,13 @@ define app_loop(root, on_key, on_tick) as:
         # Render
         gfx_clear of [_theme.bg[0], _theme.bg[1], _theme.bg[2]]
         render of [root, 0, 0]
+        # Render modal stack (dim overlay + dialog for each)
+        for mi in range of (len of _modal_stack):
+            mdlg is _modal_stack[mi]
+            if mdlg.visible == 1:
+                render of [mdlg, 0, 0]
         _render_tooltip of null
+        _render_dnd of null
         gfx_present of null
         gfx_delay of 1
     return null

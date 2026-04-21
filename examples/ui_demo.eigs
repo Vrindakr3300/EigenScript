@@ -3,8 +3,8 @@
 # ============================================================
 # Run: make gfx && ./src/eigenscript examples/ui_demo.eigs
 #
-# New features demonstrated:
-#   - Theme switching (1/2/3 keys)
+# Features demonstrated:
+#   - Theme switching (Ctrl+1/2/3 hotkeys)
 #   - Layout containers (hbox/vbox)
 #   - Table widget
 #   - Toolbar/statusbar widgets
@@ -12,6 +12,10 @@
 #   - Disabled widgets
 #   - Keyboard navigation (Tab/Shift+Tab, Enter, arrows)
 #   - Animation (tween)
+#   - Tree view, combobox, color picker
+#   - Right-click context menus
+#   - Drag & drop / reorder
+#   - Window resize
 
 import ui
 
@@ -21,7 +25,7 @@ WINDOW_H is 620
 gfx_open of [WINDOW_W, WINDOW_H, "UI Toolkit Demo"]
 
 # ---- State ----
-status_text is "Ready — Tab to navigate, 1/2/3 to switch themes"
+status_text is "Ready — Tab to navigate, Ctrl+1/2/3 for themes"
 _current_theme is "dark"
 
 # ---- Callbacks ----
@@ -71,7 +75,11 @@ define on_name_change(w) as:
     status_text is f"Name: {w.text}"
 
 define on_menu_select(m, idx) as:
-    status_text is f"Menu: {m.items[idx]}"
+    item is m.items[idx]
+    if (type of item) == "list":
+        status_text is f"Menu: {item[0]}"
+    else:
+        status_text is f"Menu: {item}"
 
 define on_scroll(w) as:
     status_text is f"Scroll: {floor of (w.value * 100)}%"
@@ -115,13 +123,44 @@ define paint_waveform(widget, ax, ay) as:
 define on_wave_mouse(widget, ev) as:
     status_text is f"Wave: x={ev.x} y={ev.y}"
 
+# New feature callbacks
+define on_tree_select(w, node) as:
+    status_text is f"Tree: {node.text}"
+
+define on_combo_change(w) as:
+    if w.selected >= 0 and w.selected < (len of w.items):
+        status_text is f"Combobox: {w.items[w.selected]}"
+
+define on_color_change(w) as:
+    status_text is f"Color: R={w.color[0]} G={w.color[1]} B={w.color[2]}"
+
+define on_reorder(w, old_idx, new_idx) as:
+    # Move item from old_idx to new_idx
+    item is w.items[old_idx]
+    new_items is []
+    for i in range of (len of w.items):
+        if i == new_idx and new_idx < old_idx:
+            append of [new_items, item]
+        if i != old_idx:
+            append of [new_items, w.items[i]]
+        if i == new_idx and new_idx >= old_idx:
+            append of [new_items, item]
+    w.items is new_items
+    status_text is f"Reordered: {item}"
+
+define on_right_click_table(w, mx, my) as:
+    status_text is "Right-clicked table"
+    ctx is ui.find_by_id of [root, "table_ctx"]
+    if ctx != null:
+        ui.show_menu of [ctx, mx, my]
+
 # ---- Build UI ----
 
 root is ui.panel of ["root", 0, 0, WINDOW_W, WINDOW_H]
 root.bg is [25, 25, 35]
 root.border is null
 
-# -- Toolbar (new widget type) --
+# -- Toolbar --
 tb is ui.toolbar of ["toolbar", 0, 0, WINDOW_W]
 ui.add_child of [tb, ui.button of ["play", 0, 0, 60, 24, "Play", on_play]]
 ui.add_child of [tb, ui.button of ["stop", 0, 0, 60, 24, "Stop", on_stop]]
@@ -133,7 +172,7 @@ ui.add_child of [tb, ui.separator of ["sep2", 0, 0, 24, 1]]
 ui.add_child of [tb, ui.label of ["title", 0, 0, "UI Demo"]]
 
 # -- Tabs --
-main_tabs is ui.tabs of ["main", 0, 40, WINDOW_W, WINDOW_H - 40 - 24, ["Mix", "Synth", "Wave", "Table", "FX"], on_tab]
+main_tabs is ui.tabs of ["main", 0, 40, WINDOW_W, WINDOW_H - 40 - 24, ["Mix", "Synth", "Wave", "Table", "FX", "Extras"], on_tab]
 
 # --- Mix tab (with hbox/vbox layout) ---
 mix_panel is ui.panel of ["mix_content", 0, 0, WINDOW_W, WINDOW_H - 92]
@@ -207,6 +246,7 @@ table_panel.border is null
 cols is [{"name": "Track", "width": 200}, {"name": "Duration", "width": 120}, {"name": "BPM", "width": 80}, {"name": "Key", "width": 80}, {"name": "Genre", "width": 160}]
 tbl is ui.table of ["track_table", 10, 10, 650, 400, cols, on_table_select]
 tbl.on_sort is on_table_sort
+tbl.on_right_click is on_right_click_table
 tbl.rows is [
     ["Midnight Drive", "3:42", "128", "Am", "Synthwave"],
     ["Ocean Breeze", "4:15", "96", "C", "Ambient"],
@@ -225,6 +265,9 @@ tbl.rows is [
     ["Coral Reef", "4:05", "105", "Ab", "R&B"]
 ]
 
+# Right-click menu for table
+table_ctx is ui.menu of ["table_ctx", [["Select All", "Ctrl+A"], "Export", "-", "Delete"], on_menu_select]
+ui.add_child of [table_panel, table_ctx]
 ui.add_child of [table_panel, tbl]
 
 # --- FX tab with scrollable panel and checkboxes ---
@@ -251,14 +294,61 @@ ui.add_child of [fx_panel, fx_scroll]
 ctx_menu is ui.menu of ["ctx", ["Cut", "Copy", "Paste", "-", "Delete", "Duplicate"], on_menu_select]
 ui.add_child of [fx_panel, ctx_menu]
 
+# --- Extras tab (tree, combobox, color picker, drag-to-reorder) ---
+extras_panel is ui.panel of ["extras_content", 0, 0, WINDOW_W, WINDOW_H - 92]
+extras_panel.border is null
+
+# Tree view
+tree_nodes is [
+    {"id": "instruments", "text": "Instruments", "expanded": 1, "children": [
+        {"id": "synths", "text": "Synths", "expanded": 0, "children": [
+            {"id": "analog", "text": "Analog", "children": []},
+            {"id": "fm", "text": "FM", "children": []},
+            {"id": "wavetable", "text": "Wavetable", "children": []}
+        ]},
+        {"id": "samplers", "text": "Samplers", "expanded": 0, "children": [
+            {"id": "drums", "text": "Drums", "children": []},
+            {"id": "strings", "text": "Strings", "children": []}
+        ]},
+        {"id": "piano", "text": "Piano", "children": []}
+    ]},
+    {"id": "effects", "text": "Effects", "expanded": 1, "children": [
+        {"id": "reverb", "text": "Reverb", "children": []},
+        {"id": "delay", "text": "Delay", "children": []},
+        {"id": "eq", "text": "Equalizer", "children": []}
+    ]},
+    {"id": "routing", "text": "Routing", "children": []}
+]
+tree_w is ui.tree of ["demo_tree", 10, 10, 220, 300, tree_nodes, on_tree_select]
+ui.add_child of [extras_panel, tree_w]
+
+# Combobox
+combo_items is ["Sine", "Square", "Sawtooth", "Triangle", "Noise", "Pulse", "Custom"]
+combo_w is ui.combobox of ["waveform_combo", 250, 10, 180, combo_items, on_combo_change]
+ui.add_child of [extras_panel, ui.label of ["combo_lbl", 250, 40, "Waveform"]]
+ui.add_child of [extras_panel, combo_w]
+
+# Color picker
+cpick is ui.color_picker of ["demo_color", 250, 70, on_color_change]
+ui.add_child of [extras_panel, cpick]
+
+# Draggable item list (drag to reorder)
+reorder_items is ["Kick", "Snare", "Hi-hat", "Clap", "Rim", "Tom", "Crash", "Ride"]
+reorder_list is ui.item_list of ["reorder_list", 460, 10, 180, 300, reorder_items, null]
+reorder_list.draggable is 1
+reorder_list.on_reorder is on_reorder
+ui.add_child of [extras_panel, ui.label of ["reorder_lbl", 460, 318, "Drag to reorder"]]
+ui.add_child of [extras_panel, reorder_list]
+
 # Wire tab panels
 append of [main_tabs.tab_panels, mix_panel]
 append of [main_tabs.tab_panels, synth_panel]
 append of [main_tabs.tab_panels, wave_panel]
 append of [main_tabs.tab_panels, table_panel]
 append of [main_tabs.tab_panels, fx_panel]
+append of [main_tabs.tab_panels, extras_panel]
 
-# -- Statusbar (new widget type) --
+# -- Statusbar --
 sb is ui.statusbar of ["status", 0, WINDOW_H - 24, WINDOW_W]
 sb.sections is [
     {"text": "Ready", "width": 0, "flex": 1},
@@ -271,25 +361,32 @@ ui.add_child of [root, tb]
 ui.add_child of [root, main_tabs]
 ui.add_child of [root, sb]
 
+# ---- Hotkeys for theme switching ----
+define set_dark() as:
+    ui.set_theme of (ui.theme_dark of null)
+    _current_theme is "dark"
+    status_text is "Theme: Dark"
+
+define set_light() as:
+    ui.set_theme of (ui.theme_light of null)
+    _current_theme is "light"
+    status_text is "Theme: Light"
+
+define set_hc() as:
+    ui.set_theme of (ui.theme_high_contrast of null)
+    _current_theme is "high contrast"
+    status_text is "Theme: High Contrast"
+
+ui.register_hotkey of ["ctrl+1", set_dark]
+ui.register_hotkey of ["ctrl+2", set_light]
+ui.register_hotkey of ["ctrl+3", set_hc]
+
 # ---- Handlers ----
 
 define on_key(ev) as:
     if ev.type == "keydown":
         if ev.key == "escape":
             return 0
-        # Theme switching
-        if ev.key == "1":
-            ui.set_theme of (ui.theme_dark of null)
-            _current_theme is "dark"
-            status_text is "Theme: Dark"
-        if ev.key == "2":
-            ui.set_theme of (ui.theme_light of null)
-            _current_theme is "light"
-            status_text is "Theme: Light"
-        if ev.key == "3":
-            ui.set_theme of (ui.theme_high_contrast of null)
-            _current_theme is "high contrast"
-            status_text is "Theme: High Contrast"
     return 1
 
 define on_tick(root) as:

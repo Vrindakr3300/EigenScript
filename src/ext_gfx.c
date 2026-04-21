@@ -24,6 +24,7 @@ typedef struct { Uint32 type; Uint32 ts; Uint32 wid; Uint8 state; Uint8 rep; Uin
 typedef struct { Uint32 type; Uint32 ts; Uint32 wid; Uint32 which; Sint32 x; Sint32 y; Sint32 xrel; Sint32 yrel; } SDL_MouseMotionEvent;
 typedef struct { Uint32 type; Uint32 ts; Uint32 wid; Uint32 which; Uint8 button; Uint8 state; Uint8 clicks; Uint8 p1; Sint32 x; Sint32 y; } SDL_MouseButtonEvent;
 typedef struct { Uint32 type; Uint32 ts; Uint32 wid; Uint32 which; Sint32 x; Sint32 y; Uint32 direction; } SDL_MouseWheelEvent;
+typedef struct { Uint32 type; Uint32 ts; Uint32 wid; Uint8 event; Uint8 p1; Uint8 p2; Uint8 p3; Sint32 data1; Sint32 data2; } SDL_WindowEvent;
 
 typedef union {
     Uint32 type;
@@ -31,6 +32,7 @@ typedef union {
     SDL_MouseMotionEvent motion;
     SDL_MouseButtonEvent button;
     SDL_MouseWheelEvent wheel;
+    SDL_WindowEvent window;
     Uint8 padding[64];
 } SDL_Event;
 
@@ -46,7 +48,9 @@ typedef void SDL_Renderer;
 #define MY_SDL_MOUSEBUTTONDOWN  0x401u
 #define MY_SDL_MOUSEBUTTONUP    0x402u
 #define MY_SDL_MOUSEWHEEL       0x403u
+#define MY_SDL_WINDOWEVENT      0x200u
 #define MY_SDL_WINDOWPOS_CENTERED 0x2FFF0000
+#define MY_SDL_WINDOW_RESIZABLE 0x00000020u
 #define MY_SDL_RENDERER_ACCELERATED 0x02u
 #define MY_SDL_RENDERER_PRESENTVSYNC 0x04u
 #define MY_SDL_BLENDMODE_BLEND  0x01u
@@ -150,7 +154,7 @@ Value* builtin_gfx_open(Value *arg) {
         fprintf(stderr, "gfx_open: SDL_Init failed: %s\n", p_SDL_GetError());
         return make_num(0);
     }
-    g_window = p_SDL_CreateWindow(title, MY_SDL_WINDOWPOS_CENTERED, MY_SDL_WINDOWPOS_CENTERED, w, h, 0);
+    g_window = p_SDL_CreateWindow(title, MY_SDL_WINDOWPOS_CENTERED, MY_SDL_WINDOWPOS_CENTERED, w, h, MY_SDL_WINDOW_RESIZABLE);
     if (!g_window) {
         fprintf(stderr, "gfx_open: SDL_CreateWindow failed: %s\n", p_SDL_GetError());
         return make_num(0);
@@ -371,6 +375,16 @@ Value* builtin_gfx_poll(Value *arg) {
             dict_set(d, "type", make_str("wheel"));
             dict_set(d, "x", make_num(ev.wheel.x));
             dict_set(d, "y", make_num(ev.wheel.y));
+            break;
+        case MY_SDL_WINDOWEVENT:
+            /* SDL_WINDOWEVENT_RESIZED = 6 */
+            if (ev.window.event == 6) {
+                dict_set(d, "type", make_str("resize"));
+                dict_set(d, "w", make_num(ev.window.data1));
+                dict_set(d, "h", make_num(ev.window.data2));
+            } else {
+                return make_null();
+            }
             break;
         default:
             return make_null();
