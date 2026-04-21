@@ -852,8 +852,8 @@ static ASTNode* parse_statement(Parser *p) {
         return make_node(AST_CONTINUE, t->line);
     }
 
-    /* Dot-assignment: config.name is "value" */
-    if (t->type == TOK_IDENT && p_peek(p, 1)->type == TOK_DOT) {
+    /* Dot-assignment: config.name is "value", items[0].name is "value" */
+    if (t->type == TOK_IDENT && (p_peek(p, 1)->type == TOK_DOT || p_peek(p, 1)->type == TOK_LBRACKET)) {
         /* Look ahead to see if this ends in IS (assignment) */
         int saved = p->pos;
         ASTNode *target = parse_primary(p);
@@ -864,6 +864,16 @@ static ASTNode* parse_statement(Parser *p) {
             n->data.dot_assign.target = target->data.dot.target;
             n->data.dot_assign.key = xstrdup(target->data.dot.key);
             n->data.dot_assign.expr = expr;
+            return n;
+        }
+        /* Index-assignment: grid[0][1] is value, items[i] is value */
+        if (target->type == AST_INDEX && p_cur(p)->type == TOK_IS) {
+            p_advance(p); /* skip IS */
+            ASTNode *expr = parse_expression(p);
+            ASTNode *n = make_node(AST_INDEX_ASSIGN, t->line);
+            n->data.index_assign.target = target->data.index.target;
+            n->data.index_assign.index = target->data.index.index;
+            n->data.index_assign.expr = expr;
             return n;
         }
         /* Not a dot-assignment — restore and fall through */

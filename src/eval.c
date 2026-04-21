@@ -502,6 +502,25 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         return val;
     }
 
+    case AST_INDEX_ASSIGN: {
+        Value *target = eval_node(node->data.index_assign.target, env);
+        Value *idx = eval_node(node->data.index_assign.index, env);
+        Value *val = eval_node(node->data.index_assign.expr, env);
+        if (target->type == VAL_LIST) {
+            int i = (int)idx->data.num;
+            if (i >= 0 && i < target->data.list.count) {
+                target->data.list.items[i] = val;
+            } else {
+                runtime_error(node->line, "index %d out of range (list length %d)", i, target->data.list.count);
+            }
+        } else if (target->type == VAL_DICT && idx->type == VAL_STR) {
+            dict_set(target, idx->data.str, val);
+        } else {
+            runtime_error(node->line, "cannot index-assign on %s", val_type_name(target->type));
+        }
+        return val;
+    }
+
     case AST_IMPORT: {
         /* import math → loads lib/math.eigs into a dict namespace */
         const char *name = node->data.import.module_name;

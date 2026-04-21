@@ -743,15 +743,15 @@ fi
 echo ""
 
 # [30] Dot-assignment
-echo "[30/31] Dot-Assignment (6 checks)"
+echo "[30/31] Dot-Assignment (15 checks)"
 DA_OUTPUT=$(./eigenscript ../tests/test_dot_assign.eigs 2>&1)
 if echo "$DA_OUTPUT" | grep -q "All tests passed"; then
-    TOTAL=$((TOTAL + 6))
-    PASS=$((PASS + 6))
-    echo "  PASS: all 6 dot-assign checks"
+    TOTAL=$((TOTAL + 15))
+    PASS=$((PASS + 15))
+    echo "  PASS: all 15 dot-assign checks"
 else
-    TOTAL=$((TOTAL + 6))
-    FAIL=$((FAIL + 6))
+    TOTAL=$((TOTAL + 15))
+    FAIL=$((FAIL + 15))
     echo "  FAIL: dot-assign tests"
     echo "$DA_OUTPUT" | grep -i "FAIL\|assert\|error" | head -5
 fi

@@ -23,12 +23,14 @@ typedef struct { Sint32 scancode; Sint32 sym; uint16_t mod; Uint32 unused; } SDL
 typedef struct { Uint32 type; Uint32 ts; Uint32 wid; Uint8 state; Uint8 rep; Uint8 p2; Uint8 p3; SDL_Keysym keysym; } SDL_KeyboardEvent;
 typedef struct { Uint32 type; Uint32 ts; Uint32 wid; Uint32 which; Sint32 x; Sint32 y; Sint32 xrel; Sint32 yrel; } SDL_MouseMotionEvent;
 typedef struct { Uint32 type; Uint32 ts; Uint32 wid; Uint32 which; Uint8 button; Uint8 state; Uint8 clicks; Uint8 p1; Sint32 x; Sint32 y; } SDL_MouseButtonEvent;
+typedef struct { Uint32 type; Uint32 ts; Uint32 wid; Uint32 which; Sint32 x; Sint32 y; Uint32 direction; } SDL_MouseWheelEvent;
 
 typedef union {
     Uint32 type;
     SDL_KeyboardEvent key;
     SDL_MouseMotionEvent motion;
     SDL_MouseButtonEvent button;
+    SDL_MouseWheelEvent wheel;
     Uint8 padding[64];
 } SDL_Event;
 
@@ -43,6 +45,7 @@ typedef void SDL_Renderer;
 #define MY_SDL_MOUSEMOTION      0x400u
 #define MY_SDL_MOUSEBUTTONDOWN  0x401u
 #define MY_SDL_MOUSEBUTTONUP    0x402u
+#define MY_SDL_MOUSEWHEEL       0x403u
 #define MY_SDL_WINDOWPOS_CENTERED 0x2FFF0000
 #define MY_SDL_RENDERER_ACCELERATED 0x02u
 #define MY_SDL_RENDERER_PRESENTVSYNC 0x04u
@@ -72,6 +75,7 @@ static void (*p_SDL_RenderPresent)(SDL_Renderer*);
 static int (*p_SDL_PollEvent)(SDL_Event*);
 static Uint32 (*p_SDL_GetTicks)(void);
 static void (*p_SDL_Delay)(Uint32);
+static int (*p_SDL_RenderSetClipRect)(SDL_Renderer*, const SDL_Rect*);
 
 static int load_sdl2(void) {
     if (g_sdl_lib) return 1;
@@ -87,20 +91,42 @@ static int load_sdl2(void) {
     LOAD(SDL_RenderClear); LOAD(SDL_RenderFillRect);
     LOAD(SDL_RenderDrawLine); LOAD(SDL_RenderDrawPoint);
     LOAD(SDL_RenderPresent); LOAD(SDL_PollEvent);
-    LOAD(SDL_GetTicks); LOAD(SDL_Delay);
+    LOAD(SDL_GetTicks); LOAD(SDL_Delay); LOAD(SDL_RenderSetClipRect);
     #undef LOAD
     return 1;
 }
 
-/* Scancode to key name */
+/* Scancode to key name — SDL2 scancodes */
 static const char* scancode_name(int sc) {
     switch (sc) {
-        case 4: return "a"; case 7: return "d"; case 8: return "e";
-        case 18: return "o"; case 19: return "p"; case 20: return "q";
-        case 21: return "r"; case 22: return "s"; case 26: return "w";
+        case 4: return "a"; case 5: return "b"; case 6: return "c";
+        case 7: return "d"; case 8: return "e"; case 9: return "f";
+        case 10: return "g"; case 11: return "h"; case 12: return "i";
+        case 13: return "j"; case 14: return "k"; case 15: return "l";
+        case 16: return "m"; case 17: return "n"; case 18: return "o";
+        case 19: return "p"; case 20: return "q"; case 21: return "r";
+        case 22: return "s"; case 23: return "t"; case 24: return "u";
+        case 25: return "v"; case 26: return "w"; case 27: return "x";
+        case 28: return "y"; case 29: return "z";
         case 30: return "1"; case 31: return "2"; case 32: return "3";
         case 33: return "4"; case 34: return "5"; case 35: return "6";
-        case 41: return "escape"; case 43: return "tab"; case 44: return "space";
+        case 36: return "7"; case 37: return "8"; case 38: return "9";
+        case 39: return "0";
+        case 40: return "return"; case 41: return "escape";
+        case 42: return "backspace"; case 43: return "tab";
+        case 44: return "space";
+        case 45: return "-"; case 46: return "=";
+        case 47: return "["; case 48: return "]"; case 49: return "\\";
+        case 51: return ";"; case 52: return "'";
+        case 54: return ","; case 55: return "."; case 56: return "/";
+        case 57: return "capslock";
+        case 58: return "f1"; case 59: return "f2"; case 60: return "f3";
+        case 61: return "f4"; case 62: return "f5"; case 63: return "f6";
+        case 64: return "f7"; case 65: return "f8"; case 66: return "f9";
+        case 67: return "f10"; case 68: return "f11"; case 69: return "f12";
+        case 73: return "insert"; case 74: return "home";
+        case 75: return "pageup"; case 76: return "delete";
+        case 77: return "end"; case 78: return "pagedown";
         case 79: return "right"; case 80: return "left";
         case 81: return "down"; case 82: return "up";
         default: return "";
@@ -229,6 +255,64 @@ Value* builtin_gfx_circle(Value *arg) {
     return make_null();
 }
 
+/* gfx_rrect of [x, y, w, h, radius, r, g, b] or [..., a]
+ * Filled rounded rectangle. Draws corner arcs via scanlines + rects for body. */
+Value* builtin_gfx_rrect(Value *arg) {
+    if (!g_renderer || !arg || arg->type != VAL_LIST || arg->data.list.count < 8) return make_null();
+    int x = (int)arg->data.list.items[0]->data.num;
+    int y = (int)arg->data.list.items[1]->data.num;
+    int w = (int)arg->data.list.items[2]->data.num;
+    int h = (int)arg->data.list.items[3]->data.num;
+    int rad = (int)arg->data.list.items[4]->data.num;
+    int r = (int)arg->data.list.items[5]->data.num;
+    int g = (int)arg->data.list.items[6]->data.num;
+    int b = (int)arg->data.list.items[7]->data.num;
+    int a = (arg->data.list.count >= 9) ? (int)arg->data.list.items[8]->data.num : 255;
+    if (w <= 0 || h <= 0) return make_null();
+    /* Clamp radius to half the smaller dimension */
+    if (rad > w / 2) rad = w / 2;
+    if (rad > h / 2) rad = h / 2;
+    if (rad < 0) rad = 0;
+    p_SDL_SetRenderDrawColor(g_renderer, r, g, b, a);
+    if (rad == 0) {
+        SDL_Rect rect = { x, y, w, h };
+        p_SDL_RenderFillRect(g_renderer, &rect);
+        return make_null();
+    }
+    /* Center body (between top and bottom rounded bands) */
+    SDL_Rect center = { x, y + rad, w, h - 2 * rad };
+    p_SDL_RenderFillRect(g_renderer, &center);
+    /* Top and bottom bands with rounded corners via scanlines */
+    for (int dy = 0; dy < rad; dy++) {
+        int dx = (int)sqrt((double)(rad * rad - (rad - dy) * (rad - dy)));
+        /* Top band */
+        SDL_Rect top_row = { x + rad - dx, y + dy, w - 2 * (rad - dx), 1 };
+        p_SDL_RenderFillRect(g_renderer, &top_row);
+        /* Bottom band */
+        SDL_Rect bot_row = { x + rad - dx, y + h - 1 - dy, w - 2 * (rad - dx), 1 };
+        p_SDL_RenderFillRect(g_renderer, &bot_row);
+    }
+    return make_null();
+}
+
+/* gfx_clip of [x, y, w, h] — set render clip rectangle.
+ * gfx_clip of null — clear clip rectangle. */
+Value* builtin_gfx_clip(Value *arg) {
+    if (!g_renderer || !p_SDL_RenderSetClipRect) return make_null();
+    if (!arg || arg->type == VAL_NULL) {
+        p_SDL_RenderSetClipRect(g_renderer, NULL);
+        return make_null();
+    }
+    if (arg->type != VAL_LIST || arg->data.list.count < 4) return make_null();
+    SDL_Rect clip;
+    clip.x = (int)arg->data.list.items[0]->data.num;
+    clip.y = (int)arg->data.list.items[1]->data.num;
+    clip.w = (int)arg->data.list.items[2]->data.num;
+    clip.h = (int)arg->data.list.items[3]->data.num;
+    p_SDL_RenderSetClipRect(g_renderer, &clip);
+    return make_null();
+}
+
 /* gfx_present of null — flip buffer to screen */
 Value* builtin_gfx_present(Value *arg) {
     (void)arg;
@@ -254,11 +338,17 @@ Value* builtin_gfx_poll(Value *arg) {
             dict_set(d, "type", make_str("keydown"));
             dict_set(d, "key", make_str(scancode_name(ev.key.keysym.scancode)));
             dict_set(d, "scancode", make_num(ev.key.keysym.scancode));
+            dict_set(d, "shift", make_num((ev.key.keysym.mod & 0x03) ? 1 : 0));
+            dict_set(d, "ctrl", make_num((ev.key.keysym.mod & 0xC0) ? 1 : 0));
+            dict_set(d, "alt", make_num((ev.key.keysym.mod & 0x300) ? 1 : 0));
             break;
         case MY_SDL_KEYUP:
             dict_set(d, "type", make_str("keyup"));
             dict_set(d, "key", make_str(scancode_name(ev.key.keysym.scancode)));
             dict_set(d, "scancode", make_num(ev.key.keysym.scancode));
+            dict_set(d, "shift", make_num((ev.key.keysym.mod & 0x03) ? 1 : 0));
+            dict_set(d, "ctrl", make_num((ev.key.keysym.mod & 0xC0) ? 1 : 0));
+            dict_set(d, "alt", make_num((ev.key.keysym.mod & 0x300) ? 1 : 0));
             break;
         case MY_SDL_MOUSEMOTION:
             dict_set(d, "type", make_str("mousemove"));
@@ -276,6 +366,11 @@ Value* builtin_gfx_poll(Value *arg) {
             dict_set(d, "button", make_num(ev.button.button));
             dict_set(d, "x", make_num(ev.button.x));
             dict_set(d, "y", make_num(ev.button.y));
+            break;
+        case MY_SDL_MOUSEWHEEL:
+            dict_set(d, "type", make_str("wheel"));
+            dict_set(d, "x", make_num(ev.wheel.x));
+            dict_set(d, "y", make_num(ev.wheel.y));
             break;
         default:
             return make_null();
@@ -446,6 +541,8 @@ void register_gfx_builtins(Env *env) {
     env_set_local(env, "gfx_line", make_builtin(builtin_gfx_line));
     env_set_local(env, "gfx_point", make_builtin(builtin_gfx_point));
     env_set_local(env, "gfx_circle", make_builtin(builtin_gfx_circle));
+    env_set_local(env, "gfx_rrect", make_builtin(builtin_gfx_rrect));
+    env_set_local(env, "gfx_clip", make_builtin(builtin_gfx_clip));
     env_set_local(env, "gfx_present", make_builtin(builtin_gfx_present));
     env_set_local(env, "gfx_poll", make_builtin(builtin_gfx_poll));
     env_set_local(env, "gfx_ticks", make_builtin(builtin_gfx_ticks));

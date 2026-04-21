@@ -25,4 +25,41 @@ assert_eq of [app.config.debug, 1, "nested dot-assign"]
 d.greeting is f"hello {d.name}"
 assert_eq of [d.greeting, "hello new", "f-string dot-assign"]
 
+# Index-then-dot assignment: list[i].field is value
+items is [{"x": 1}, {"x": 2}, {"x": 3}]
+items[0].x is 10
+assert_eq of [items[0].x, 10, "index-dot-assign basic"]
+items[2].x is 30
+assert_eq of [items[2].x, 30, "index-dot-assign last element"]
+
+# Dot-index-dot chain: obj.list[i].field is value
+data is {"points": [{"x": 0, "y": 0}, {"x": 0, "y": 0}]}
+data.points[0].x is 5
+data.points[1].y is 9
+assert_eq of [data.points[0].x, 5, "dot-index-dot assign x"]
+assert_eq of [data.points[1].y, 9, "dot-index-dot assign y"]
+
+# Double index then dot: grid[r][c].field is value
+grid is [[{"v": 0}]]
+grid[0][0].v is 42
+assert_eq of [grid[0][0].v, 42, "double-index-dot assign"]
+
+# Index-dot assign with expression on RHS
+items[1].x is items[0].x + items[2].x
+assert_eq of [items[1].x, 40, "index-dot-assign with expr RHS"]
+
+# Index assignment: list[i] is value
+nums is [10, 20, 30]
+nums[1] is 99
+assert_eq of [nums[1], 99, "single index assign"]
+
+# Double index assignment: grid[r][c] is value
+matrix is [[1, 2], [3, 4]]
+matrix[0][1] is 77
+assert_eq of [matrix[0][1], 77, "double index assign"]
+
+# Index assign with expression RHS
+matrix[1][0] is matrix[0][0] + matrix[0][1]
+assert_eq of [matrix[1][0], 78, "index assign with expr"]
+
 test_summary of null
