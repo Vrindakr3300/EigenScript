@@ -1,0 +1,392 @@
+# ============================================================
+# Physics Library Tests — validate every function against known values
+# ============================================================
+# All expected values verified against standard physics references.
+# Tolerances chosen to accommodate floating-point arithmetic.
+
+load_file of "lib/test.eigs"
+load_file of "lib/physics.eigs"
+
+print of "=== Physics Library Tests ==="
+
+# ============================================================
+# Constants
+# ============================================================
+
+print of "--- Constants ---"
+assert_near of [SPEED_OF_LIGHT, 299792458, 1, "speed of light"]
+assert_near of [PLANCK, 6.62607015e-34, 1e-40, "Planck constant"]
+assert_near of [HBAR, 1.054571817e-34, 1e-40, "reduced Planck"]
+assert_near of [BOLTZMANN, 1.380649e-23, 1e-29, "Boltzmann constant"]
+assert_near of [AVOGADRO, 6.02214076e23, 1e17, "Avogadro number"]
+assert_near of [GRAVITATIONAL, 6.67430e-11, 1e-15, "gravitational constant G"]
+assert_near of [ELECTRON_MASS, 9.1093837015e-31, 1e-37, "electron mass"]
+assert_near of [PROTON_MASS, 1.67262192369e-27, 1e-33, "proton mass"]
+assert_near of [ELEMENTARY_CHARGE, 1.602176634e-19, 1e-25, "elementary charge"]
+assert_near of [VACUUM_PERMITTIVITY, 8.8541878128e-12, 1e-18, "vacuum permittivity"]
+assert_near of [VACUUM_PERMEABILITY, 1.25663706212e-6, 1e-12, "vacuum permeability"]
+assert_near of [STEFAN_BOLTZMANN, 5.670374419e-8, 1e-14, "Stefan-Boltzmann"]
+assert_near of [GAS_CONSTANT, 8.314462618, 1e-6, "gas constant"]
+assert_near of [STANDARD_GRAVITY, 9.80665, 0.00001, "standard gravity"]
+
+# ============================================================
+# Kinematics (1D)
+# ============================================================
+
+print of "--- Kinematics 1D ---"
+
+# Free fall from rest for 4.52 s: x = 0 + 0.5*9.8*4.52² ≈ 100.1 m
+assert_near of [displacement of [0, 9.8, 4.52], 100.1, 1, "free fall 100m"]
+
+# Velocity after 4.52 s of free fall: v = 0 + 9.8*4.52 = 44.296 m/s
+assert_near of [final_velocity of [0, 9.8, 4.52], 44.296, 0.01, "free fall velocity"]
+
+# Car accelerates from 20 m/s at 3 m/s² for 5s: x = 20*5 + 0.5*3*25 = 137.5 m
+assert_near of [displacement of [20, 3, 5], 137.5, 0.01, "car displacement"]
+
+# v² = v₀² + 2ax: v₀ = 10, a = 2, x = 50 → v = √(100+200) = √300 ≈ 17.32
+assert_near of [velocity_from_displacement of [10, 2, 50], 17.3205, 0.01, "v from displacement"]
+
+# Time of flight: x = 100, v₀ = 0, a = 9.8 → t = √(2*100/9.8) ≈ 4.5175
+assert_near of [time_of_flight of [0, 9.8, 100], 4.5175, 0.01, "time of flight free fall"]
+
+# Time of flight: v₀ = 20, a = 0 (constant velocity), x = 100 → t = 5
+assert_near of [time_of_flight of [20, 0, 100], 5.0, 0.001, "time at constant velocity"]
+
+# ============================================================
+# Kinematics (2D — Projectile Motion)
+# ============================================================
+
+print of "--- Projectile Motion ---"
+
+# 45° at 20 m/s: range = 20²*sin(90°)/9.80665 = 400/9.80665 ≈ 40.77 m
+assert_near of [projectile_range of [20, 0.7853981634], 40.77, 0.5, "projectile range 45deg"]
+
+# Max height at 45°, 20 m/s: H = 400*sin²(45°)/(2*9.80665) = 200/(2*9.80665) ≈ 10.197 m
+assert_near of [projectile_max_height of [20, 0.7853981634], 10.197, 0.5, "projectile height 45deg"]
+
+# Total flight time: T = 2*20*sin(45°)/9.80665 ≈ 2.883 s
+assert_near of [projectile_time of [20, 0.7853981634], 2.883, 0.05, "projectile time 45deg"]
+
+# Position at t=1s, v₀=20 m/s, θ=45°: x = 20*cos(45°)*1 ≈ 14.14, y = 20*sin(45°)*1 - 0.5*g*1 ≈ 9.24
+pos is projectile_position of [20, 0.7853981634, 1.0]
+assert_near of [pos[0], 14.14, 0.1, "projectile x at t=1"]
+assert_near of [pos[1], 9.24, 0.2, "projectile y at t=1"]
+
+# 30° launch at 50 m/s: R = 2500*sin(60°)/g ≈ 220.8 m
+assert_near of [projectile_range of [50, 0.5236], 220.8, 1, "projectile range 30deg 50m/s"]
+
+# ============================================================
+# Forces & Newton's Laws
+# ============================================================
+
+print of "--- Forces ---"
+
+# Earth-Moon gravitational force: F = G*M_earth*M_moon/r²
+# F = 6.6743e-11 * 5.972e24 * 7.342e22 / (384400000)² ≈ 1.98e20 N
+F_em is gravitational_force of [5.972e24, 7.342e22, 384400000]
+assert_near of [F_em, 1.98e20, 1e18, "Earth-Moon gravitational force"]
+
+# Hooke's law: k=200 N/m, x=0.05m → F = -200*0.05 = -10 N
+assert_near of [spring_force of [200, 0.05], -10.0, 0.001, "spring force"]
+
+# Friction: μ=0.3, N=50 → F = 15 N
+assert_near of [friction_force of [0.3, 50], 15.0, 0.001, "friction force"]
+
+# Centripetal force: 1500 kg car at 20 m/s in 50m radius → F = 1500*400/50 = 12000 N
+assert_near of [centripetal_force of [1500, 20, 50], 12000, 0.1, "centripetal force car"]
+
+# Centripetal acceleration: v=20, r=50 → a = 400/50 = 8 m/s²
+assert_near of [centripetal_acceleration of [20, 50], 8.0, 0.001, "centripetal accel"]
+
+# Momentum: 5 kg at 3 m/s → p = 15 kg·m/s
+assert_near of [momentum of [5, 3], 15.0, 0.001, "momentum"]
+
+# Impulse: 100 N for 0.02 s → J = 2 N·s
+assert_near of [impulse of [100, 0.02], 2.0, 0.001, "impulse"]
+
+# Kinetic energy: 1 kg at 10 m/s → KE = 0.5*1*100 = 50 J
+assert_near of [kinetic_energy of [1, 10], 50.0, 0.001, "KE 1kg 10m/s"]
+
+# Gravitational PE: 2 kg at 5 m → PE = 2*9.80665*5 = 98.0665 J
+assert_near of [potential_energy_gravity of [2, 5], 98.0665, 0.01, "gravity PE"]
+
+# Spring PE: k=400, x=0.1 → PE = 0.5*400*0.01 = 2 J
+assert_near of [potential_energy_spring of [400, 0.1], 2.0, 0.001, "spring PE"]
+
+# Work: F=50N, d=10m, θ=60° → W = 50*10*cos(60°) = 250 J
+assert_near of [work of [50, 10, 1.0472], 250, 1, "work at 60deg"]
+
+# Power from work: 500 J in 10 s → P = 50 W
+assert_near of [power_from_work of [500, 10], 50.0, 0.001, "power from work"]
+
+# Power from force: 200 N at 5 m/s → P = 1000 W
+assert_near of [power_from_force of [200, 5], 1000.0, 0.001, "power from force"]
+
+# ============================================================
+# Waves & Oscillations
+# ============================================================
+
+print of "--- Waves ---"
+
+# Speed of sound: middle C (261.63 Hz) with λ ≈ 1.31 m → v ≈ 342.7 m/s
+assert_near of [wave_speed of [261.63, 1.31], 342.7, 1, "speed of sound middle C"]
+
+# Period of 440 Hz (A4): T = 1/440 ≈ 0.002273 s
+assert_near of [period of 440, 0.002273, 0.00001, "period of A4"]
+
+# Frequency from period 0.01 s: f = 100 Hz
+assert_near of [frequency of 0.01, 100.0, 0.001, "frequency from period"]
+
+# Angular frequency: 60 Hz → ω = 2π*60 ≈ 376.99 rad/s
+assert_near of [angular_frequency of 60, 376.99, 0.1, "angular frequency 60Hz"]
+
+# Wave number: λ=0.5m → k = 2π/0.5 ≈ 12.566 1/m
+assert_near of [wave_number of 0.5, 12.566, 0.01, "wave number"]
+
+# SHM: A=2, ω=π, t=0.5, φ=0 → x = 2*cos(π*0.5) = 2*cos(π/2) ≈ 0
+assert_near of [simple_harmonic_position of [2, 3.14159265, 0.5, 0], 0, 0.01, "SHM at quarter period"]
+
+# Pendulum: L=1.0 m → T = 2π√(1/9.80665) ≈ 2.00607 s
+assert_near of [pendulum_period of 1.0, 2.006, 0.01, "1m pendulum period"]
+
+# Spring-mass: m=0.5 kg, k=200 N/m → T = 2π√(0.5/200) = 2π*0.05 ≈ 0.3142 s
+assert_near of [spring_period of [0.5, 200], 0.3142, 0.001, "spring period"]
+
+# Doppler: f₀=440, source moving away at 30 m/s, observer stationary
+# f' = 440*(343+0)/(343+30) = 440*343/373 ≈ 404.5 Hz
+assert_near of [doppler_frequency of [440, 30, 0], 404.5, 0.5, "Doppler source away"]
+
+# Standing wave: 1m pipe open both ends, 2nd harmonic: f₂ = 2*343/(2*1) = 343 Hz
+assert_near of [standing_wave_harmonics of [1, 2, "open"], 343, 1, "2nd harmonic open pipe"]
+
+# Standing wave: 1m pipe closed one end, 3rd harmonic: f₃ = 3*343/(4*1) = 257.25 Hz
+assert_near of [standing_wave_harmonics of [1, 3, "closed"], 257.25, 1, "3rd harmonic closed pipe"]
+
+# ============================================================
+# Thermodynamics
+# ============================================================
+
+print of "--- Thermodynamics ---"
+
+# Ideal gas at STP: 1 mol at 273.15 K in 22.41 L → P ≈ 101325 Pa
+P_stp is ideal_gas_pressure of [1, 273.15, 0.02241]
+assert_near of [P_stp, 101325, 500, "ideal gas STP pressure"]
+
+# Ideal gas volume: 1 mol, 273.15 K, 101325 Pa → V ≈ 0.02241 m³
+assert_near of [ideal_gas_volume of [1, 273.15, 101325], 0.02241, 0.0001, "ideal gas STP volume"]
+
+# Ideal gas temperature: 101325 Pa, 0.02241 m³, 1 mol → T ≈ 273.15 K
+assert_near of [ideal_gas_temperature of [101325, 0.02241, 1], 273.15, 0.5, "ideal gas STP temp"]
+
+# Heat transfer: 1 kg water, c=4186 J/(kg·K), ΔT=10 K → Q = 41860 J
+assert_near of [heat_transfer of [1, 4186, 10], 41860, 1, "heat water 10K"]
+
+# Thermal expansion: L₀=1m, α=12e-6 (steel), ΔT=100 K → ΔL = 0.0012 m
+assert_near of [thermal_expansion of [1, 12e-6, 100], 0.0012, 0.00001, "steel thermal expansion"]
+
+# Carnot efficiency: T_hot=500K, T_cold=300K → η = 1 - 300/500 = 0.4
+assert_near of [carnot_efficiency of [500, 300], 0.4, 0.001, "Carnot 500K/300K"]
+
+# Entropy change: Q=1000 J at T=400 K → ΔS = 2.5 J/K
+assert_near of [entropy_change of [1000, 400], 2.5, 0.001, "entropy change"]
+
+# Stefan-Boltzmann: A=1 m², T=5778 K (Sun surface) → P ≈ 6.32e7 W/m²
+P_sun is stefan_boltzmann_power of [1, 5778]
+assert_near of [P_sun, 6.32e7, 1e5, "Stefan-Boltzmann Sun surface"]
+
+# Wien's law: T=5778 K → λ_max ≈ 501 nm = 5.01e-7 m
+assert_near of [wien_peak_wavelength of 5778, 5.014e-7, 1e-9, "Wien peak Sun"]
+
+# ============================================================
+# Electromagnetism
+# ============================================================
+
+print of "--- Electromagnetism ---"
+
+# Coulomb's law: two 1 μC charges at 10 cm → F = k*1e-12/0.01 ≈ 0.8988 N
+F_c is coulomb_force of [1e-6, 1e-6, 0.1]
+assert_near of [F_c, 0.8988, 0.01, "Coulomb 1uC at 10cm"]
+
+# Electric field: q=1 nC at r=1 m → E = k*1e-9/1 ≈ 8.988 N/C
+assert_near of [electric_field of [1e-9, 1], 8.988, 0.01, "E field 1nC at 1m"]
+
+# Electric potential: q=1 nC at r=0.5 m → V = k*1e-9/0.5 ≈ 17.975 V
+assert_near of [electric_potential of [1e-9, 0.5], 17.975, 0.1, "potential 1nC at 0.5m"]
+
+# Parallel plate capacitor: A=0.01 m², d=0.001 m → C = ε₀*0.01/0.001 ≈ 8.854e-11 F
+assert_near of [capacitance_parallel_plate of [0.01, 0.001], 8.854e-11, 1e-13, "parallel plate cap"]
+
+# Capacitor energy: C=100 μF, V=12 V → U = 0.5*1e-4*144 = 7.2e-3 J
+assert_near of [capacitor_energy of [1e-4, 12], 7.2e-3, 1e-5, "capacitor energy"]
+
+# Ohm's law: V=12, R=4 → I=3 A
+assert_near of [ohms_law_current of [12, 4], 3.0, 0.001, "Ohm I=V/R"]
+
+# Ohm's law: I=2, R=6 → V=12 V
+assert_near of [ohms_law_voltage of [2, 6], 12.0, 0.001, "Ohm V=IR"]
+
+# Resistor power: I=3A, R=4Ω → P = 9*4 = 36 W
+assert_near of [resistor_power of [3, 4], 36.0, 0.001, "resistor power"]
+
+# Series resistance: [10, 20, 30] → 60 Ω
+r_series is [10, 20, 30]
+assert_near of [series_resistance of r_series, 60.0, 0.001, "series resistance"]
+
+# Parallel resistance: [10, 10] → 5 Ω
+r_par1 is [10, 10]
+assert_near of [parallel_resistance of r_par1, 5.0, 0.001, "parallel resistance"]
+
+# Parallel resistance: [6, 12] → 4 Ω
+r_par2 is [6, 12]
+assert_near of [parallel_resistance of r_par2, 4.0, 0.001, "parallel 6 and 12 ohm"]
+
+# Magnetic force: q=1.6e-19, v=1e6, B=0.5 → F = 8e-14 N
+assert_near of [magnetic_force of [1.6e-19, 1e6, 0.5], 8e-14, 1e-16, "magnetic force electron"]
+
+# Solenoid: n=1000 turns/m, I=2 A → B = μ₀*1000*2 ≈ 2.513e-3 T
+assert_near of [solenoid_field of [1000, 2], 2.513e-3, 1e-5, "solenoid B field"]
+
+# Faraday: N=100, dΦ=0.02 Wb, dt=0.01 s → ε = -100*0.02/0.01 = -200 V
+assert_near of [induced_emf of [100, 0.02, 0.01], -200.0, 0.1, "Faraday induced emf"]
+
+# ============================================================
+# Optics
+# ============================================================
+
+print of "--- Optics ---"
+
+# Snell's law: air→glass, n₁=1, n₂=1.5, θ₁=30° (0.5236 rad)
+# sin(θ₂) = 1*sin(30°)/1.5 = 0.5/1.5 = 0.333 → θ₂ ≈ 0.3398 rad (19.47°)
+assert_near of [snells_law_angle of [1, 1.5, 0.5236], 0.3398, 0.01, "Snell air to glass"]
+
+# Critical angle: glass→air, n₁=1.5, n₂=1.0 → θc = arcsin(1/1.5) ≈ 0.7297 rad (41.81°)
+assert_near of [critical_angle of [1.5, 1.0], 0.7297, 0.01, "critical angle glass-air"]
+
+# Thin lens: f=0.2 m, do=0.3 m → di = 0.2*0.3/(0.3-0.2) = 0.06/0.1 = 0.6 m
+assert_near of [thin_lens of [0.2, 0.3], 0.6, 0.001, "thin lens convergent"]
+
+# Magnification: di=0.6, do=0.3 → M = -0.6/0.3 = -2
+assert_near of [magnification of [0.6, 0.3], -2.0, 0.001, "magnification"]
+
+# Mirror equation: same as thin lens
+assert_near of [mirror_equation of [0.15, 0.3], 0.3, 0.001, "concave mirror"]
+
+# Photon energy: visible light f ≈ 5.996e14 Hz (500 nm) → E = h*f ≈ 3.973e-19 J
+E_photon is photon_energy of 5.996e14
+assert_near of [E_photon, 3.973e-19, 1e-21, "500nm photon energy"]
+
+# Photon wavelength: E = 3.973e-19 J → λ = hc/E ≈ 500 nm
+assert_near of [photon_wavelength of 3.973e-19, 5.0e-7, 1e-9, "wavelength from energy"]
+
+# de Broglie: electron at 1e6 m/s → λ = h/(me*v) ≈ 7.27e-10 m
+assert_near of [de_broglie_wavelength of [9.109e-31, 1e6], 7.274e-10, 1e-12, "de Broglie electron"]
+
+# ============================================================
+# Special Relativity
+# ============================================================
+
+print of "--- Relativity ---"
+
+# Lorentz factor at 0.8c: γ = 1/√(1-0.64) = 1/√0.36 = 1/0.6 ≈ 1.6667
+v_08c is 0.8 * SPEED_OF_LIGHT
+assert_near of [lorentz_factor of v_08c, 1.6667, 0.01, "gamma at 0.8c"]
+
+# Lorentz factor at 0.99c: γ = 1/√(1-0.9801) = 1/√0.0199 ≈ 7.089
+v_99c is 0.99 * SPEED_OF_LIGHT
+assert_near of [lorentz_factor of v_99c, 7.089, 0.01, "gamma at 0.99c"]
+
+# Time dilation: t₀=1 s at 0.8c → t = 1.6667 s
+assert_near of [time_dilation of [1, v_08c], 1.6667, 0.01, "time dilation 0.8c"]
+
+# Length contraction: L₀=100 m at 0.8c → L = 100/1.6667 = 60 m
+assert_near of [length_contraction of [100, v_08c], 60.0, 0.5, "length contraction 0.8c"]
+
+# Relativistic momentum: 1 kg at 0.8c → p = γ*m*v ≈ 1.6667*1*0.8c ≈ 4.0e8
+p_rel is relativistic_momentum of [1, v_08c]
+assert_near of [p_rel, 4.0e8, 1e6, "relativistic momentum 1kg 0.8c"]
+
+# Relativistic energy: 1 kg at 0.8c → E = γ*mc² ≈ 1.6667 * 8.988e16 ≈ 1.498e17 J
+E_rel is relativistic_energy of [1, v_08c]
+assert_near of [E_rel, 1.498e17, 1e15, "relativistic energy 1kg 0.8c"]
+
+# Rest energy: E = mc² for 1 kg → 8.988e16 J
+assert_near of [rest_energy of 1, 8.988e16, 1e14, "E=mc2 for 1kg"]
+
+# Mass-energy: E = 9e16 J → m ≈ 1.001 kg
+assert_near of [mass_energy_equivalence of 9e16, 1.001, 0.01, "mass from energy"]
+
+# ============================================================
+# Nuclear & Quantum
+# ============================================================
+
+print of "--- Nuclear & Quantum ---"
+
+# Half-life: C-14, t½=5730 yr, after one half-life: N = 1000*0.5 = 500
+assert_near of [half_life_remaining of [1000, 5730, 5730], 500, 0.5, "C-14 one half-life"]
+
+# After two half-lives: N = 1000*0.25 = 250
+assert_near of [half_life_remaining of [1000, 11460, 5730], 250, 0.5, "C-14 two half-lives"]
+
+# After 3 half-lives: N = 1000*0.125 = 125
+assert_near of [half_life_remaining of [1000, 17190, 5730], 125, 0.5, "C-14 three half-lives"]
+
+# Decay constant: t½=5730 yr → λ = ln(2)/5730 ≈ 1.2097e-4 /yr
+assert_near of [decay_constant of 5730, 1.2097e-4, 1e-7, "C-14 decay constant"]
+
+# Binding energy per nucleon: Fe-56, BE ≈ 492 MeV, A=56 → 8.786 MeV/nucleon
+assert_near of [binding_energy_per_nucleon of [492, 56], 8.786, 0.01, "Fe-56 BE per nucleon"]
+
+# Bohr radius: n=1 → r₁ = a₀ ≈ 5.292e-11 m
+assert_near of [bohr_radius_n of 1, 5.292e-11, 1e-13, "Bohr radius n=1"]
+
+# Bohr radius: n=2 → r₂ = 4*a₀ ≈ 2.117e-10 m
+assert_near of [bohr_radius_n of 2, 2.117e-10, 1e-12, "Bohr radius n=2"]
+
+# Bohr energy: n=1 → E₁ = -13.6 eV
+assert_near of [bohr_energy_n of 1, -13.6, 0.01, "Bohr energy n=1"]
+
+# Bohr energy: n=2 → E₂ = -13.6/4 = -3.4 eV
+assert_near of [bohr_energy_n of 2, -3.4, 0.01, "Bohr energy n=2"]
+
+# Bohr energy: n=3 → E₃ = -13.6/9 ≈ -1.511 eV
+assert_near of [bohr_energy_n of 3, -1.511, 0.01, "Bohr energy n=3"]
+
+# Hydrogen Lyman-alpha: n₁=1→n₂=2, 1/λ = R*(1-1/4) = R*3/4
+# λ = 4/(3*R) = 4/(3*1.0974e7) ≈ 1.215e-7 m = 121.5 nm
+assert_near of [hydrogen_wavelength of [1, 2], 1.215e-7, 1e-9, "Lyman alpha"]
+
+# Hydrogen Balmer-alpha: n₁=2→n₂=3, 1/λ = R*(1/4-1/9) = R*5/36
+# λ = 36/(5*R) ≈ 6.563e-7 m = 656.3 nm
+assert_near of [hydrogen_wavelength of [2, 3], 6.563e-7, 1e-9, "Balmer alpha H-alpha"]
+
+# ============================================================
+# Fluid Mechanics
+# ============================================================
+
+print of "--- Fluid Mechanics ---"
+
+# Water pressure at 10 m depth: P = ρgh = 1000*9.80665*10 = 98066.5 Pa
+assert_near of [pressure_depth of [1000, 10], 98066.5, 10, "water 10m depth"]
+
+# Buoyant force: ρ_water=1000, V=0.001 m³ → F = 1000*9.80665*0.001 = 9.80665 N
+assert_near of [buoyant_force of [1000, 0.001], 9.80665, 0.01, "buoyancy 1 litre"]
+
+# Bernoulli velocity: P₁-P₂=500 Pa, ρ=1.225 (air) → v = √(2*500/1.225) ≈ 28.57 m/s
+assert_near of [bernoulli_velocity of [500, 0, 1.225], 28.57, 0.1, "Bernoulli air velocity"]
+
+# Flow rate: A=0.01 m², v=3 m/s → Q = 0.03 m³/s
+assert_near of [flow_rate of [0.01, 3], 0.03, 0.001, "flow rate"]
+
+# Reynolds number: water (ρ=1000, μ=0.001), v=1 m/s, L=0.05 m → Re = 50000
+assert_near of [reynolds_number of [1000, 1, 0.05, 0.001], 50000, 1, "Reynolds water in pipe"]
+
+# Stokes drag: μ=0.001 (water), r=0.001 m, v=0.01 m/s → F = 6π*0.001*0.001*0.01 ≈ 1.885e-7 N
+assert_near of [viscous_drag of [0.001, 0.001, 0.01], 1.885e-7, 1e-9, "Stokes drag sphere"]
+
+# ============================================================
+# Summary
+# ============================================================
+
+print of ""
+test_summary of null

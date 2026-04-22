@@ -1,0 +1,215 @@
+# ============================================================
+# Biology Library — population dynamics, genetics, molecular
+#   biology, enzyme kinetics, and ecology
+# ============================================================
+#
+# How to use:
+#   load_file of "lib/biology.eigs"
+#
+#   exponential_growth of [100, 0.05, 10]       # ≈ 164.87
+#   hardy_weinberg of 0.6                        # [0.36, 0.48, 0.16]
+#   complement of "ATGCTA"                       # "TACGAT"
+#   transcribe of "ATGCTA"                       # "AUGCUA"
+#   translate of "AUGUUUUAA"                     # ["Met", "Phe"]
+#   shannon_diversity of [0.5, 0.3, 0.2]         # ≈ 1.03
+#
+# All standard biochemistry conventions. Temperatures in Kelvin
+# where applicable.
+
+# ============================================================
+# Population Dynamics
+# ============================================================
+
+# exponential_growth of [N0, r, t] -> N = N0 * e^(rt)
+define exponential_growth(N0, r, t) as:
+    return N0 * (exp of (r * t))
+
+# logistic_growth of [N0, K, r, t] -> N = K / (1 + ((K-N0)/N0)*e^(-rt))
+define logistic_growth(N0, K, r, t) as:
+    return K / (1 + ((K - N0) / N0) * (exp of (0 - r * t)))
+
+# doubling_time of r -> t = ln(2)/r
+define doubling_time(r) as:
+    return (log of 2) / r
+
+# carrying_capacity_estimate of [N, dN, r] -> K = N / (1 - (1/r)*(dN/N))
+define carrying_capacity_estimate(N, dN, r) as:
+    return N / (1 - (1 / r) * (dN / N))
+
+# ============================================================
+# Genetics — Hardy-Weinberg & Punnett Square
+# ============================================================
+
+# hardy_weinberg of p -> [p^2, 2pq, q^2]
+# Given allele frequency p, returns genotype frequencies
+define hardy_weinberg(p) as:
+    q is 1 - p
+    return [p * p, 2 * p * q, q * q]
+
+# punnett_square of [parent1, parent2] -> dict of genotype frequencies
+# parent1 and parent2 are 2-character strings like "Aa", "Bb"
+define punnett_square(parent1, parent2) as:
+    a1 is char_at of [parent1, 0]
+    a2 is char_at of [parent1, 1]
+    b1 is char_at of [parent2, 0]
+    b2 is char_at of [parent2, 1]
+    alleles is [a1 + b1, a1 + b2, a2 + b1, a2 + b2]
+    result is {}
+    for i in range of 4:
+        g is alleles[i]
+        if (has_key of [result, g]) == 1:
+            cur is result[g]
+            dict_set of [result, g, cur + 0.25]
+        else:
+            dict_set of [result, g, 0.25]
+    return result
+
+# ============================================================
+# DNA / RNA
+# ============================================================
+
+# complement of dna -> DNA complement (A<->T, G<->C)
+define complement(dna) as:
+    result is ""
+    for i in range of (len of dna):
+        ch is char_at of [dna, i]
+        if ch == "A":
+            result is result + "T"
+        else:
+            if ch == "T":
+                result is result + "A"
+            else:
+                if ch == "G":
+                    result is result + "C"
+                else:
+                    if ch == "C":
+                        result is result + "G"
+                    else:
+                        result is result + ch
+    return result
+
+# transcribe of dna -> RNA (T -> U)
+define transcribe(dna) as:
+    result is ""
+    for i in range of (len of dna):
+        ch is char_at of [dna, i]
+        if ch == "T":
+            result is result + "U"
+        else:
+            result is result + ch
+    return result
+
+# gc_content of sequence -> fraction of G+C in sequence
+define gc_content(sequence) as:
+    gc is 0
+    n is len of sequence
+    for i in range of n:
+        ch is char_at of [sequence, i]
+        if ch == "G" or ch == "C":
+            gc is gc + 1
+    return gc / n
+
+# ============================================================
+# Codon Table — complete standard genetic code
+# ============================================================
+
+_codons is {
+    "UUU": "Phe", "UUC": "Phe", "UUA": "Leu", "UUG": "Leu",
+    "CUU": "Leu", "CUC": "Leu", "CUA": "Leu", "CUG": "Leu",
+    "AUU": "Ile", "AUC": "Ile", "AUA": "Ile", "AUG": "Met",
+    "GUU": "Val", "GUC": "Val", "GUA": "Val", "GUG": "Val",
+    "UCU": "Ser", "UCC": "Ser", "UCA": "Ser", "UCG": "Ser",
+    "CCU": "Pro", "CCC": "Pro", "CCA": "Pro", "CCG": "Pro",
+    "ACU": "Thr", "ACC": "Thr", "ACA": "Thr", "ACG": "Thr",
+    "GCU": "Ala", "GCC": "Ala", "GCA": "Ala", "GCG": "Ala",
+    "UAU": "Tyr", "UAC": "Tyr", "UAA": "Stop", "UAG": "Stop",
+    "CAU": "His", "CAC": "His", "CAA": "Gln", "CAG": "Gln",
+    "AAU": "Asn", "AAC": "Asn", "AAA": "Lys", "AAG": "Lys",
+    "GAU": "Asp", "GAC": "Asp", "GAA": "Glu", "GAG": "Glu",
+    "UGU": "Cys", "UGC": "Cys", "UGA": "Stop", "UGG": "Trp",
+    "CGU": "Arg", "CGC": "Arg", "CGA": "Arg", "CGG": "Arg",
+    "AGU": "Ser", "AGC": "Ser", "AGA": "Arg", "AGG": "Arg",
+    "GGU": "Gly", "GGC": "Gly", "GGA": "Gly", "GGG": "Gly"
+}
+
+# translate of rna -> amino acid sequence (list of strings)
+# Starts at first AUG, stops at stop codon
+define translate(rna) as:
+    n is len of rna
+    # Find start codon AUG
+    start is 0 - 1
+    i is 0
+    loop while i <= n - 3:
+        codon is substr of [rna, i, 3]
+        if codon == "AUG":
+            start is i
+            i is n
+        else:
+            i is i + 1
+    if start < 0:
+        return []
+    # Translate from start
+    result is []
+    j is start
+    loop while j <= n - 3:
+        codon is substr of [rna, j, 3]
+        aa is _codons[codon]
+        if aa == "Stop":
+            return result
+        append of [result, aa]
+        j is j + 3
+    return result
+
+# ============================================================
+# Enzyme Kinetics
+# ============================================================
+
+# michaelis_menten of [Vmax, Km, S] -> v = Vmax*[S]/(Km+[S])
+define michaelis_menten(Vmax, Km, S) as:
+    return Vmax * S / (Km + S)
+
+# lineweaver_burk of [Vmax, Km, S] -> 1/v = (Km/Vmax)*(1/[S]) + 1/Vmax
+define lineweaver_burk(Vmax, Km, S) as:
+    return (Km / Vmax) * (1 / S) + 1 / Vmax
+
+# turnover_number of [Vmax, Et] -> kcat = Vmax/[Et]
+define turnover_number(Vmax, Et) as:
+    return Vmax / Et
+
+# catalytic_efficiency of [kcat, Km] -> kcat/Km
+define catalytic_efficiency(kcat, Km) as:
+    return kcat / Km
+
+# ============================================================
+# Ecology
+# ============================================================
+
+# shannon_diversity of proportions -> H = -sum(pi * ln(pi))
+define shannon_diversity(proportions) as:
+    H is 0
+    for i in range of (len of proportions):
+        p is proportions[i]
+        if p > 0:
+            H is H - p * (log of p)
+    return H
+
+# simpson_diversity of proportions -> D = 1 - sum(pi^2)
+define simpson_diversity(proportions) as:
+    sum_sq is 0
+    for i in range of (len of proportions):
+        p is proportions[i]
+        sum_sq is sum_sq + p * p
+    return 1 - sum_sq
+
+# species_richness of species_list -> count of unique species
+define species_richness(species_list) as:
+    unique is []
+    for i in range of (len of species_list):
+        found is 0
+        for j in range of (len of unique):
+            if unique[j] == species_list[i]:
+                found is 1
+                j is len of unique
+        if found == 0:
+            append of [unique, species_list[i]]
+    return len of unique

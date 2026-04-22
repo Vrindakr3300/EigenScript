@@ -1,0 +1,202 @@
+# ============================================================
+# Biology Library Tests — validate against known values
+# ============================================================
+# Expected values sourced from standard biology/biochemistry
+# references. Tolerances accommodate floating-point arithmetic.
+
+load_file of "lib/test.eigs"
+load_file of "lib/biology.eigs"
+
+print of "=== Biology Library Tests ==="
+
+# ============================================================
+# Population Dynamics
+# ============================================================
+
+print of "--- Population Dynamics ---"
+
+# Exponential growth: N0=100, r=0.05, t=10 → N = 100*e^0.5 ≈ 164.87
+assert_near of [exponential_growth of [100, 0.05, 10], 164.87, 0.1, "exp growth"]
+
+# Logistic growth: N0=10, K=1000, r=0.5, t=0 → N=10 (initial)
+assert_near of [logistic_growth of [10, 1000, 0.5, 0], 10.0, 0.01, "logistic t=0"]
+
+# Logistic growth: N0=10, K=1000, r=0.5, t=20
+# N = 1000 / (1 + 99*e^(-10)) = 1000 / (1 + 99*4.54e-5) ≈ 1000/1.0045 ≈ 995.5
+assert_near of [logistic_growth of [10, 1000, 0.5, 20], 995.5, 1, "logistic t=20"]
+
+# E. coli doubling time: r=0.0347/min → t = ln(2)/0.0347 ≈ 19.97 min ≈ 20 min
+assert_near of [doubling_time of 0.0347, 20.0, 0.1, "E. coli doubling time"]
+
+# Doubling time: r=0.1 → t = ln(2)/0.1 ≈ 6.931
+assert_near of [doubling_time of 0.1, 6.931, 0.01, "doubling time r=0.1"]
+
+# Carrying capacity estimate: N=500, dN=50, r=0.2
+# K = 500 / (1 - (1/0.2)*(50/500)) = 500 / (1 - 5*0.1) = 500/0.5 = 1000
+assert_near of [carrying_capacity_estimate of [500, 50, 0.2], 1000, 1, "carrying capacity"]
+
+# ============================================================
+# Genetics — Hardy-Weinberg
+# ============================================================
+
+print of "--- Hardy-Weinberg ---"
+
+# p=0.6, q=0.4: p²=0.36, 2pq=0.48, q²=0.16
+hw is hardy_weinberg of 0.6
+assert_near of [hw[0], 0.36, 0.001, "HW p^2"]
+assert_near of [hw[1], 0.48, 0.001, "HW 2pq"]
+assert_near of [hw[2], 0.16, 0.001, "HW q^2"]
+
+# Frequencies must sum to 1.0
+hw_sum is hw[0] + hw[1] + hw[2]
+assert_near of [hw_sum, 1.0, 0.001, "HW sum=1"]
+
+# p=0.5: p²=0.25, 2pq=0.50, q²=0.25
+hw2 is hardy_weinberg of 0.5
+assert_near of [hw2[0], 0.25, 0.001, "HW p=0.5 p^2"]
+assert_near of [hw2[1], 0.50, 0.001, "HW p=0.5 2pq"]
+assert_near of [hw2[2], 0.25, 0.001, "HW p=0.5 q^2"]
+
+# p=1.0: all homozygous dominant
+hw3 is hardy_weinberg of 1.0
+assert_near of [hw3[0], 1.0, 0.001, "HW p=1 all dominant"]
+assert_near of [hw3[1], 0.0, 0.001, "HW p=1 no heterozygous"]
+
+# ============================================================
+# Punnett Square
+# ============================================================
+
+print of "--- Punnett Square ---"
+
+# Aa x Aa: expected AA=0.25, Aa=0.50, aA=... depends on sorting
+ps is punnett_square of ["Aa", "Aa"]
+# Should have genotypes AA, Aa, aA, aa
+# AA=0.25, Aa=0.25, aA=0.25, aa=0.25
+assert_near of [ps["AA"], 0.25, 0.001, "Punnett AA"]
+assert_near of [ps["aa"], 0.25, 0.001, "Punnett aa"]
+
+# ============================================================
+# DNA / RNA
+# ============================================================
+
+print of "--- DNA / RNA ---"
+
+# DNA complement: ATGCTA → TACGAT
+assert_eq of [complement of "ATGCTA", "TACGAT", "complement ATGCTA"]
+
+# Complement of complement = original
+assert_eq of [complement of (complement of "ATGCTA"), "ATGCTA", "double complement"]
+
+# Transcribe: ATGCTA → AUGCUA
+assert_eq of [transcribe of "ATGCTA", "AUGCUA", "transcribe ATGCTA"]
+
+# Transcribe no-T sequence stays same: AGCAGC → AGCAGC
+assert_eq of [transcribe of "AGCAGC", "AGCAGC", "transcribe no T"]
+
+# GC content: ATGCGCTA → 4G/C out of 8 = 0.5
+assert_near of [gc_content of "ATGCGCTA", 0.5, 0.001, "GC content 50%"]
+
+# GC content: AAAA → 0/4 = 0.0
+assert_near of [gc_content of "AAAA", 0.0, 0.001, "GC content 0%"]
+
+# GC content: GCGC → 4/4 = 1.0
+assert_near of [gc_content of "GCGC", 1.0, 0.001, "GC content 100%"]
+
+# ============================================================
+# Translation
+# ============================================================
+
+print of "--- Translation ---"
+
+# Simple: AUG UUU UAA → [Met, Phe] (stop codon terminates)
+t1 is translate of "AUGUUUUAA"
+assert_eq of [len of t1, 2, "translate len Met-Phe"]
+assert_eq of [t1[0], "Met", "translate first=Met"]
+assert_eq of [t1[1], "Phe", "translate second=Phe"]
+
+# AUG alone (no stop, runs off end) → [Met]
+t2 is translate of "AUG"
+assert_eq of [len of t2, 1, "translate AUG alone"]
+assert_eq of [t2[0], "Met", "translate AUG=Met"]
+
+# Longer chain: AUG GUU GCU UAG → [Met, Val, Ala]
+t3 is translate of "AUGGUUGCUUAG"
+assert_eq of [len of t3, 3, "translate Met-Val-Ala"]
+assert_eq of [t3[0], "Met", "translate MVA first"]
+assert_eq of [t3[1], "Val", "translate MVA second"]
+assert_eq of [t3[2], "Ala", "translate MVA third"]
+
+# Leading junk before AUG: UUUAUGUUUUAA → [Met, Phe]
+t4 is translate of "UUUAUGUUUUAA"
+assert_eq of [len of t4, 2, "translate with leader"]
+assert_eq of [t4[0], "Met", "translate leader first=Met"]
+
+# No start codon → empty
+t5 is translate of "UUUUUCUAA"
+assert_eq of [len of t5, 0, "translate no AUG"]
+
+# ============================================================
+# Enzyme Kinetics
+# ============================================================
+
+print of "--- Enzyme Kinetics ---"
+
+# Michaelis-Menten: Vmax=100, Km=10, S=10 → v = 100*10/(10+10) = 50
+assert_near of [michaelis_menten of [100, 10, 10], 50.0, 0.01, "MM Km=S → Vmax/2"]
+
+# Michaelis-Menten: Vmax=100, Km=10, S=100 → v = 100*100/110 ≈ 90.91
+assert_near of [michaelis_menten of [100, 10, 100], 90.91, 0.1, "MM high S"]
+
+# Michaelis-Menten: Vmax=100, Km=10, S=1 → v = 100*1/11 ≈ 9.091
+assert_near of [michaelis_menten of [100, 10, 1], 9.091, 0.01, "MM low S"]
+
+# Lineweaver-Burk: 1/v = (Km/Vmax)*(1/S) + 1/Vmax
+# Vmax=100, Km=10, S=10: 1/v = (10/100)*(1/10) + 1/100 = 0.01+0.01 = 0.02
+assert_near of [lineweaver_burk of [100, 10, 10], 0.02, 0.001, "LB 1/v"]
+
+# Turnover number: Vmax=500, Et=10 → kcat=50
+assert_near of [turnover_number of [500, 10], 50.0, 0.01, "kcat"]
+
+# Catalytic efficiency: kcat=50, Km=0.001 → 50000
+assert_near of [catalytic_efficiency of [50, 0.001], 50000, 1, "catalytic efficiency"]
+
+# ============================================================
+# Ecology
+# ============================================================
+
+print of "--- Ecology ---"
+
+# Shannon diversity: equal proportions [0.5, 0.5]
+# H = -(0.5*ln(0.5) + 0.5*ln(0.5)) = -2*0.5*(-0.6931) = 0.6931
+sh1 is [0.5, 0.5]
+assert_near of [shannon_diversity of sh1, 0.6931, 0.001, "Shannon 2 equal"]
+
+# Shannon diversity: [0.5, 0.3, 0.2]
+# H = -(0.5*ln0.5 + 0.3*ln0.3 + 0.2*ln0.2)
+# = -(0.5*(-0.6931) + 0.3*(-1.2040) + 0.2*(-1.6094))
+# = -(−0.3466 − 0.3612 − 0.3219) = 1.0297
+sh2 is [0.5, 0.3, 0.2]
+assert_near of [shannon_diversity of sh2, 1.0297, 0.001, "Shannon 3 species"]
+
+# Shannon: maximum for 4 equal species = ln(4) ≈ 1.3863
+sh3 is [0.25, 0.25, 0.25, 0.25]
+assert_near of [shannon_diversity of sh3, 1.3863, 0.001, "Shannon 4 equal = ln4"]
+
+# Simpson diversity: [0.5, 0.5] → D = 1 - (0.25+0.25) = 0.5
+sd1 is [0.5, 0.5]
+assert_near of [simpson_diversity of sd1, 0.5, 0.001, "Simpson 2 equal"]
+
+# Simpson: [0.9, 0.1] → D = 1 - (0.81+0.01) = 0.18
+sd2 is [0.9, 0.1]
+assert_near of [simpson_diversity of sd2, 0.18, 0.001, "Simpson dominated"]
+
+# Species richness
+sp is ["oak", "pine", "oak", "maple", "pine", "birch"]
+assert_eq of [species_richness of sp, 4, "species richness 4"]
+
+# ============================================================
+# Summary
+# ============================================================
+
+print of ""
+test_summary of null

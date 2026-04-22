@@ -1,0 +1,289 @@
+# ============================================================
+# Chemistry Library — periodic table, stoichiometry, gas laws,
+#   acids/bases, thermochemistry, and solution chemistry
+# ============================================================
+#
+# How to use:
+#   load_file of "lib/chemistry.eigs"
+#
+#   element of "O"                     # {"name":"Oxygen", "Z":8, ...}
+#   molecular_weight of "H2O"          # 18.015
+#   ph of 0.01                         # 2.0
+#   gibbs_free_energy of [-285800, 298, -69.9]  # ≈ -265,000 J
+#
+# All SI units unless otherwise noted. Temperatures in Kelvin.
+
+# ============================================================
+# Constants
+# ============================================================
+
+AVOGADRO is 6.02214076e23              # 1/mol
+GAS_CONSTANT is 8.314462618            # J/(mol·K)
+FARADAY_CONSTANT is 96485.33212        # C/mol
+
+# ============================================================
+# Periodic Table — first 36 elements (H through Kr)
+# ============================================================
+# Fields: name, Z (atomic number), mass (g/mol), en (Pauling
+#         electronegativity, 0 = not defined), group, period
+
+_elements is {
+    "H":  {"name": "Hydrogen",   "Z": 1,  "mass": 1.008,   "en": 2.20, "group": 1,  "period": 1},
+    "He": {"name": "Helium",     "Z": 2,  "mass": 4.003,   "en": 0,    "group": 18, "period": 1},
+    "Li": {"name": "Lithium",    "Z": 3,  "mass": 6.941,   "en": 0.98, "group": 1,  "period": 2},
+    "Be": {"name": "Beryllium",  "Z": 4,  "mass": 9.012,   "en": 1.57, "group": 2,  "period": 2},
+    "B":  {"name": "Boron",      "Z": 5,  "mass": 10.81,   "en": 2.04, "group": 13, "period": 2},
+    "C":  {"name": "Carbon",     "Z": 6,  "mass": 12.011,  "en": 2.55, "group": 14, "period": 2},
+    "N":  {"name": "Nitrogen",   "Z": 7,  "mass": 14.007,  "en": 3.04, "group": 15, "period": 2},
+    "O":  {"name": "Oxygen",     "Z": 8,  "mass": 15.999,  "en": 3.44, "group": 16, "period": 2},
+    "F":  {"name": "Fluorine",   "Z": 9,  "mass": 18.998,  "en": 3.98, "group": 17, "period": 2},
+    "Ne": {"name": "Neon",       "Z": 10, "mass": 20.180,  "en": 0,    "group": 18, "period": 2},
+    "Na": {"name": "Sodium",     "Z": 11, "mass": 22.990,  "en": 0.93, "group": 1,  "period": 3},
+    "Mg": {"name": "Magnesium",  "Z": 12, "mass": 24.305,  "en": 1.31, "group": 2,  "period": 3},
+    "Al": {"name": "Aluminium",  "Z": 13, "mass": 26.982,  "en": 1.61, "group": 13, "period": 3},
+    "Si": {"name": "Silicon",    "Z": 14, "mass": 28.086,  "en": 1.90, "group": 14, "period": 3},
+    "P":  {"name": "Phosphorus", "Z": 15, "mass": 30.974,  "en": 2.19, "group": 15, "period": 3},
+    "S":  {"name": "Sulfur",     "Z": 16, "mass": 32.06,   "en": 2.58, "group": 16, "period": 3},
+    "Cl": {"name": "Chlorine",   "Z": 17, "mass": 35.45,   "en": 3.16, "group": 17, "period": 3},
+    "Ar": {"name": "Argon",      "Z": 18, "mass": 39.948,  "en": 0,    "group": 18, "period": 3},
+    "K":  {"name": "Potassium",  "Z": 19, "mass": 39.098,  "en": 0.82, "group": 1,  "period": 4},
+    "Ca": {"name": "Calcium",    "Z": 20, "mass": 40.078,  "en": 1.00, "group": 2,  "period": 4},
+    "Sc": {"name": "Scandium",   "Z": 21, "mass": 44.956,  "en": 1.36, "group": 3,  "period": 4},
+    "Ti": {"name": "Titanium",   "Z": 22, "mass": 47.867,  "en": 1.54, "group": 4,  "period": 4},
+    "V":  {"name": "Vanadium",   "Z": 23, "mass": 50.942,  "en": 1.63, "group": 5,  "period": 4},
+    "Cr": {"name": "Chromium",   "Z": 24, "mass": 51.996,  "en": 1.66, "group": 6,  "period": 4},
+    "Mn": {"name": "Manganese",  "Z": 25, "mass": 54.938,  "en": 1.55, "group": 7,  "period": 4},
+    "Fe": {"name": "Iron",       "Z": 26, "mass": 55.845,  "en": 1.83, "group": 8,  "period": 4},
+    "Co": {"name": "Cobalt",     "Z": 27, "mass": 58.933,  "en": 1.88, "group": 9,  "period": 4},
+    "Ni": {"name": "Nickel",     "Z": 28, "mass": 58.693,  "en": 1.91, "group": 10, "period": 4},
+    "Cu": {"name": "Copper",     "Z": 29, "mass": 63.546,  "en": 1.90, "group": 11, "period": 4},
+    "Zn": {"name": "Zinc",       "Z": 30, "mass": 65.38,   "en": 1.65, "group": 12, "period": 4},
+    "Ga": {"name": "Gallium",    "Z": 31, "mass": 69.723,  "en": 1.81, "group": 13, "period": 4},
+    "Ge": {"name": "Germanium",  "Z": 32, "mass": 72.630,  "en": 2.01, "group": 14, "period": 4},
+    "As": {"name": "Arsenic",    "Z": 33, "mass": 74.922,  "en": 2.18, "group": 15, "period": 4},
+    "Se": {"name": "Selenium",   "Z": 34, "mass": 78.971,  "en": 2.55, "group": 16, "period": 4},
+    "Br": {"name": "Bromine",    "Z": 35, "mass": 79.904,  "en": 2.96, "group": 17, "period": 4},
+    "Kr": {"name": "Krypton",    "Z": 36, "mass": 83.798,  "en": 3.00, "group": 18, "period": 4}
+}
+
+# ============================================================
+# Element Look-up
+# ============================================================
+
+# element of symbol -> dict with name, Z, mass, en, group, period
+define element(symbol) as:
+    return _elements[symbol]
+
+# atomic_mass of symbol -> molar mass in g/mol
+define atomic_mass(symbol) as:
+    e is _elements[symbol]
+    return e.mass
+
+# ============================================================
+# Stoichiometry — formula parsing & conversions
+# ============================================================
+
+# _is_upper of char -> 1 if A-Z, else 0
+define _is_upper(ch) as:
+    if ch == "A" or ch == "B" or ch == "C" or ch == "D" or ch == "E":
+        return 1
+    if ch == "F" or ch == "G" or ch == "H" or ch == "I" or ch == "J":
+        return 1
+    if ch == "K" or ch == "L" or ch == "M" or ch == "N" or ch == "O":
+        return 1
+    if ch == "P" or ch == "Q" or ch == "R" or ch == "S" or ch == "T":
+        return 1
+    if ch == "U" or ch == "V" or ch == "W" or ch == "X" or ch == "Y":
+        return 1
+    if ch == "Z":
+        return 1
+    return 0
+
+# _is_lower of char -> 1 if a-z, else 0
+define _is_lower(ch) as:
+    if ch == "a" or ch == "b" or ch == "c" or ch == "d" or ch == "e":
+        return 1
+    if ch == "f" or ch == "g" or ch == "h" or ch == "i" or ch == "j":
+        return 1
+    if ch == "k" or ch == "l" or ch == "m" or ch == "n" or ch == "o":
+        return 1
+    if ch == "p" or ch == "q" or ch == "r" or ch == "s" or ch == "t":
+        return 1
+    if ch == "u" or ch == "v" or ch == "w" or ch == "x" or ch == "y":
+        return 1
+    if ch == "z":
+        return 1
+    return 0
+
+# _is_digit of char -> 1 if 0-9, else 0
+define _is_digit(ch) as:
+    if ch == "0" or ch == "1" or ch == "2" or ch == "3" or ch == "4":
+        return 1
+    if ch == "5" or ch == "6" or ch == "7" or ch == "8" or ch == "9":
+        return 1
+    return 0
+
+# molecular_weight of formula -> g/mol
+# Parses simple formulas: "H2O", "NaCl", "H2SO4", "C6H12O6"
+# No parentheses support.
+define molecular_weight(formula) as:
+    total is 0.0
+    i is 0
+    n is len of formula
+    loop while i < n:
+        ch is char_at of [formula, i]
+        if (_is_upper of ch) == 1:
+            sym is ch
+            i is i + 1
+            # Collect lowercase letters
+            loop while i < n:
+                nch is char_at of [formula, i]
+                if (_is_lower of nch) == 1:
+                    sym is sym + nch
+                    i is i + 1
+                else:
+                    nch is ""
+                    i is i
+                    break
+            # Collect digit count
+            count_str is ""
+            loop while i < n:
+                dch is char_at of [formula, i]
+                if (_is_digit of dch) == 1:
+                    count_str is count_str + dch
+                    i is i + 1
+                else:
+                    dch is ""
+                    i is i
+                    break
+            count is 1
+            if (len of count_str) > 0:
+                count is num of count_str
+            el is _elements[sym]
+            total is total + el.mass * count
+        else:
+            i is i + 1
+    return total
+
+# moles_to_grams of [moles, molar_mass] -> grams
+define moles_to_grams(moles, molar_mass) as:
+    return moles * molar_mass
+
+# grams_to_moles of [grams, molar_mass] -> moles
+define grams_to_moles(grams, molar_mass) as:
+    return grams / molar_mass
+
+# moles_to_particles of moles -> number of particles
+define moles_to_particles(moles) as:
+    return moles * AVOGADRO
+
+# molarity of [moles, liters] -> mol/L
+define molarity(moles, liters) as:
+    return moles / liters
+
+# dilution of [C1, V1, V2] -> C2  (C1*V1 = C2*V2)
+define dilution(C1, V1, V2) as:
+    return C1 * V1 / V2
+
+# ============================================================
+# Gas Laws
+# ============================================================
+
+# ideal_gas_PV — PV = nRT, solve for P
+# ideal_gas_pressure of [n, T, V] -> Pascals
+define ideal_gas_pressure(n, T, V) as:
+    return n * GAS_CONSTANT * T / V
+
+# boyles_law of [P1, V1, V2] -> P2  (P1V1 = P2V2)
+define boyles_law(P1, V1, V2) as:
+    return P1 * V1 / V2
+
+# charles_law of [V1, T1, T2] -> V2  (V1/T1 = V2/T2)
+define charles_law(V1, T1, T2) as:
+    return V1 * T2 / T1
+
+# combined_gas_law of [P1, V1, T1, T2, V2] -> P2
+# P1V1/T1 = P2V2/T2  =>  P2 = P1*V1*T2 / (T1*V2)
+define combined_gas_law(P1, V1, T1, T2, V2) as:
+    return P1 * V1 * T2 / (T1 * V2)
+
+# daltons_partial_pressure of pressures_list -> P_total = sum
+define daltons_partial_pressure(pressures) as:
+    total is 0
+    for i in range of (len of pressures):
+        total is total + pressures[i]
+    return total
+
+# ============================================================
+# Acids & Bases
+# ============================================================
+
+# _log10 of x -> log base 10
+define _log10(x) as:
+    return (log of x) / (log of 10)
+
+# ph of H_concentration -> pH = -log10([H+])
+define ph(H_conc) as:
+    return 0 - (_log10 of H_conc)
+
+# poh of OH_concentration -> pOH = -log10([OH-])
+define poh(OH_conc) as:
+    return 0 - (_log10 of OH_conc)
+
+# ph_to_concentration of ph_val -> [H+] = 10^(-pH)
+define ph_to_concentration(ph_val) as:
+    return pow of [10, 0 - ph_val]
+
+# ph_from_poh of poh_val -> pH = 14 - pOH
+define ph_from_poh(poh_val) as:
+    return 14 - poh_val
+
+# buffer_ph of [pka, acid_conc, base_conc] -> Henderson-Hasselbalch
+# pH = pKa + log10([A-]/[HA])
+define buffer_ph(pka, acid_conc, base_conc) as:
+    return pka + (_log10 of (base_conc / acid_conc))
+
+# ============================================================
+# Thermochemistry
+# ============================================================
+
+# enthalpy_reaction of [products_H, reactants_H] -> dH (J or kJ)
+# ΔH = ΣH_products - ΣH_reactants
+define enthalpy_reaction(products_H, reactants_H) as:
+    return products_H - reactants_H
+
+# gibbs_free_energy of [dH, T, dS] -> ΔG = ΔH - T*ΔS
+define gibbs_free_energy(dH, T, dS) as:
+    return dH - T * dS
+
+# equilibrium_constant_from_gibbs of [dG, T] -> K = e^(-ΔG/(RT))
+define equilibrium_constant_from_gibbs(dG, T) as:
+    return exp of (0 - dG / (GAS_CONSTANT * T))
+
+# nernst_equation of [E0, n, Q, T] -> E = E0 - (RT/(nF))*ln(Q)
+define nernst_equation(E0, n, Q, T) as:
+    return E0 - (GAS_CONSTANT * T / (n * FARADAY_CONSTANT)) * (log of Q)
+
+# ============================================================
+# Solutions
+# ============================================================
+
+# mass_percent of [solute_mass, solution_mass] -> percent
+define mass_percent(solute_mass, solution_mass) as:
+    return solute_mass / solution_mass * 100
+
+# ppm of [solute_mass, solution_mass] -> parts per million
+define ppm(solute_mass, solution_mass) as:
+    return solute_mass / solution_mass * 1000000
+
+# osmotic_pressure of [M, T, i] -> π = iMRT  (Pascals)
+define osmotic_pressure(M, T, i) as:
+    return i * M * GAS_CONSTANT * T
+
+# boiling_point_elevation of [Kb, m, i] -> ΔT = i*Kb*m
+define boiling_point_elevation(Kb, m, i) as:
+    return i * Kb * m
+
+# freezing_point_depression of [Kf, m, i] -> ΔT = i*Kf*m
+define freezing_point_depression(Kf, m, i) as:
+    return i * Kf * m

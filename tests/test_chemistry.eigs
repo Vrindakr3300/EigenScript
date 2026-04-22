@@ -1,0 +1,200 @@
+# ============================================================
+# Chemistry Library Tests — validate against known values
+# ============================================================
+# All expected values sourced from standard chemistry references
+# (NIST, CRC Handbook). Tolerances account for floating-point
+# arithmetic and rounding in published atomic masses.
+
+load_file of "lib/test.eigs"
+load_file of "lib/chemistry.eigs"
+
+print of "=== Chemistry Library Tests ==="
+
+# ============================================================
+# Periodic Table Look-up
+# ============================================================
+
+print of "--- Periodic Table ---"
+
+h is element of "H"
+assert_eq of [h.name, "Hydrogen", "hydrogen name"]
+assert_eq of [h.Z, 1, "hydrogen atomic number"]
+assert_near of [h.mass, 1.008, 0.001, "hydrogen mass"]
+assert_near of [h.en, 2.20, 0.01, "hydrogen electronegativity"]
+
+assert_near of [atomic_mass of "O", 15.999, 0.001, "oxygen mass"]
+assert_near of [atomic_mass of "Fe", 55.845, 0.001, "iron mass"]
+assert_near of [atomic_mass of "Na", 22.990, 0.001, "sodium mass"]
+assert_near of [atomic_mass of "Cl", 35.45, 0.01, "chlorine mass"]
+
+# Verify group and period
+o is element of "O"
+assert_eq of [o.group, 16, "oxygen group"]
+assert_eq of [o.period, 2, "oxygen period"]
+
+kr is element of "Kr"
+assert_eq of [kr.Z, 36, "krypton atomic number"]
+assert_eq of [kr.group, 18, "krypton group"]
+assert_eq of [kr.period, 4, "krypton period"]
+
+# ============================================================
+# Stoichiometry — molecular weight
+# ============================================================
+
+print of "--- Molecular Weight ---"
+
+# Water: H2O = 2*1.008 + 15.999 = 18.015
+assert_near of [molecular_weight of "H2O", 18.015, 0.01, "MW water"]
+
+# Glucose: C6H12O6 = 6*12.011 + 12*1.008 + 6*15.999 = 180.156
+assert_near of [molecular_weight of "C6H12O6", 180.156, 0.1, "MW glucose"]
+
+# Sodium chloride: NaCl = 22.990 + 35.45 = 58.44
+assert_near of [molecular_weight of "NaCl", 58.44, 0.01, "MW NaCl"]
+
+# Sulfuric acid: H2SO4 = 2*1.008 + 32.06 + 4*15.999 = 98.072
+assert_near of [molecular_weight of "H2SO4", 98.072, 0.1, "MW H2SO4"]
+
+# Carbon dioxide: CO2 = 12.011 + 2*15.999 = 44.009
+assert_near of [molecular_weight of "CO2", 44.009, 0.01, "MW CO2"]
+
+# Calcium carbonate: CaCO3 = 40.078 + 12.011 + 3*15.999 = 100.086
+assert_near of [molecular_weight of "CaCO3", 100.086, 0.1, "MW CaCO3"]
+
+# Ethanol: C2H6O = 2*12.011 + 6*1.008 + 15.999 = 46.069
+assert_near of [molecular_weight of "C2H6O", 46.069, 0.1, "MW ethanol"]
+
+# ============================================================
+# Stoichiometry — conversions
+# ============================================================
+
+print of "--- Mole Conversions ---"
+
+# 2 moles of water at 18.015 g/mol = 36.030 g
+assert_near of [moles_to_grams of [2, 18.015], 36.030, 0.01, "2 mol water to grams"]
+
+# 36 g of water = 36/18.015 ≈ 1.999 mol
+assert_near of [grams_to_moles of [36, 18.015], 1.999, 0.01, "36g water to moles"]
+
+# 1 mole = 6.022e23 particles
+assert_near of [moles_to_particles of 1, 6.02214076e23, 1e17, "1 mol to particles"]
+
+# Molarity: 0.5 mol in 0.25 L = 2.0 M
+assert_near of [molarity of [0.5, 0.25], 2.0, 0.001, "molarity 0.5mol 0.25L"]
+
+# Dilution: C1=6M, V1=50mL, V2=300mL → C2 = 1.0 M
+assert_near of [dilution of [6, 50, 300], 1.0, 0.001, "dilution 6M to 1M"]
+
+# ============================================================
+# Gas Laws
+# ============================================================
+
+print of "--- Gas Laws ---"
+
+# Ideal gas at STP: 1 mol, 273.15K, 0.02241 m³ → P ≈ 101325 Pa
+P_stp is ideal_gas_pressure of [1, 273.15, 0.02241]
+assert_near of [P_stp, 101325, 500, "ideal gas STP"]
+
+# Boyle's law: P1=2atm, V1=3L, V2=6L → P2=1atm
+assert_near of [boyles_law of [2, 3, 6], 1.0, 0.001, "Boyle's law"]
+
+# Charles's law: V1=2L at 300K, T2=600K → V2=4L
+assert_near of [charles_law of [2, 300, 600], 4.0, 0.001, "Charles's law"]
+
+# Combined gas law: P1=1, V1=10, T1=300, T2=600, V2=5 → P2=4
+assert_near of [combined_gas_law of [1, 10, 300, 600, 5], 4.0, 0.001, "combined gas law"]
+
+# Dalton's: 200 + 300 + 500 = 1000
+plist is [200, 300, 500]
+assert_near of [daltons_partial_pressure of plist, 1000, 0.001, "Dalton's law"]
+
+# ============================================================
+# Acids & Bases
+# ============================================================
+
+print of "--- Acids & Bases ---"
+
+# pH of 0.01 M HCl: pH = -log10(0.01) = 2.0
+assert_near of [ph of 0.01, 2.0, 0.01, "pH 0.01M HCl"]
+
+# pH of 1e-7 M: pH = 7.0 (pure water)
+assert_near of [ph of 1e-7, 7.0, 0.01, "pH pure water"]
+
+# pOH of 0.001 M OH: pOH = 3.0
+assert_near of [poh of 0.001, 3.0, 0.01, "pOH 0.001M"]
+
+# pH to concentration: pH=4 → [H+]=1e-4
+assert_near of [ph_to_concentration of 4, 1e-4, 1e-7, "pH 4 to conc"]
+
+# pH from pOH: pOH=5 → pH=9
+assert_near of [ph_from_poh of 5, 9.0, 0.001, "pH from pOH 5"]
+
+# Henderson-Hasselbalch: acetic acid buffer
+# pKa=4.76, [A-]=0.1M, [HA]=0.1M → pH = 4.76 + log10(1) = 4.76
+assert_near of [buffer_ph of [4.76, 0.1, 0.1], 4.76, 0.01, "HH equal conc"]
+
+# pKa=4.76, [A-]=0.2M, [HA]=0.1M → pH = 4.76 + log10(2) = 4.76 + 0.301 = 5.061
+assert_near of [buffer_ph of [4.76, 0.1, 0.2], 5.061, 0.01, "HH 2:1 buffer"]
+
+# ============================================================
+# Thermochemistry
+# ============================================================
+
+print of "--- Thermochemistry ---"
+
+# Enthalpy of reaction: products sum=-285.8kJ, reactants sum=0 → ΔH=-285.8kJ
+assert_near of [enthalpy_reaction of [-285800, 0], -285800, 1, "enthalpy water formation"]
+
+# Gibbs free energy of water formation at 298K
+# ΔH = -285830 J/mol, ΔS = -163.2 J/(mol·K)
+# ΔG = -285830 - 298*(-163.2) = -285830 + 48633.6 = -237196.4 J/mol ≈ -237.2 kJ/mol
+dG_water is gibbs_free_energy of [-285830, 298, -163.2]
+assert_near of [dG_water, -237196, 200, "Gibbs water formation"]
+
+# Gibbs at 298K: ΔG=0 → K=1 (equilibrium)
+assert_near of [equilibrium_constant_from_gibbs of [0, 298], 1.0, 0.001, "K from dG=0"]
+
+# Nernst equation: standard cell at equilibrium check
+# E0=1.1V, n=2, Q=1, T=298K → E = 1.1 - (RT/(nF))*ln(1) = 1.1 V
+assert_near of [nernst_equation of [1.1, 2, 1, 298], 1.1, 0.001, "Nernst Q=1"]
+
+# Nernst: E0=0.76V, n=2, Q=10, T=298K
+# E = 0.76 - (8.314*298/(2*96485))*ln(10) = 0.76 - 0.01285*2.3026 = 0.76 - 0.0296 ≈ 0.730
+assert_near of [nernst_equation of [0.76, 2, 10, 298], 0.730, 0.005, "Nernst Q=10"]
+
+# ============================================================
+# Solutions
+# ============================================================
+
+print of "--- Solutions ---"
+
+# Mass percent: 10g solute in 100g solution = 10%
+assert_near of [mass_percent of [10, 100], 10.0, 0.001, "mass percent 10%"]
+
+# PPM: 0.001g in 1000g = 1 ppm
+assert_near of [ppm of [0.001, 1000], 1.0, 0.001, "1 ppm"]
+
+# Osmotic pressure: 0.1 M NaCl at 298K, i=2
+# π = 2*0.1*8.3145*298 = 495.5 (approx, using R in L·atm would give ~4.9 atm;
+# here in SI: Pa)
+pi_val is osmotic_pressure of [0.1, 298, 2]
+assert_near of [pi_val, 495.5, 2, "osmotic pressure NaCl"]
+
+# Boiling point elevation: water Kb=0.512 K·kg/mol, m=1, i=1
+assert_near of [boiling_point_elevation of [0.512, 1, 1], 0.512, 0.001, "BPE water"]
+
+# Boiling point elevation: NaCl i=2, m=0.5
+assert_near of [boiling_point_elevation of [0.512, 0.5, 2], 0.512, 0.001, "BPE NaCl"]
+
+# Freezing point depression: water Kf=1.86, m=1, i=1
+assert_near of [freezing_point_depression of [1.86, 1, 1], 1.86, 0.001, "FPD water"]
+
+# Freezing point depression: CaCl2 i=3, m=0.5
+assert_near of [freezing_point_depression of [1.86, 0.5, 3], 2.79, 0.001, "FPD CaCl2"]
+
+# ============================================================
+# Summary
+# ============================================================
+
+print of ""
+test_summary of null

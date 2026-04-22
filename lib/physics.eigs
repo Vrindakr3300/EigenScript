@@ -1,0 +1,520 @@
+# ============================================================
+# Physics Library — comprehensive physics formulae and constants
+# ============================================================
+#
+# How to use:
+#   load_file of "lib/physics.eigs"
+#
+#   kinetic_energy of [2, 10]              # 100 J
+#   lorentz_factor of [0.8 * SPEED_OF_LIGHT]  # 1.6667
+#   gravitational_force of [5.972e24, 7.342e22, 384400000]
+#
+# All SI units unless otherwise noted. Angles in radians.
+
+# ============================================================
+# Fundamental Constants
+# ============================================================
+
+SPEED_OF_LIGHT is 299792458              # m/s (exact)
+PLANCK is 6.62607015e-34                 # J·s (exact)
+HBAR is 1.054571817e-34                  # J·s (reduced Planck, h/2π)
+BOLTZMANN is 1.380649e-23               # J/K (exact)
+AVOGADRO is 6.02214076e23               # 1/mol (exact)
+GRAVITATIONAL is 6.67430e-11            # N·m²/kg² (Newton's G)
+ELECTRON_MASS is 9.1093837015e-31       # kg
+PROTON_MASS is 1.67262192369e-27        # kg
+ELEMENTARY_CHARGE is 1.602176634e-19    # C (exact)
+VACUUM_PERMITTIVITY is 8.8541878128e-12 # F/m (ε₀)
+VACUUM_PERMEABILITY is 1.25663706212e-6 # H/m (μ₀)
+STEFAN_BOLTZMANN is 5.670374419e-8      # W/(m²·K⁴) (σ)
+GAS_CONSTANT is 8.314462618             # J/(mol·K)
+STANDARD_GRAVITY is 9.80665             # m/s² (exact)
+WIEN_DISPLACEMENT is 2.897771955e-3     # m·K (Wien's b)
+COULOMB_CONSTANT is 8.9875517873681764e9  # N·m²/C² (k = 1/(4πε₀))
+RYDBERG is 1.0973731568160e7            # 1/m (Rydberg constant)
+BOHR_RADIUS is 5.29177210903e-11        # m (a₀)
+
+# ============================================================
+# Kinematics (1D)
+# ============================================================
+
+# displacement — x = v₀·t + ½·a·t²
+# displacement of [v0, a, t] -> metres
+define displacement(v0, a, t) as:
+    return v0 * t + 0.5 * a * t * t
+
+# final_velocity — v = v₀ + a·t
+# final_velocity of [v0, a, t] -> m/s
+define final_velocity(v0, a, t) as:
+    return v0 + a * t
+
+# velocity_from_displacement — v² = v₀² + 2·a·x → v = √(v₀² + 2ax)
+# velocity_from_displacement of [v0, a, x] -> m/s (returns magnitude)
+define velocity_from_displacement(v0, a, x) as:
+    return sqrt of (v0 * v0 + 2 * a * x)
+
+# time_of_flight — solve x = v₀·t + ½·a·t² for t (positive root)
+# time_of_flight of [v0, a, x] -> seconds
+define time_of_flight(v0, a, x) as:
+    if a == 0:
+        if v0 == 0:
+            return 0
+        return x / v0
+    disc is v0 * v0 + 2 * a * x
+    if disc < 0:
+        return 0
+    sq is sqrt of disc
+    t1 is (0 - v0 + sq) / a
+    t2 is (0 - v0 - sq) / a
+    if t1 >= 0:
+        if t2 >= 0:
+            if t1 < t2:
+                return t1
+            return t2
+        return t1
+    return t2
+
+# ============================================================
+# Kinematics (2D — Projectile Motion)
+# ============================================================
+
+# projectile_range — R = v₀²·sin(2θ)/g
+# projectile_range of [v0, angle] -> metres
+define projectile_range(v0, angle) as:
+    return v0 * v0 * (sin of (2 * angle)) / STANDARD_GRAVITY
+
+# projectile_max_height — H = v₀²·sin²(θ)/(2g)
+# projectile_max_height of [v0, angle] -> metres
+define projectile_max_height(v0, angle) as:
+    s is sin of angle
+    return v0 * v0 * s * s / (2 * STANDARD_GRAVITY)
+
+# projectile_time — T = 2·v₀·sin(θ)/g  (total flight time)
+# projectile_time of [v0, angle] -> seconds
+define projectile_time(v0, angle) as:
+    return 2 * v0 * (sin of angle) / STANDARD_GRAVITY
+
+# projectile_position — [x, y] at time t
+# projectile_position of [v0, angle, t] -> [x, y]
+define projectile_position(v0, angle, t) as:
+    vx is v0 * (cos of angle)
+    vy is v0 * (sin of angle)
+    x is vx * t
+    y is vy * t - 0.5 * STANDARD_GRAVITY * t * t
+    return [x, y]
+
+# ============================================================
+# Forces & Newton's Laws
+# ============================================================
+
+# gravitational_force — F = G·m₁·m₂/r²  (Newton's law of gravitation)
+# gravitational_force of [m1, m2, r] -> Newtons
+define gravitational_force(m1, m2, r) as:
+    return GRAVITATIONAL * m1 * m2 / (r * r)
+
+# spring_force — F = -k·x  (Hooke's law)
+# spring_force of [k, x] -> Newtons
+define spring_force(k, x) as:
+    return 0 - k * x
+
+# friction_force — F = μ·N
+# friction_force of [mu, normal] -> Newtons
+define friction_force(mu, normal) as:
+    return mu * normal
+
+# centripetal_force — F = m·v²/r
+# centripetal_force of [m, v, r] -> Newtons
+define centripetal_force(m, v, r) as:
+    return m * v * v / r
+
+# centripetal_acceleration — a = v²/r
+# centripetal_acceleration of [v, r] -> m/s²
+define centripetal_acceleration(v, r) as:
+    return v * v / r
+
+# momentum — p = m·v
+# momentum of [m, v] -> kg·m/s
+define momentum(m, v) as:
+    return m * v
+
+# impulse — J = F·Δt
+# impulse of [f, dt] -> N·s
+define impulse(f, dt) as:
+    return f * dt
+
+# kinetic_energy — KE = ½·m·v²
+# kinetic_energy of [m, v] -> Joules
+define kinetic_energy(m, v) as:
+    return 0.5 * m * v * v
+
+# potential_energy_gravity — PE = m·g·h
+# potential_energy_gravity of [m, h] -> Joules
+define potential_energy_gravity(m, h) as:
+    return m * STANDARD_GRAVITY * h
+
+# potential_energy_spring — PE = ½·k·x²
+# potential_energy_spring of [k, x] -> Joules
+define potential_energy_spring(k, x) as:
+    return 0.5 * k * x * x
+
+# work — W = F·d·cos(θ)
+# work of [f, d, angle] -> Joules
+define work(f, d, angle) as:
+    return f * d * (cos of angle)
+
+# power_from_work — P = W/t
+# power_from_work of [w, t] -> Watts
+define power_from_work(w, t) as:
+    return w / t
+
+# power_from_force — P = F·v
+# power_from_force of [f, v] -> Watts
+define power_from_force(f, v) as:
+    return f * v
+
+# ============================================================
+# Waves & Oscillations
+# ============================================================
+
+# wave_speed — v = f·λ
+# wave_speed of [freq, wavelength] -> m/s
+define wave_speed(freq, wavelength) as:
+    return freq * wavelength
+
+# period — T = 1/f
+# period of freq -> seconds
+define period(freq) as:
+    return 1 / freq
+
+# frequency — f = 1/T
+# frequency of per -> Hz
+define frequency(per) as:
+    return 1 / per
+
+# angular_frequency — ω = 2π·f
+# angular_frequency of freq -> rad/s
+define angular_frequency(freq) as:
+    return 2 * (pi of null) * freq
+
+# wave_number — k = 2π/λ
+# wave_number of wavelength -> 1/m
+define wave_number(wavelength) as:
+    return 2 * (pi of null) / wavelength
+
+# simple_harmonic_position — x = A·cos(ωt + φ)
+# simple_harmonic_position of [amp, omega, t, phi] -> metres
+define simple_harmonic_position(amp, omega, t, phi) as:
+    return amp * (cos of (omega * t + phi))
+
+# pendulum_period — T = 2π·√(L/g)  (small-angle approximation)
+# pendulum_period of length -> seconds
+define pendulum_period(length) as:
+    return 2 * (pi of null) * (sqrt of (length / STANDARD_GRAVITY))
+
+# spring_period — T = 2π·√(m/k)
+# spring_period of [m, k] -> seconds
+define spring_period(m, k) as:
+    return 2 * (pi of null) * (sqrt of (m / k))
+
+# doppler_frequency — f' = f₀·(v_sound + v_obs)/(v_sound + v_src)
+# Convention: positive v_observer = observer moving toward source
+#             positive v_source = source moving away from observer
+# doppler_frequency of [f0, v_source, v_observer] -> Hz
+define doppler_frequency(f0, v_source, v_observer) as:
+    v_sound is 343.0
+    return f0 * (v_sound + v_observer) / (v_sound + v_source)
+
+# standing_wave_harmonics — harmonic frequencies
+# mode: "open" (both ends open) -> fn = n·v/(2L)
+# mode: "closed" (one end closed) -> fn = n·v/(4L), odd n only
+# standing_wave_harmonics of [length, n, mode] -> Hz
+define standing_wave_harmonics(length, n, mode) as:
+    v_sound is 343.0
+    if mode == "closed":
+        return n * v_sound / (4 * length)
+    return n * v_sound / (2 * length)
+
+# ============================================================
+# Thermodynamics
+# ============================================================
+
+# ideal_gas_pressure — P = nRT/V
+# ideal_gas_pressure of [n, T, V] -> Pascals
+define ideal_gas_pressure(n, T, V) as:
+    return n * GAS_CONSTANT * T / V
+
+# ideal_gas_volume — V = nRT/P
+# ideal_gas_volume of [n, T, P] -> m³
+define ideal_gas_volume(n, T, P) as:
+    return n * GAS_CONSTANT * T / P
+
+# ideal_gas_temperature — T = PV/(nR)
+# ideal_gas_temperature of [P, V, n] -> Kelvin
+define ideal_gas_temperature(P, V, n) as:
+    return P * V / (n * GAS_CONSTANT)
+
+# heat_transfer — Q = m·c·ΔT
+# heat_transfer of [m, c, dT] -> Joules
+define heat_transfer(m, c, dT) as:
+    return m * c * dT
+
+# thermal_expansion — ΔL = L₀·α·ΔT
+# thermal_expansion of [L0, alpha, dT] -> metres
+define thermal_expansion(L0, alpha, dT) as:
+    return L0 * alpha * dT
+
+# carnot_efficiency — η = 1 - Tc/Th
+# carnot_efficiency of [T_hot, T_cold] -> dimensionless (0 to 1)
+define carnot_efficiency(T_hot, T_cold) as:
+    return 1 - T_cold / T_hot
+
+# entropy_change — ΔS = Q/T  (reversible process)
+# entropy_change of [Q, T] -> J/K
+define entropy_change(Q, T) as:
+    return Q / T
+
+# stefan_boltzmann_power — P = σ·A·T⁴
+# stefan_boltzmann_power of [A, T] -> Watts
+define stefan_boltzmann_power(A, T) as:
+    return STEFAN_BOLTZMANN * A * T * T * T * T
+
+# wien_peak_wavelength — λ_max = b/T  (Wien's displacement law)
+# wien_peak_wavelength of T -> metres
+define wien_peak_wavelength(T) as:
+    return WIEN_DISPLACEMENT / T
+
+# ============================================================
+# Electromagnetism
+# ============================================================
+
+# coulomb_force — F = k·q₁·q₂/r²  (Coulomb's law)
+# coulomb_force of [q1, q2, r] -> Newtons
+define coulomb_force(q1, q2, r) as:
+    return COULOMB_CONSTANT * q1 * q2 / (r * r)
+
+# electric_field — E = k·q/r²
+# electric_field of [q, r] -> N/C (V/m)
+define electric_field(q, r) as:
+    return COULOMB_CONSTANT * q / (r * r)
+
+# electric_potential — V = k·q/r
+# electric_potential of [q, r] -> Volts
+define electric_potential(q, r) as:
+    return COULOMB_CONSTANT * q / r
+
+# capacitance_parallel_plate — C = ε₀·A/d
+# capacitance_parallel_plate of [A, d] -> Farads
+define capacitance_parallel_plate(A, d) as:
+    return VACUUM_PERMITTIVITY * A / d
+
+# capacitor_energy — U = ½·C·V²
+# capacitor_energy of [C, V] -> Joules
+define capacitor_energy(C, V) as:
+    return 0.5 * C * V * V
+
+# ohms_law_current — I = V/R
+# ohms_law_current of [V, R] -> Amperes
+define ohms_law_current(V, R) as:
+    return V / R
+
+# ohms_law_voltage — V = I·R
+# ohms_law_voltage of [I, R] -> Volts
+define ohms_law_voltage(I, R) as:
+    return I * R
+
+# resistor_power — P = I²·R
+# resistor_power of [I, R] -> Watts
+define resistor_power(I, R) as:
+    return I * I * R
+
+# series_resistance — R_total = R₁ + R₂ + ... + Rn
+# series_resistance of [r1, r2, ...] -> Ohms
+define series_resistance(resistors) as:
+    total is 0
+    for i in range of (len of resistors):
+        total is total + resistors[i]
+    return total
+
+# parallel_resistance — 1/R_total = 1/R₁ + 1/R₂ + ... + 1/Rn
+# parallel_resistance of [r1, r2, ...] -> Ohms
+define parallel_resistance(resistors) as:
+    inv_sum is 0
+    for i in range of (len of resistors):
+        inv_sum is inv_sum + 1 / resistors[i]
+    return 1 / inv_sum
+
+# magnetic_force — F = q·v·B  (charge in uniform B field, v ⊥ B)
+# magnetic_force of [q, v, B] -> Newtons
+define magnetic_force(q, v, B) as:
+    return q * v * B
+
+# solenoid_field — B = μ₀·n·I  (inside ideal solenoid)
+# solenoid_field of [n, I] -> Tesla (n = turns per metre)
+define solenoid_field(n, I) as:
+    return VACUUM_PERMEABILITY * n * I
+
+# induced_emf — ε = -N·dΦ/dt  (Faraday's law)
+# induced_emf of [N, dflux, dt] -> Volts
+define induced_emf(N, dflux, dt) as:
+    return 0 - N * dflux / dt
+
+# ============================================================
+# Optics
+# ============================================================
+
+# snells_law_angle — n₁·sin(θ₁) = n₂·sin(θ₂) → θ₂
+# snells_law_angle of [n1, n2, theta1] -> radians
+define snells_law_angle(n1, n2, theta1) as:
+    sin_theta2 is n1 * (sin of theta1) / n2
+    if sin_theta2 > 1:
+        return 0 - 1   # total internal reflection
+    if sin_theta2 < -1:
+        return 0 - 1
+    return asin of sin_theta2
+
+# critical_angle — θc = arcsin(n₂/n₁)  (for n₁ > n₂)
+# critical_angle of [n1, n2] -> radians
+define critical_angle(n1, n2) as:
+    ratio is n2 / n1
+    if ratio > 1:
+        return 0 - 1   # no critical angle
+    return asin of ratio
+
+# thin_lens — 1/f = 1/do + 1/di → di = f·do/(do - f)
+# thin_lens of [f, do] -> metres (image distance)
+define thin_lens(f, do) as:
+    return f * do / (do - f)
+
+# magnification — M = -di/do
+# magnification of [di, do] -> dimensionless
+define magnification(di, do) as:
+    return 0 - di / do
+
+# mirror_equation — same as thin lens: di = f·do/(do - f)
+# mirror_equation of [f, do] -> metres
+define mirror_equation(f, do) as:
+    return f * do / (do - f)
+
+# photon_energy — E = h·f
+# photon_energy of freq -> Joules
+define photon_energy(freq) as:
+    return PLANCK * freq
+
+# photon_wavelength — λ = h·c/E
+# photon_wavelength of energy -> metres
+define photon_wavelength(energy) as:
+    return PLANCK * SPEED_OF_LIGHT / energy
+
+# de_broglie_wavelength — λ = h/(m·v)
+# de_broglie_wavelength of [m, v] -> metres
+define de_broglie_wavelength(m, v) as:
+    return PLANCK / (m * v)
+
+# ============================================================
+# Special Relativity
+# ============================================================
+
+# lorentz_factor — γ = 1/√(1 - v²/c²)
+# lorentz_factor of v -> dimensionless
+define lorentz_factor(v) as:
+    beta is v / SPEED_OF_LIGHT
+    return 1 / (sqrt of (1 - beta * beta))
+
+# time_dilation — t = γ·t₀  (dilated time in lab frame)
+# time_dilation of [t0, v] -> seconds
+define time_dilation(t0, v) as:
+    return (lorentz_factor of v) * t0
+
+# length_contraction — L = L₀/γ  (contracted length in lab frame)
+# length_contraction of [L0, v] -> metres
+define length_contraction(L0, v) as:
+    return L0 / (lorentz_factor of v)
+
+# relativistic_momentum — p = γ·m·v
+# relativistic_momentum of [m, v] -> kg·m/s
+define relativistic_momentum(m, v) as:
+    return (lorentz_factor of v) * m * v
+
+# relativistic_energy — E = γ·m·c²  (total energy)
+# relativistic_energy of [m, v] -> Joules
+define relativistic_energy(m, v) as:
+    return (lorentz_factor of v) * m * SPEED_OF_LIGHT * SPEED_OF_LIGHT
+
+# rest_energy — E = m·c²
+# rest_energy of m -> Joules
+define rest_energy(m) as:
+    return m * SPEED_OF_LIGHT * SPEED_OF_LIGHT
+
+# mass_energy_equivalence — m = E/c²
+# mass_energy_equivalence of E -> kg
+define mass_energy_equivalence(E) as:
+    return E / (SPEED_OF_LIGHT * SPEED_OF_LIGHT)
+
+# ============================================================
+# Nuclear & Quantum
+# ============================================================
+
+# half_life_remaining — N = N₀·(½)^(t/t½)
+# half_life_remaining of [N0, t, half_life] -> amount remaining
+define half_life_remaining(N0, t, half_life) as:
+    return N0 * pow of [0.5, t / half_life]
+
+# decay_constant — λ = ln(2)/t½
+# decay_constant of half_life -> 1/s
+define decay_constant(half_life) as:
+    return (log of 2) / half_life
+
+# binding_energy_per_nucleon — BE/A
+# binding_energy_per_nucleon of [BE, A] -> MeV/nucleon
+define binding_energy_per_nucleon(BE, A) as:
+    return BE / A
+
+# bohr_radius_n — rn = n²·a₀  (radius of nth Bohr orbit)
+# bohr_radius_n of n -> metres
+define bohr_radius_n(n) as:
+    return n * n * BOHR_RADIUS
+
+# bohr_energy_n — En = -13.6/n²  eV  (hydrogen energy level)
+# bohr_energy_n of n -> eV
+define bohr_energy_n(n) as:
+    return 0 - 13.6 / (n * n)
+
+# hydrogen_wavelength — 1/λ = R·(1/n₁² - 1/n₂²)  (Rydberg formula, n₂ > n₁)
+# hydrogen_wavelength of [n1, n2] -> metres
+define hydrogen_wavelength(n1, n2) as:
+    inv_lambda is RYDBERG * (1 / (n1 * n1) - 1 / (n2 * n2))
+    return 1 / inv_lambda
+
+# ============================================================
+# Fluid Mechanics
+# ============================================================
+
+# pressure_depth — P = ρ·g·h  (hydrostatic pressure)
+# pressure_depth of [rho, h] -> Pascals
+define pressure_depth(rho, h) as:
+    return rho * STANDARD_GRAVITY * h
+
+# buoyant_force — F = ρ_fluid·g·V  (Archimedes' principle)
+# buoyant_force of [rho_fluid, V] -> Newtons
+define buoyant_force(rho_fluid, V) as:
+    return rho_fluid * STANDARD_GRAVITY * V
+
+# bernoulli_velocity — v = √(2·(P₁ - P₂)/ρ)  (from Bernoulli's equation)
+# bernoulli_velocity of [P1, P2, rho] -> m/s
+define bernoulli_velocity(P1, P2, rho) as:
+    return sqrt of (2 * (P1 - P2) / rho)
+
+# flow_rate — Q = A·v  (volumetric flow rate)
+# flow_rate of [A, v] -> m³/s
+define flow_rate(A, v) as:
+    return A * v
+
+# reynolds_number — Re = ρ·v·L/μ  (dimensionless turbulence indicator)
+# reynolds_number of [rho, v, L, mu] -> dimensionless
+define reynolds_number(rho, v, L, mu) as:
+    return rho * v * L / mu
+
+# viscous_drag — F = 6π·μ·r·v  (Stokes' drag on a sphere)
+# viscous_drag of [mu, r, v] -> Newtons
+define viscous_drag(mu, r, v) as:
+    return 6 * (pi of null) * mu * r * v
