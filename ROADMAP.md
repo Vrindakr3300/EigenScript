@@ -1,12 +1,10 @@
 # Roadmap
 
-Current version: **0.9.0**
+Current version: **0.9.1**
 
 ## Near-term
 
 - [ ] Audio extension (SDL2 audio for Deslan Studio)
-- [ ] Language server protocol (LSP) for editor integration
-- [ ] Hashing builtins (SHA-256, MD5)
 - [ ] Streaming subprocess I/O (stdin pipe, unbuffered stdout)
 
 ## Medium-term
@@ -20,6 +18,12 @@ Current version: **0.9.0**
 
 - [ ] Self-hosting compiler (EigenScript written in EigenScript)
 - [ ] Foreign function interface (FFI) for calling C libraries
+
+## Completed (0.9.1)
+
+- [x] Language server protocol (LSP) — eigenlsp binary, VS Code extension
+- [x] Hashing builtins — SHA-256, MD5, HMAC-SHA256, file hashing
+- [x] Column tracking in tokens and AST nodes
 
 ## Completed (0.9.0)
 

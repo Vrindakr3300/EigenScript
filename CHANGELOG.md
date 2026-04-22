@@ -4,6 +4,28 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-04-21
+
+### New Builtins
+- **`sha256`** / **`md5`**: hash string to hex (SHA-256 FIPS 180-4, MD5 RFC 1321)
+- **`sha256_file`** / **`md5_file`**: hash file contents
+- **`hmac_sha256`**: HMAC-SHA256 (RFC 2104) for message authentication
+- All zero-dependency — algorithms implemented directly in C
+
+### Language Server Protocol
+- **`eigenlsp`**: standalone LSP server (200K binary) for editor integration
+- Diagnostics (parse errors), completion (keywords, 60+ builtins, symbols),
+  hover (docs, signatures), go-to-definition, find-references
+- Column tracking added to Token and ASTNode for precise source locations
+- VS Code extension with TextMate syntax highlighting grammar
+
+### Runtime
+- Column numbers on all tokens and AST nodes (lexer + parser)
+
+### Testing
+- 831 tests (up from 817 in 0.9.0)
+- Hash builtins verified against NIST/RFC test vectors
+
 ## [0.9.0] — 2026-04-21
 
 ### Language
