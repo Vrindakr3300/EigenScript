@@ -1204,6 +1204,21 @@ else
 fi
 echo ""
 
+# [57] Coverage v2 — close gcov gaps in eval/builtins/eigenscript/ext_store
+echo "[57] Coverage V2 (110 checks)"
+CV2_OUTPUT=$(./eigenscript ../tests/test_coverage_v2.eigs 2>&1)
+if echo "$CV2_OUTPUT" | grep -q "All coverage-v2 tests passed"; then
+    TOTAL=$((TOTAL + 110))
+    PASS=$((PASS + 110))
+    echo "  PASS: all 110 coverage-v2 checks"
+else
+    TOTAL=$((TOTAL + 110))
+    FAIL=$((FAIL + 110))
+    echo "  FAIL: coverage-v2 tests"
+    echo "$CV2_OUTPUT" | grep -iE "assert|error|FAIL" | head -5
+fi
+echo ""
+
 # [54] Example smoke tests
 echo "[54] Example Smoke Tests"
 EX_OUTPUT=$(bash "$TESTS_DIR/test_examples.sh" 2>&1)

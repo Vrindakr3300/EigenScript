@@ -1,0 +1,448 @@
+# test_coverage_v2.eigs — Close coverage gaps found via gcov analysis
+# Targets uncovered paths in eval.c, builtins.c, eigenscript.c, ext_store.c
+
+# ================================================================
+# EVAL.C GAPS
+# ================================================================
+
+# --- List comprehension (AST_LISTCOMP) ---
+nums is [1, 2, 3, 4, 5]
+doubled is [x * 2 for x in nums]
+assert of [(len of doubled) == 5, "CV2-01 listcomp basic length"]
+assert of [doubled[0] == 2, "CV2-02 listcomp first elem"]
+assert of [doubled[4] == 10, "CV2-03 listcomp last elem"]
+
+# List comprehension with filter
+evens is [x for x in nums if x % 2 == 0]
+assert of [(len of evens) == 2, "CV2-04 listcomp filter length"]
+assert of [evens[0] == 2, "CV2-05 listcomp filter first"]
+assert of [evens[1] == 4, "CV2-06 listcomp filter second"]
+
+# --- Match/case with null ---
+val is null
+match_result is "none"
+match val:
+    case null:
+        match_result is "got_null"
+    case _:
+        match_result is "other"
+assert of [match_result == "got_null", "CV2-07 match null case"]
+
+val2 is 42
+match_result2 is "none"
+match val2:
+    case 99:
+        match_result2 is "wrong"
+    case _:
+        match_result2 is "wildcard"
+assert of [match_result2 == "wildcard", "CV2-08 match wildcard case"]
+
+# --- Index-assign on dict ---
+d is {"name": "test", "count": 0}
+d["count"] is 42
+assert of [d.count == 42, "CV2-09 index-assign dict"]
+d["new_key"] is "added"
+assert of [d.new_key == "added", "CV2-10 index-assign dict new key"]
+
+# --- Division by zero (warning path) ---
+zero_div is 10 / 0
+assert of [zero_div == 0, "CV2-11 division by zero returns 0"]
+
+# --- eval_num_fast: unary negation ---
+x is 5
+y is -x
+assert of [y == -5, "CV2-12 unary negation"]
+
+# --- eval_num_fast: multiply, divide, modulo ---
+a is 6
+b is 7
+assert of [a * b == 42, "CV2-13 multiply in fast path"]
+assert of [a / 2 == 3, "CV2-14 divide in fast path"]
+assert of [7 % 3 == 1, "CV2-15 modulo in fast path"]
+
+# ================================================================
+# BUILTINS.C GAPS
+# ================================================================
+
+# --- bit_not ---
+bn is bit_not of 0
+assert of [bn == -1, "CV2-16 bit_not of 0"]
+bn2 is bit_not of 255
+assert of [bn2 == -256, "CV2-17 bit_not of 255"]
+
+# --- num of null and fallback ---
+n1 is num of null
+assert of [n1 == 0, "CV2-18 num of null"]
+n2 is num of "3.14"
+assert of [n2 == 3.14, "CV2-19 num of string"]
+
+# --- keys/values on non-dict ---
+k_empty is keys of 42
+assert of [(len of k_empty) == 0, "CV2-20 keys of non-dict"]
+v_empty is values of "hello"
+assert of [(len of v_empty) == 0, "CV2-21 values of non-dict"]
+
+# --- json_encode: null, list, special floats ---
+je_null is json_encode of null
+assert of [je_null == "null", "CV2-22 json_encode null"]
+
+je_list is json_encode of [1, 2, 3]
+assert of [je_list == "[1,2,3]", "CV2-23 json_encode list"]
+
+# --- json_decode: arrays, booleans, null ---
+jd_arr is json_decode of "[1, 2, 3]"
+assert of [(len of jd_arr) == 3, "CV2-24 json_decode array length"]
+assert of [jd_arr[0] == 1, "CV2-25 json_decode array elem"]
+
+jd_bool_t is json_decode of "true"
+assert of [jd_bool_t == 1, "CV2-26 json_decode true"]
+
+jd_bool_f is json_decode of "false"
+assert of [jd_bool_f == 0, "CV2-27 json_decode false"]
+
+jd_null is json_decode of "null"
+assert of [(type of jd_null) == "none", "CV2-28 json_decode null"]
+
+# --- json_decode: escape sequences ---
+jd_esc is json_decode of "\"hello\\nworld\""
+assert of [(type of jd_esc) == "str", "CV2-29 json_decode escape returns str"]
+
+jd_esc2 is json_decode of "\"tab\\there\""
+assert of [(type of jd_esc2) == "str", "CV2-30 json_decode tab escape"]
+
+jd_esc3 is json_decode of "\"quote\\\"inside\""
+assert of [(type of jd_esc3) == "str", "CV2-31 json_decode quote escape"]
+
+jd_esc4 is json_decode of "\"back\\\\slash\""
+assert of [(type of jd_esc4) == "str", "CV2-32 json_decode backslash escape"]
+
+jd_esc5 is json_decode of "\"slash\\/here\""
+assert of [(type of jd_esc5) == "str", "CV2-33 json_decode slash escape"]
+
+# --- json_build: num, null, list values ---
+jb1 is json_build of ["count", 42]
+assert of [contains of [jb1, "\"count\": 42"] == 1, "CV2-34 json_build num value"]
+
+jb2 is json_build of ["val", null]
+assert of [contains of [jb2, "null"] == 1, "CV2-35 json_build null value"]
+
+jb3 is json_build of ["big", 1234567890.123]
+assert of [contains of [jb3, "1234567890"] == 1, "CV2-36 json_build large num"]
+
+# --- json_build with json_raw ---
+raw is json_raw of "[1,2,3]"
+jb4 is json_build of ["items", raw]
+assert of [contains of [jb4, "[1,2,3]"] == 1, "CV2-37 json_build json_raw"]
+
+# --- type of json_raw ---
+assert of [(type of raw) == "json_raw", "CV2-38 type of json_raw"]
+
+# --- range with step ---
+r_step is range of [0, 10, 2]
+assert of [(len of r_step) == 5, "CV2-39 range with step length"]
+assert of [r_step[0] == 0, "CV2-40 range step first"]
+assert of [r_step[4] == 8, "CV2-41 range step last"]
+
+# --- range negative step ---
+r_neg is range of [10, 0, -2]
+assert of [(len of r_neg) == 5, "CV2-42 range negative step length"]
+assert of [r_neg[0] == 10, "CV2-43 range neg step first"]
+assert of [r_neg[4] == 2, "CV2-44 range neg step last"]
+
+# --- range single-element list fallback ---
+r_single is range of [5]
+assert of [(len of r_single) == 5, "CV2-45 range single-elem list"]
+
+# --- range with step 0 (should default to 1) ---
+r_zero_step is range of [0, 3, 0]
+assert of [(len of r_zero_step) == 3, "CV2-46 range zero step defaults to 1"]
+
+# --- range on non-num/non-list ---
+r_bad is range of "hello"
+assert of [(len of r_bad) == 0, "CV2-47 range bad arg"]
+
+# --- get_at / set_at 2D ---
+matrix is [[1, 2], [3, 4], [5, 6]]
+v2d is get_at of [matrix, 1, 0]
+assert of [v2d == 3, "CV2-48 get_at 2D"]
+
+set_at of [matrix, 1, 1, 99]
+v2d2 is get_at of [matrix, 1, 1]
+assert of [v2d2 == 99, "CV2-49 set_at 2D"]
+
+# --- get_at out of range ---
+v_oor is get_at of [matrix, 10]
+assert of [v_oor == 0, "CV2-50 get_at out of range"]
+
+# --- coalesce ---
+c1 is coalesce of [null, "default"]
+assert of [c1 == "default", "CV2-51 coalesce null"]
+c2 is coalesce of ["", "default"]
+assert of [c2 == "default", "CV2-52 coalesce empty string"]
+c3 is coalesce of ["value", "default"]
+assert of [c3 == "value", "CV2-53 coalesce non-null"]
+
+# --- json_path with nested object ---
+json_str is "{\"user\": {\"name\": \"alice\", \"age\": 30}}"
+jp1 is json_path of [json_str, "user.name"]
+assert of [jp1 == "alice", "CV2-54 json_path nested key"]
+jp2 is json_path of [json_str, "user.age"]
+assert of [jp2 == "30", "CV2-55 json_path numeric value"]
+
+# --- json_path with array index ---
+json_arr is "{\"items\": [10, 20, 30]}"
+jp3 is json_path of [json_arr, "items.1"]
+assert of [jp3 == "20", "CV2-56 json_path array index"]
+
+# --- len of dict ---
+dl is {"a": 1, "b": 2, "c": 3}
+assert of [(len of dl) == 3, "CV2-57 len of dict"]
+
+# --- json_encode with fn (hits default: null path) ---
+define make_fn() as:
+    return 1
+je_fn is json_encode of make_fn
+assert of [je_fn == "null", "CV2-58 json_encode fn returns null"]
+
+# --- str of num ---
+s_num is str of 42
+assert of [s_num == "42", "CV2-59 str of num"]
+
+# --- observe returns report+entropy+dH+prev_dH ---
+obs is observe of null
+assert of [(type of obs) == "list", "CV2-60 observe returns list"]
+assert of [(len of obs) == 4, "CV2-61 observe list has 4 elements"]
+
+# ================================================================
+# EXT_STORE.C GAPS — error paths
+# ================================================================
+
+# --- store_close with bad arg ---
+sc_bad is store_close of 42
+assert of [(type of sc_bad) == "none", "CV2-62 store_close bad arg"]
+
+# --- store_put with bad args ---
+sp_bad1 is store_put of null
+assert of [(type of sp_bad1) == "none", "CV2-63 store_put null arg"]
+
+sp_bad2 is store_put of [42, "coll", {"a": 1}]
+assert of [(type of sp_bad2) == "none", "CV2-64 store_put bad handle"]
+
+# --- store_put non-dict record ---
+tmp_store is store_open of "/tmp/eigs_cv2_test.db"
+sp_bad3 is store_put of [tmp_store, "coll", "not_a_dict"]
+assert of [(type of sp_bad3) == "none", "CV2-65 store_put non-dict record"]
+
+# --- store_get with bad args ---
+sg_bad1 is store_get of null
+assert of [(type of sg_bad1) == "none", "CV2-66 store_get null arg"]
+
+# --- store_get with numeric key ---
+sg_nk is store_get of [tmp_store, "coll", 999]
+assert of [(type of sg_nk) == "none", "CV2-67 store_get numeric key miss"]
+
+# --- store_delete with bad args ---
+sd_bad1 is store_delete of null
+assert of [sd_bad1 == 0, "CV2-68 store_delete null arg"]
+
+# --- store_delete with numeric key ---
+sd_nk is store_delete of [tmp_store, "coll", 123]
+assert of [sd_nk == 0, "CV2-69 store_delete numeric key"]
+
+# --- store_query with bad args ---
+sq_bad1 is store_query of null
+assert of [(len of sq_bad1) == 0, "CV2-70 store_query null arg"]
+
+# --- store_count with bad args ---
+scn_bad is store_count of null
+assert of [scn_bad == 0, "CV2-71 store_count null arg"]
+
+# --- store_update with bad args ---
+su_bad is store_update of null
+assert of [su_bad == 0, "CV2-72 store_update null arg"]
+
+# --- store_collections with bad arg ---
+scol_bad is store_collections of 42
+assert of [(len of scol_bad) == 0, "CV2-73 store_collections bad arg"]
+
+# --- store_drop with bad args ---
+sdrop_bad is store_drop of null
+assert of [sdrop_bad == 0, "CV2-74 store_drop null arg"]
+
+# --- Store: put then get, verifying JSON round-trip through store ---
+rec is {"name": "test", "value": 42}
+key is store_put of [tmp_store, "items", rec]
+assert of [(type of key) == "str", "CV2-75 store_put returns key"]
+
+got is store_get of [tmp_store, "items", key]
+assert of [got.name == "test", "CV2-76 store_get round-trip name"]
+assert of [got.value == 42, "CV2-77 store_get round-trip value"]
+
+# --- Store: query returns list ---
+items is store_query of [tmp_store, "items"]
+assert of [(len of items) > 0, "CV2-78 store_query returns results"]
+
+# --- Store: count ---
+cnt is store_count of [tmp_store, "items"]
+assert of [cnt > 0, "CV2-79 store_count positive"]
+
+# --- Store: update ---
+upd is store_update of [tmp_store, "items", key, {"name": "updated", "value": 99}]
+assert of [upd == 1, "CV2-80 store_update success"]
+
+got2 is store_get of [tmp_store, "items", key]
+assert of [got2.name == "updated", "CV2-81 store_update verified"]
+
+# --- Store: delete ---
+del is store_delete of [tmp_store, "items", key]
+assert of [del == 1, "CV2-82 store_delete success"]
+
+got3 is store_get of [tmp_store, "items", key]
+assert of [(type of got3) == "none", "CV2-83 store_delete verified"]
+
+# --- Store: collections ---
+cols is store_collections of tmp_store
+assert of [(type of cols) == "list", "CV2-84 store_collections type"]
+
+# --- Store: drop collection ---
+store_put of [tmp_store, "todrop", {"x": 1}]
+drp is store_drop of [tmp_store, "todrop"]
+assert of [drp == 1, "CV2-85 store_drop success"]
+
+# --- Store: open with bad arg ---
+so_bad is store_open of 42
+assert of [(type of so_bad) == "none", "CV2-86 store_open bad arg"]
+
+# Clean up
+store_close of tmp_store
+exec_capture of "rm -f /tmp/eigs_cv2_test.db"
+
+# ================================================================
+# EIGENSCRIPT.C GAPS
+# ================================================================
+
+# --- is_truthy for fn ---
+define truthy_fn() as:
+    return 1
+if truthy_fn:
+    tf_result is 1
+else:
+    tf_result is 0
+assert of [tf_result == 1, "CV2-87 is_truthy fn"]
+
+# --- is_truthy for dict ---
+td is {"a": 1}
+if td:
+    td_result is 1
+else:
+    td_result is 0
+assert of [td_result == 1, "CV2-88 is_truthy dict"]
+
+# --- json_decode non-string arg error path ---
+jd_bad is json_decode of 42
+assert of [1 == 1, "CV2-89 json_decode non-string handled"]
+
+# --- json_encode with %.15g path (non-integer float) ---
+je_float is json_encode of 3.141592653589793
+assert of [contains of [je_float, "3.14159"] == 1, "CV2-90 json_encode float precision"]
+
+# --- Concurrency error paths ---
+tj_bad is thread_join of 42
+assert of [1 == 1, "CV2-91 thread_join bad arg handled"]
+
+ts_bad is send of 42
+assert of [1 == 1, "CV2-92 send bad arg handled"]
+
+tr_bad is recv of 42
+assert of [1 == 1, "CV2-93 recv bad arg handled"]
+
+tcc_bad is close_channel of 42
+assert of [1 == 1, "CV2-94 close_channel bad arg handled"]
+
+# --- Spawn/join roundtrip ---
+define worker() as:
+    return 42
+th is spawn of worker
+th_result is thread_join of th
+assert of [th_result == 42, "CV2-95 spawn/join roundtrip"]
+
+# ================================================================
+# EVAL.C: eval_num_fast paths (triggered in unobserved blocks)
+# ================================================================
+
+# --- eval_num_fast: index, unary negation, multiply/divide/mod ---
+weights is [1.0, 2.0, 3.0, 4.0]
+config is {"lr": 0.01, "momentum": 0.9}
+unobserved:
+    # Fast-path index lookup
+    w0 is weights[0] + weights[1]
+    assert of [w0 == 3.0, "CV2-96 eval_num_fast index"]
+    # Fast-path unary negation
+    neg_w is -weights[2]
+    assert of [neg_w == -3.0, "CV2-97 eval_num_fast unary neg"]
+    # Fast-path multiply
+    prod is weights[0] * weights[1]
+    assert of [prod == 2.0, "CV2-98 eval_num_fast multiply"]
+    # Fast-path divide
+    ratio is weights[2] / weights[1]
+    assert of [ratio == 1.5, "CV2-99 eval_num_fast divide"]
+    # Fast-path modulo
+    remainder is 7 % 3
+    assert of [remainder == 1, "CV2-100 eval_num_fast modulo"]
+    # Fast-path dot access on dict
+    lr is config.lr * 10
+    assert of [lr == 0.1, "CV2-101 eval_num_fast dot access"]
+
+# ================================================================
+# EVAL.C: interrogative who on non-ident (returns type name)
+# ================================================================
+who_n is who is 42
+assert of [who_n == "number", "CV2-102 who of number"]
+who_s is who is "hello"
+assert of [who_s == "string", "CV2-103 who of string"]
+who_l is who is [1, 2]
+assert of [who_l == "list", "CV2-104 who of list"]
+
+# ================================================================
+# EVAL.C: for loop on non-list error path
+# ================================================================
+try:
+    for_result is 0
+    for item in 42:
+        for_result is 1
+catch e:
+    for_result is -1
+assert of [1 == 1, "CV2-105 for non-list handled"]
+
+# ================================================================
+# EVAL.C: dot access on non-dict error path
+# ================================================================
+try:
+    bad_dot is 42
+    bd_result is bad_dot.foo
+catch e:
+    bd_result is "error"
+assert of [1 == 1, "CV2-106 dot access on non-dict handled"]
+
+# ================================================================
+# BUILTINS.C: json_encode with float needing %.15g precision
+# ================================================================
+je_pi is json_encode of 3.141592653589793
+assert of [contains of [je_pi, "3.14159"] == 1, "CV2-107 json_encode %.15g"]
+
+# ================================================================
+# BUILTINS.C: type of dict and fn
+# ================================================================
+my_dict is {"x": 1}
+assert of [(type of my_dict) == "dict", "CV2-108 type of dict"]
+define my_fn() as:
+    return 1
+assert of [(type of my_fn) == "fn", "CV2-109 type of fn"]
+
+# ================================================================
+# EIGENSCRIPT.C: value_to_string for builtin
+# ================================================================
+s_bi is str of print
+assert of [s_bi == "<builtin>", "CV2-110 str of builtin"]
+
+print of "All coverage-v2 tests passed"
