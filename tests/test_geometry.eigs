@@ -1,0 +1,376 @@
+# ============================================================
+# Geometry Library Tests
+# ============================================================
+
+load_file of "lib/test.eigs"
+load_file of "lib/geometry.eigs"
+
+print of "=== Geometry Tests ==="
+
+# ============================================================
+# 2D Point Operations
+# ============================================================
+
+print of "--- 2D Point Operations ---"
+
+# Distance: (0,0) to (3,4) = 5
+assert_near of [distance2d of [[0,0], [3,4]], 5, 0.001, "3-4-5 triangle"]
+
+# Distance: same point = 0
+assert_near of [distance2d of [[1,1], [1,1]], 0, 0.001, "zero distance"]
+
+# Midpoint
+m is midpoint2d of [[0,0], [4,6]]
+assert_near of [m[0], 2, 0.001, "midpoint x"]
+assert_near of [m[1], 3, 0.001, "midpoint y"]
+
+# Lerp
+lp is lerp2d of [[0,0], [10,20], 0.25]
+assert_near of [lp[0], 2.5, 0.001, "lerp2d x at 0.25"]
+assert_near of [lp[1], 5.0, 0.001, "lerp2d y at 0.25"]
+
+# point2 constructor
+p is point2 of [3, 7]
+assert_eq of [p[0], 3, "point2 x"]
+assert_eq of [p[1], 7, "point2 y"]
+
+# ============================================================
+# 2D Vector Operations
+# ============================================================
+
+print of "--- 2D Vector Operations ---"
+
+assert_eq of [(vec2_add of [[1,2], [3,4]])[0], 4, "vec2_add x"]
+assert_eq of [(vec2_add of [[1,2], [3,4]])[1], 6, "vec2_add y"]
+
+assert_eq of [(vec2_sub of [[5,7], [2,3]])[0], 3, "vec2_sub x"]
+assert_eq of [(vec2_sub of [[5,7], [2,3]])[1], 4, "vec2_sub y"]
+
+assert_eq of [(vec2_scale of [[2,3], 4])[0], 8, "vec2_scale x"]
+assert_eq of [(vec2_scale of [[2,3], 4])[1], 12, "vec2_scale y"]
+
+assert_near of [vec2_dot of [[1,0], [0,1]], 0, 0.001, "perpendicular dot = 0"]
+assert_near of [vec2_dot of [[3,4], [3,4]], 25, 0.001, "self dot = norm^2"]
+
+assert_near of [vec2_cross of [[1,0], [0,1]], 1, 0.001, "cross i x j = 1"]
+assert_near of [vec2_cross of [[0,1], [1,0]], -1, 0.001, "cross j x i = -1"]
+
+assert_near of [vec2_norm of [3,4], 5, 0.001, "vec2_norm 3-4-5"]
+
+un is vec2_normalize of [3, 4]
+assert_near of [un[0], 0.6, 0.001, "normalize x"]
+assert_near of [un[1], 0.8, 0.001, "normalize y"]
+
+# Rotate (1,0) by 90 degrees -> (0,1)
+r is vec2_rotate of [[1,0], 1.5707963]
+assert_near of [r[0], 0, 0.001, "rotate x"]
+assert_near of [r[1], 1, 0.001, "rotate y"]
+
+# Perpendicular
+pp is vec2_perpendicular of [3, 4]
+assert_eq of [pp[0], -4, "perp x"]
+assert_eq of [pp[1], 3, "perp y"]
+
+# Angle between (1,0) and (0,1) = pi/2
+ang is vec2_angle of [[1,0], [0,1]]
+assert_near of [ang, 1.5707963, 0.001, "angle 90 degrees"]
+
+# ============================================================
+# 3D Point Operations
+# ============================================================
+
+print of "--- 3D Point Operations ---"
+
+assert_near of [distance3d of [[0,0,0], [1,2,2]], 3, 0.001, "3D distance"]
+
+m3 is midpoint3d of [[0,0,0], [2,4,6]]
+assert_near of [m3[0], 1, 0.001, "3D midpoint x"]
+assert_near of [m3[1], 2, 0.001, "3D midpoint y"]
+assert_near of [m3[2], 3, 0.001, "3D midpoint z"]
+
+lp3 is lerp3d of [[0,0,0], [10,20,30], 0.5]
+assert_near of [lp3[0], 5, 0.001, "3D lerp x"]
+assert_near of [lp3[1], 10, 0.001, "3D lerp y"]
+assert_near of [lp3[2], 15, 0.001, "3D lerp z"]
+
+# ============================================================
+# Line / Segment Operations
+# ============================================================
+
+print of "--- Line/Segment Operations ---"
+
+# Line from points: y=x -> a=1, b=-1, c=0 (or scalar multiple)
+lf is line_from_points of [[0,0], [1,1]]
+# ax + by + c = 0: check that (0,0) satisfies it
+assert_near of [lf[0] * 0 + lf[1] * 0 + lf[2], 0, 0.001, "line through origin"]
+# Check that (1,1) satisfies it
+assert_near of [lf[0] * 1 + lf[1] * 1 + lf[2], 0, 0.001, "line through (1,1)"]
+
+# Point to line distance: (0,1) to y=0 line through (0,0)-(1,0)
+assert_near of [point_to_line_distance of [[0,1], [0,0], [1,0]], 1, 0.001, "point to line dist"]
+
+# Point to segment distance
+assert_near of [point_to_segment_distance of [[0,1], [0,0], [1,0]], 1, 0.001, "point to seg dist perp"]
+assert_near of [point_to_segment_distance of [[-1,0], [0,0], [1,0]], 1, 0.001, "point to seg dist endpoint"]
+
+# Closest point on segment
+cp is closest_point_on_segment of [[0.5, 1], [0,0], [1,0]]
+assert_near of [cp[0], 0.5, 0.001, "closest point x"]
+assert_near of [cp[1], 0, 0.001, "closest point y"]
+
+# Segment length
+assert_near of [segment_length of [[0,0], [3,4]], 5, 0.001, "segment length"]
+
+# Line intersection
+li is line_intersection of [[0,0], [1,1], [0,1], [1,0]]
+assert_near of [li[0], 0.5, 0.001, "intersection x"]
+assert_near of [li[1], 0.5, 0.001, "intersection y"]
+
+# Parallel lines -> null
+li2 is line_intersection of [[0,0], [1,0], [0,1], [1,1]]
+assert_eq of [li2, null, "parallel lines -> null"]
+
+# Segment intersection
+assert_eq of [segments_intersect of [[0,0], [1,1], [0,1], [1,0]], 1, "X segments intersect"]
+assert_eq of [segments_intersect of [[0,0], [1,0], [0,1], [1,1]], 0, "parallel segments don't"]
+
+# ============================================================
+# Geometric Predicates
+# ============================================================
+
+print of "--- Geometric Predicates ---"
+
+assert_eq of [orientation of [[0,0], [1,0], [0,1]], 1, "CCW orientation"]
+assert_eq of [orientation of [[0,0], [0,1], [1,0]], -1, "CW orientation"]
+assert_eq of [orientation of [[0,0], [1,1], [2,2]], 0, "collinear orientation"]
+
+assert_eq of [collinear of [[0,0], [1,1], [2,2]], 1, "collinear points"]
+assert_eq of [collinear of [[0,0], [1,0], [0,1]], 0, "non-collinear points"]
+
+assert_eq of [on_segment of [[0,0], [1,1], [2,2]], 1, "on segment middle"]
+assert_eq of [on_segment of [[0,0], [3,3], [2,2]], 0, "off segment"]
+
+# ============================================================
+# Triangle Operations
+# ============================================================
+
+print of "--- Triangle Operations ---"
+
+# Area: right triangle (0,0), (4,0), (0,3) = 6
+assert_near of [triangle_area of [[0,0], [4,0], [0,3]], 6, 0.001, "right triangle area"]
+
+# Area: equilateral-ish check
+assert_near of [triangle_area of [[0,0], [2,0], [1,1.732]], 1.732, 0.01, "triangle area"]
+
+# Centroid
+tc is triangle_centroid of [[0,0], [3,0], [0,3]]
+assert_near of [tc[0], 1, 0.001, "centroid x"]
+assert_near of [tc[1], 1, 0.001, "centroid y"]
+
+# Point in triangle
+assert_eq of [point_in_triangle of [[1,1], [0,0], [4,0], [0,4]], 1, "point inside"]
+assert_eq of [point_in_triangle of [[5,5], [0,0], [4,0], [0,4]], 0, "point outside"]
+
+# Circumcenter of right triangle (0,0), (4,0), (0,4): should be at (2,2)
+cc is triangle_circumcenter of [[0,0], [4,0], [0,4]]
+assert_near of [cc[0], 2, 0.001, "circumcenter x"]
+assert_near of [cc[1], 2, 0.001, "circumcenter y"]
+
+# Circumradius of right triangle: hypotenuse/2
+cr is triangle_circumradius of [[0,0], [4,0], [0,4]]
+hyp is distance2d of [[4,0], [0,4]]
+assert_near of [cr, hyp / 2, 0.001, "circumradius of right triangle"]
+
+# Inradius of 3-4-5 right triangle: area/s = 6/6 = 1
+ir is triangle_inradius of [[0,0], [3,0], [0,4]]
+assert_near of [ir, 1, 0.001, "inradius of 3-4-5"]
+
+# Incenter of equilateral triangle at (0,0), (2,0), (1, sqrt(3))
+ic is triangle_incenter of [[0,0], [2,0], [1, 1.732050808]]
+assert_near of [ic[0], 1, 0.01, "incenter x equilateral"]
+assert_near of [ic[1], 0.577, 0.01, "incenter y equilateral"]
+
+# Barycentric coords: centroid should have ~equal weights
+bc is barycentric_coords of [[1,1], [0,0], [3,0], [0,3]]
+assert_near of [bc[0] + bc[1] + bc[2], 1, 0.001, "bary sum = 1"]
+assert_true of [bc[0] > 0, "bary u > 0 inside"]
+assert_true of [bc[1] > 0, "bary v > 0 inside"]
+assert_true of [bc[2] > 0, "bary w > 0 inside"]
+
+# ============================================================
+# Polygon Operations
+# ============================================================
+
+print of "--- Polygon Operations ---"
+
+# Unit square area = 1 (CCW winding)
+assert_near of [polygon_area of [[0,0], [1,0], [1,1], [0,1]], 1, 0.001, "unit square area"]
+
+# CW winding gives negative area
+assert_near of [polygon_area of [[0,0], [0,1], [1,1], [1,0]], -1, 0.001, "CW square area"]
+
+# Polygon perimeter: unit square = 4
+assert_near of [polygon_perimeter of [[0,0], [1,0], [1,1], [0,1]], 4, 0.001, "unit square perimeter"]
+
+# Polygon centroid: unit square = (0.5, 0.5)
+pc is polygon_centroid of [[0,0], [1,0], [1,1], [0,1]]
+assert_near of [pc[0], 0.5, 0.001, "square centroid x"]
+assert_near of [pc[1], 0.5, 0.001, "square centroid y"]
+
+# Point in polygon
+assert_eq of [point_in_polygon of [[0.5, 0.5], [[0,0], [1,0], [1,1], [0,1]]], 1, "point in square"]
+assert_eq of [point_in_polygon of [[2, 2], [[0,0], [1,0], [1,1], [0,1]]], 0, "point outside square"]
+
+# Convex check
+assert_eq of [polygon_is_convex of [[0,0], [1,0], [1,1], [0,1]], 1, "square is convex"]
+# L-shape is not convex
+assert_eq of [polygon_is_convex of [[0,0], [2,0], [2,1], [1,1], [1,2], [0,2]], 0, "L-shape not convex"]
+
+# Winding order
+assert_eq of [polygon_is_clockwise of [[0,0], [1,0], [1,1], [0,1]], 0, "CCW not clockwise"]
+assert_eq of [polygon_is_clockwise of [[0,0], [0,1], [1,1], [1,0]], 1, "CW is clockwise"]
+
+# ============================================================
+# Convex Hull
+# ============================================================
+
+print of "--- Convex Hull ---"
+
+# Hull of square + interior point = square (4 vertices)
+hull is convex_hull of [[0,0], [1,0], [0.5,0.5], [1,1], [0,1]]
+assert_eq of [len of hull, 4, "hull of square = 4 points"]
+
+# Hull of grid = 4 corners
+hull2 is convex_hull of [[0,0], [1,0], [2,0], [2,1], [2,2], [1,2], [0,2], [0,1], [1,1]]
+assert_eq of [len of hull2, 4, "hull of grid = 4 corners"]
+
+# Hull of collinear points
+hull3 is convex_hull of [[0,0], [1,0], [2,0]]
+assert_eq of [len of hull3, 2, "hull of collinear = 2 endpoints"]
+
+# ============================================================
+# Circle Operations
+# ============================================================
+
+print of "--- Circle Operations ---"
+
+assert_near of [circle_area of 5, 78.54, 0.01, "circle area r=5"]
+assert_near of [circle_circumference of 1, 6.2832, 0.001, "circumference r=1"]
+
+assert_eq of [point_in_circle of [1, 1, 0, 0, 2], 1, "point in circle"]
+assert_eq of [point_in_circle of [3, 3, 0, 0, 2], 0, "point outside circle"]
+assert_eq of [point_in_circle of [0, 0, 0, 0, 1], 1, "center in circle"]
+
+# Two circles intersecting
+assert_eq of [circles_intersect of [0, 0, 2, 3, 0, 2], 1, "overlapping circles"]
+assert_eq of [circles_intersect of [0, 0, 1, 5, 0, 1], 0, "distant circles"]
+assert_eq of [circles_intersect of [0, 0, 1, 0, 0, 0.5], 0, "contained circle"]
+
+# Circle intersection points
+cip is circle_intersection_points of [0, 0, 1, 1, 0, 1]
+assert_eq of [len of cip, 2, "two intersection points"]
+# Both points should be at distance 1 from both centers
+d1 is sqrt of (cip[0][0] * cip[0][0] + cip[0][1] * cip[0][1])
+assert_near of [d1, 1, 0.001, "int point on circle 1"]
+
+# Circle from three points
+cfp is circle_from_three_points of [[1,0], [0,1], [-1,0]]
+assert_near of [cfp[0], 0, 0.001, "circle center x"]
+assert_near of [cfp[1], 0, 0.001, "circle center y"]
+assert_near of [cfp[2], 1, 0.001, "circle radius"]
+
+# ============================================================
+# Transformations
+# ============================================================
+
+print of "--- Transformations ---"
+
+# Translate
+tr is translate2d of [[[0,0], [1,1]], 5, 3]
+assert_near of [tr[0][0], 5, 0.001, "translate x"]
+assert_near of [tr[0][1], 3, 0.001, "translate y"]
+assert_near of [tr[1][0], 6, 0.001, "translate x2"]
+assert_near of [tr[1][1], 4, 0.001, "translate y2"]
+
+# Rotate 90 degrees around origin
+rot is rotate2d_around of [[[1,0]], [0,0], 1.5707963]
+assert_near of [rot[0][0], 0, 0.001, "rotate around x"]
+assert_near of [rot[0][1], 1, 0.001, "rotate around y"]
+
+# Scale from origin by 2x
+sc is scale2d_from of [[[1,1], [2,3]], [0,0], 2, 2]
+assert_near of [sc[0][0], 2, 0.001, "scale x"]
+assert_near of [sc[0][1], 2, 0.001, "scale y"]
+assert_near of [sc[1][0], 4, 0.001, "scale x2"]
+assert_near of [sc[1][1], 6, 0.001, "scale y2"]
+
+# Reflect across x-axis (line y=0)
+ref is reflect2d of [[[1,1], [2,3]], [0,0], [1,0]]
+assert_near of [ref[0][0], 1, 0.001, "reflect x unchanged"]
+assert_near of [ref[0][1], -1, 0.001, "reflect y negated"]
+
+# ============================================================
+# Nearest Point Queries
+# ============================================================
+
+print of "--- Nearest Point Queries ---"
+
+pts is [[0,0], [3,0], [0,4], [3,4]]
+assert_eq of [nearest_point of [[1,0], pts], 0, "nearest to (1,0) is origin"]
+assert_eq of [nearest_point of [[3,3], pts], 3, "nearest to (3,3) is (3,4)"]
+
+kn is k_nearest of [[0,0], pts, 2]
+assert_eq of [len of kn, 2, "k_nearest returns k items"]
+assert_eq of [kn[0], 0, "k_nearest first is closest"]
+
+# Bounding box
+bb is bounding_box of [[1,2], [3,1], [2,4]]
+assert_eq of [bb[0], 1, "bbox min_x"]
+assert_eq of [bb[1], 1, "bbox min_y"]
+assert_eq of [bb[2], 3, "bbox max_x"]
+assert_eq of [bb[3], 4, "bbox max_y"]
+
+# ============================================================
+# Distance Functions
+# ============================================================
+
+print of "--- Distance Functions ---"
+
+# Hausdorff distance between parallel horizontal lines
+hd is hausdorff_distance of [[[0,0], [1,0]], [[0,1], [1,1]]]
+assert_near of [hd, 1, 0.001, "parallel lines hausdorff = 1"]
+
+# Hausdorff: same set = 0
+hd2 is hausdorff_distance of [[[0,0], [1,1]], [[0,0], [1,1]]]
+assert_near of [hd2, 0, 0.001, "same set hausdorff = 0"]
+
+# Polygon to polygon distance: two separated squares
+d_pp is polygon_to_polygon_distance of [[[0,0], [1,0], [1,1], [0,1]], [[3,0], [4,0], [4,1], [3,1]]]
+assert_near of [d_pp, 2, 0.001, "separated squares distance"]
+
+# ============================================================
+# Area / Volume Calculations
+# ============================================================
+
+print of "--- Area/Volume ---"
+
+# Sphere volume: r=1 -> 4pi/3 ~ 4.189
+assert_near of [sphere_volume of 1, 4.189, 0.01, "unit sphere volume"]
+
+# Sphere surface area: r=1 -> 4pi ~ 12.566
+assert_near of [sphere_surface_area of 1, 12.566, 0.01, "unit sphere surface area"]
+
+# Cylinder volume: r=2, h=5 -> pi*4*5 = 62.83
+assert_near of [cylinder_volume of [2, 5], 62.83, 0.01, "cylinder volume"]
+
+# Cone volume: r=3, h=4 -> pi*9*4/3 = 37.70
+assert_near of [cone_volume of [3, 4], 37.70, 0.01, "cone volume"]
+
+# Ellipse area: a=3, b=2 -> pi*6 = 18.85
+assert_near of [ellipse_area of [3, 2], 18.85, 0.01, "ellipse area"]
+
+# ============================================================
+# Summary
+# ============================================================
+
+test_summary of null
