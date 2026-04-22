@@ -12,7 +12,12 @@ FULL_SOURCES := $(SOURCES) $(SRC_DIR)/ext_http.c $(SRC_DIR)/ext_db.c \
 
 PREFIX  := $(HOME)/.local
 
-.PHONY: all build full http test install clean coverage coverage-clean fuzz fuzz-run
+LSP_SOURCES := $(SRC_DIR)/eigenlsp.c $(SRC_DIR)/eigenscript.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c \
+               $(SRC_DIR)/eval.c $(SRC_DIR)/builtins.c $(SRC_DIR)/builtins_tensor.c \
+               $(SRC_DIR)/arena.c $(SRC_DIR)/strbuf.c $(SRC_DIR)/ext_store.c
+LSP_BINARY  := $(SRC_DIR)/eigenlsp
+
+.PHONY: all build full http test install clean coverage coverage-clean fuzz fuzz-run lsp
 
 all: build
 
@@ -58,17 +63,28 @@ gfx:
 test: build
 	cd tests && bash run_all_tests.sh
 
-install: build
+install: build lsp
 	mkdir -p $(PREFIX)/bin
 	mkdir -p $(PREFIX)/lib/eigenscript
 	cp $(BINARY) $(PREFIX)/bin/eigenscript
-	chmod +x $(PREFIX)/bin/eigenscript
+	cp $(LSP_BINARY) $(PREFIX)/bin/eigenlsp
+	chmod +x $(PREFIX)/bin/eigenscript $(PREFIX)/bin/eigenlsp
 	cp lib/*.eigs $(PREFIX)/lib/eigenscript/
 	@echo "Installed: $(PREFIX)/bin/eigenscript (v$(VERSION))"
+	@echo "Installed: $(PREFIX)/bin/eigenlsp (v$(VERSION))"
 	@echo "Stdlib:    $(PREFIX)/lib/eigenscript/"
 
+lsp:
+	$(CC) $(CFLAGS) -o $(LSP_BINARY) $(LSP_SOURCES) \
+		-DEIGENSCRIPT_EXT_HTTP=0 \
+		-DEIGENSCRIPT_EXT_MODEL=0 \
+		-DEIGENSCRIPT_EXT_DB=0 \
+		-DEIGENSCRIPT_VERSION='"$(VERSION)"' \
+		$(LDFLAGS)
+	@echo "EigenScript LSP $(VERSION) built. Binary: $$(du -sh $(LSP_BINARY) | cut -f1)"
+
 clean:
-	rm -f $(BINARY) $(SRC_DIR)/*.o
+	rm -f $(BINARY) $(LSP_BINARY) $(SRC_DIR)/*.o
 
 coverage-clean:
 	rm -f $(SRC_DIR)/*.gcda $(SRC_DIR)/*.gcno $(SRC_DIR)/*.gcov coverage.txt

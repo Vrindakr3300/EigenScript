@@ -81,6 +81,7 @@ typedef struct {
     double num_val;
     char *str_val;
     int line;
+    int col;    /* 0-based column offset */
 } Token;
 
 typedef struct {
@@ -107,6 +108,7 @@ typedef struct ASTNode ASTNode;
 struct ASTNode {
     ASTType type;
     int line;
+    int col;    /* 0-based column offset */
     union {
         double num;
         char *str;

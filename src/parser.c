@@ -55,11 +55,16 @@ static void p_skip_newlines(Parser *p) {
     while (p_cur(p)->type == TOK_NEWLINE) p_advance(p);
 }
 
-ASTNode* make_node(ASTType type, int line) {
+ASTNode* make_node_col(ASTType type, int line, int col) {
     ASTNode *n = xcalloc(1, sizeof(ASTNode));
     n->type = type;
     n->line = line;
+    n->col = col;
     return n;
+}
+
+ASTNode* make_node(ASTType type, int line) {
+    return make_node_col(type, line, 0);
 }
 
 /* Recursively free an AST tree. */

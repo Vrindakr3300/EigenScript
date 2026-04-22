@@ -8,7 +8,7 @@
 /* Parse-error counter owned by eigenscript.c. */
 extern __thread int g_parse_errors;
 
-static void tok_add(TokenList *tl, TokType type, double num, const char *str, int line) {
+static void tok_add(TokenList *tl, TokType type, double num, const char *str, int line, int col) {
     if (tl->count >= tl->capacity) {
         tl->capacity *= 2;
         tl->tokens = xrealloc_array(tl->tokens, tl->capacity, sizeof(Token));
@@ -18,6 +18,7 @@ static void tok_add(TokenList *tl, TokType type, double num, const char *str, in
     t->num_val = num;
     t->str_val = str ? xstrdup(str) : NULL;
     t->line = line;
+    t->col = col;
 }
 
 static TokType keyword_type(const char *word) {
@@ -72,24 +73,25 @@ TokenList tokenize(const char *source) {
 
     const char *p = source;
     int line = 1;
+    int col = 0;
     int at_line_start = 1;
     int bracket_depth = 0;  /* inside [], {}, () — suppress newlines/indent */
 
     while (*p) {
         if (at_line_start && bracket_depth == 0) {
             int spaces = 0;
-            while (*p == ' ') { spaces++; p++; }
+            while (*p == ' ') { spaces++; p++; col++; }
             if (*p == '\t') {
-                while (*p == '\t') { spaces += 4; p++; }
-                while (*p == ' ') { spaces++; p++; }
+                while (*p == '\t') { spaces += 4; p++; col += 4; }
+                while (*p == ' ') { spaces++; p++; col++; }
             }
             if (*p == '#') {
-                while (*p && *p != '\n') p++;
-                if (*p == '\n') { p++; line++; }
+                while (*p && *p != '\n') { p++; col++; }
+                if (*p == '\n') { p++; line++; col = 0; }
                 continue;
             }
             if (*p == '\n') {
-                p++; line++;
+                p++; line++; col = 0;
                 continue;
             }
             if (*p == '\0') break;
@@ -97,23 +99,23 @@ TokenList tokenize(const char *source) {
             if (spaces > indent_stack[indent_top]) {
                 indent_top++;
                 indent_stack[indent_top] = spaces;
-                tok_add(&tl, TOK_INDENT, 0, NULL, line);
+                tok_add(&tl, TOK_INDENT, 0, NULL, line, col);
             } else {
                 while (indent_top > 0 && spaces < indent_stack[indent_top]) {
                     indent_top--;
-                    tok_add(&tl, TOK_DEDENT, 0, NULL, line);
+                    tok_add(&tl, TOK_DEDENT, 0, NULL, line, col);
                 }
             }
             at_line_start = 0;
         }
 
         if (*p == ' ' || *p == '\t') {
-            p++;
+            p++; col++;
             continue;
         }
 
         if (*p == '#') {
-            while (*p && *p != '\n') p++;
+            while (*p && *p != '\n') { p++; col++; }
             continue;
         }
 
@@ -122,17 +124,19 @@ TokenList tokenize(const char *source) {
                 if (tl.count > 0 && tl.tokens[tl.count-1].type != TOK_NEWLINE
                     && tl.tokens[tl.count-1].type != TOK_INDENT
                     && tl.tokens[tl.count-1].type != TOK_DEDENT) {
-                    tok_add(&tl, TOK_NEWLINE, 0, NULL, line);
+                    tok_add(&tl, TOK_NEWLINE, 0, NULL, line, col);
                 }
                 at_line_start = 1;
             }
-            p++; line++;
+            p++; line++; col = 0;
             continue;
         }
 
+        int tok_col = col;  /* save column at start of token */
+
         /* f-string: f"hello {expr}" expands to ("hello " + (str of (expr))) */
         if (*p == 'f' && *(p+1) == '"') {
-            p += 2; /* skip f" */
+            p += 2; col += 2; /* skip f" */
             strbuf buf;
             strbuf_init(&buf);
             int has_segments = 0;
@@ -140,11 +144,11 @@ TokenList tokenize(const char *source) {
             while (*p && *p != '"') {
                 if (*p == '\\' && (*(p+1) == '{' || *(p+1) == '}')) {
                     strbuf_append_char(&buf, *(p+1));
-                    p += 2;
+                    p += 2; col += 2;
                     continue;
                 }
                 if (*p == '\\') {
-                    p++;
+                    p++; col++;
                     switch (*p) {
                         case 'n': strbuf_append_char(&buf, '\n'); break;
                         case 't': strbuf_append_char(&buf, '\t'); break;
@@ -152,27 +156,27 @@ TokenList tokenize(const char *source) {
                         case '"': strbuf_append_char(&buf, '"'); break;
                         default: strbuf_append_char(&buf, *p); break;
                     }
-                    p++;
+                    p++; col++;
                     continue;
                 }
                 if (*p == '{') {
                     /* Emit accumulated literal and + operator */
                     if (buf.len > 0 || !has_segments) {
-                        if (has_segments) tok_add(&tl, TOK_PLUS, 0, NULL, line);
-                        tok_add(&tl, TOK_STR, 0, buf.data, line);
+                        if (has_segments) tok_add(&tl, TOK_PLUS, 0, NULL, line, tok_col);
+                        tok_add(&tl, TOK_STR, 0, buf.data, line, tok_col);
                         has_segments = 1;
                     }
                     buf.len = 0;
                     buf.data[0] = '\0';
-                    p++; /* skip { */
+                    p++; col++; /* skip { */
 
                     /* Emit: + (str of (expr)) */
-                    if (has_segments) tok_add(&tl, TOK_PLUS, 0, NULL, line);
+                    if (has_segments) tok_add(&tl, TOK_PLUS, 0, NULL, line, col);
                     else has_segments = 1;
-                    tok_add(&tl, TOK_LPAREN, 0, NULL, line);
-                    tok_add(&tl, TOK_IDENT, 0, "str", line);
-                    tok_add(&tl, TOK_OF, 0, NULL, line);
-                    tok_add(&tl, TOK_LPAREN, 0, NULL, line);
+                    tok_add(&tl, TOK_LPAREN, 0, NULL, line, col);
+                    tok_add(&tl, TOK_IDENT, 0, "str", line, col);
+                    tok_add(&tl, TOK_OF, 0, NULL, line, col);
+                    tok_add(&tl, TOK_LPAREN, 0, NULL, line, col);
 
                     /* Tokenize the expression inside braces */
                     int depth = 1;
@@ -182,8 +186,9 @@ TokenList tokenize(const char *source) {
                         if (*p == '{') depth++;
                         else if (*p == '}') { depth--; if (depth == 0) break; }
                         strbuf_append_char(&expr_buf, *p++);
+                        col++;
                     }
-                    if (*p == '}') p++;
+                    if (*p == '}') { p++; col++; }
                     else {
                         fprintf(stderr, "Syntax error line %d: unterminated f-string expression\n", line);
                         g_parse_errors++;
@@ -196,25 +201,26 @@ TokenList tokenize(const char *source) {
                         if (inner.tokens[ti].type == TOK_EOF) break;
                         if (inner.tokens[ti].type == TOK_NEWLINE) continue;
                         Token *it = &inner.tokens[ti];
-                        tok_add(&tl, it->type, it->num_val, it->str_val, line);
+                        tok_add(&tl, it->type, it->num_val, it->str_val, line, col);
                     }
                     free_tokenlist(&inner);
 
-                    tok_add(&tl, TOK_RPAREN, 0, NULL, line);
-                    tok_add(&tl, TOK_RPAREN, 0, NULL, line);
+                    tok_add(&tl, TOK_RPAREN, 0, NULL, line, col);
+                    tok_add(&tl, TOK_RPAREN, 0, NULL, line, col);
                     continue;
                 }
                 strbuf_append_char(&buf, *p++);
+                col++;
             }
             /* Emit trailing literal */
             if (buf.len > 0) {
-                if (has_segments) tok_add(&tl, TOK_PLUS, 0, NULL, line);
-                tok_add(&tl, TOK_STR, 0, buf.data, line);
+                if (has_segments) tok_add(&tl, TOK_PLUS, 0, NULL, line, tok_col);
+                tok_add(&tl, TOK_STR, 0, buf.data, line, tok_col);
             } else if (!has_segments) {
                 /* empty f-string: f"" */
-                tok_add(&tl, TOK_STR, 0, "", line);
+                tok_add(&tl, TOK_STR, 0, "", line, tok_col);
             }
-            if (*p == '"') p++;
+            if (*p == '"') { p++; col++; }
             else {
                 fprintf(stderr, "Syntax error line %d: unterminated f-string\n", line);
                 g_parse_errors++;
@@ -224,12 +230,12 @@ TokenList tokenize(const char *source) {
         }
 
         if (*p == '"') {
-            p++;
+            p++; col++;
             strbuf buf;
             strbuf_init(&buf);
             while (*p && *p != '"') {
                 if (*p == '\\') {
-                    p++;
+                    p++; col++;
                     switch (*p) {
                         case 'n': strbuf_append_char(&buf, '\n'); break;
                         case 't': strbuf_append_char(&buf, '\t'); break;
@@ -240,14 +246,14 @@ TokenList tokenize(const char *source) {
                 } else {
                     strbuf_append_char(&buf, *p);
                 }
-                p++;
+                p++; col++;
             }
-            if (*p == '"') p++;
+            if (*p == '"') { p++; col++; }
             else {
                 fprintf(stderr, "Syntax error line %d: unterminated string\n", line);
                 g_parse_errors++;
             }
-            tok_add(&tl, TOK_STR, 0, buf.data, line);
+            tok_add(&tl, TOK_STR, 0, buf.data, line, tok_col);
             strbuf_free(&buf);
             continue;
         }
@@ -255,8 +261,9 @@ TokenList tokenize(const char *source) {
         if (isdigit(*p) || (*p == '.' && isdigit(*(p+1)))) {
             char *end;
             double num = strtod(p, &end);
+            col += (int)(end - p);
             p = end;
-            tok_add(&tl, TOK_NUM, num, NULL, line);
+            tok_add(&tl, TOK_NUM, num, NULL, line, tok_col);
             continue;
         }
 
@@ -265,69 +272,70 @@ TokenList tokenize(const char *source) {
             int wi = 0;
             while ((isalnum(*p) || *p == '_') && wi < 255) {
                 word[wi++] = *p++;
+                col++;
             }
             word[wi] = '\0';
             TokType tt = keyword_type(word);
-            tok_add(&tl, tt, 0, word, line);
+            tok_add(&tl, tt, 0, word, line, tok_col);
             continue;
         }
 
         switch (*p) {
-            case '+': tok_add(&tl, TOK_PLUS, 0, NULL, line); p++; break;
-            case '-': tok_add(&tl, TOK_MINUS, 0, NULL, line); p++; break;
-            case '*': tok_add(&tl, TOK_STAR, 0, NULL, line); p++; break;
-            case '/': tok_add(&tl, TOK_SLASH, 0, NULL, line); p++; break;
-            case '%': tok_add(&tl, TOK_PERCENT, 0, NULL, line); p++; break;
-            case '(': tok_add(&tl, TOK_LPAREN, 0, NULL, line); p++; bracket_depth++; break;
-            case ')': tok_add(&tl, TOK_RPAREN, 0, NULL, line); p++; if (bracket_depth > 0) bracket_depth--; break;
-            case '[': tok_add(&tl, TOK_LBRACKET, 0, NULL, line); p++; bracket_depth++; break;
-            case ']': tok_add(&tl, TOK_RBRACKET, 0, NULL, line); p++; if (bracket_depth > 0) bracket_depth--; break;
-            case '{': tok_add(&tl, TOK_LBRACE, 0, NULL, line); p++; bracket_depth++; break;
-            case '}': tok_add(&tl, TOK_RBRACE, 0, NULL, line); p++; if (bracket_depth > 0) bracket_depth--; break;
-            case ',': tok_add(&tl, TOK_COMMA, 0, NULL, line); p++; break;
-            case ':': tok_add(&tl, TOK_COLON, 0, NULL, line); p++; break;
-            case '.': tok_add(&tl, TOK_DOT, 0, NULL, line); p++; break;
+            case '+': tok_add(&tl, TOK_PLUS, 0, NULL, line, tok_col); p++; col++; break;
+            case '-': tok_add(&tl, TOK_MINUS, 0, NULL, line, tok_col); p++; col++; break;
+            case '*': tok_add(&tl, TOK_STAR, 0, NULL, line, tok_col); p++; col++; break;
+            case '/': tok_add(&tl, TOK_SLASH, 0, NULL, line, tok_col); p++; col++; break;
+            case '%': tok_add(&tl, TOK_PERCENT, 0, NULL, line, tok_col); p++; col++; break;
+            case '(': tok_add(&tl, TOK_LPAREN, 0, NULL, line, tok_col); p++; col++; bracket_depth++; break;
+            case ')': tok_add(&tl, TOK_RPAREN, 0, NULL, line, tok_col); p++; col++; if (bracket_depth > 0) bracket_depth--; break;
+            case '[': tok_add(&tl, TOK_LBRACKET, 0, NULL, line, tok_col); p++; col++; bracket_depth++; break;
+            case ']': tok_add(&tl, TOK_RBRACKET, 0, NULL, line, tok_col); p++; col++; if (bracket_depth > 0) bracket_depth--; break;
+            case '{': tok_add(&tl, TOK_LBRACE, 0, NULL, line, tok_col); p++; col++; bracket_depth++; break;
+            case '}': tok_add(&tl, TOK_RBRACE, 0, NULL, line, tok_col); p++; col++; if (bracket_depth > 0) bracket_depth--; break;
+            case ',': tok_add(&tl, TOK_COMMA, 0, NULL, line, tok_col); p++; col++; break;
+            case ':': tok_add(&tl, TOK_COLON, 0, NULL, line, tok_col); p++; col++; break;
+            case '.': tok_add(&tl, TOK_DOT, 0, NULL, line, tok_col); p++; col++; break;
             case '<':
-                if (*(p+1) == '=') { tok_add(&tl, TOK_LE, 0, NULL, line); p += 2; }
-                else { tok_add(&tl, TOK_LT, 0, NULL, line); p++; }
+                if (*(p+1) == '=') { tok_add(&tl, TOK_LE, 0, NULL, line, tok_col); p += 2; col += 2; }
+                else { tok_add(&tl, TOK_LT, 0, NULL, line, tok_col); p++; col++; }
                 break;
             case '>':
-                if (*(p+1) == '=') { tok_add(&tl, TOK_GE, 0, NULL, line); p += 2; }
-                else { tok_add(&tl, TOK_GT, 0, NULL, line); p++; }
+                if (*(p+1) == '=') { tok_add(&tl, TOK_GE, 0, NULL, line, tok_col); p += 2; col += 2; }
+                else { tok_add(&tl, TOK_GT, 0, NULL, line, tok_col); p++; col++; }
                 break;
             case '!':
-                if (*(p+1) == '=') { tok_add(&tl, TOK_NE, 0, NULL, line); p += 2; }
+                if (*(p+1) == '=') { tok_add(&tl, TOK_NE, 0, NULL, line, tok_col); p += 2; col += 2; }
                 else {
                     fprintf(stderr, "Syntax error line %d: expected '!=' after '!'\n", line);
-                    g_parse_errors++; p++;
+                    g_parse_errors++; p++; col++;
                 }
                 break;
             case '=':
-                if (*(p+1) == '=') { tok_add(&tl, TOK_EQ, 0, NULL, line); p += 2; }
-                else if (*(p+1) == '>') { tok_add(&tl, TOK_ARROW, 0, NULL, line); p += 2; }
-                else { tok_add(&tl, TOK_ASSIGN, 0, NULL, line); p++; }
+                if (*(p+1) == '=') { tok_add(&tl, TOK_EQ, 0, NULL, line, tok_col); p += 2; col += 2; }
+                else if (*(p+1) == '>') { tok_add(&tl, TOK_ARROW, 0, NULL, line, tok_col); p += 2; col += 2; }
+                else { tok_add(&tl, TOK_ASSIGN, 0, NULL, line, tok_col); p++; col++; }
                 break;
             case '|':
-                if (*(p+1) == '>') { tok_add(&tl, TOK_PIPE, 0, NULL, line); p += 2; }
-                else { p++; } /* bare | not used */
+                if (*(p+1) == '>') { tok_add(&tl, TOK_PIPE, 0, NULL, line, tok_col); p += 2; col += 2; }
+                else { p++; col++; } /* bare | not used */
                 break;
             default:
                 fprintf(stderr, "Syntax error line %d: unexpected character '%c'\n", line, *p);
                 g_parse_errors++;
-                p++;
+                p++; col++;
                 break;
         }
     }
 
     while (indent_top > 0) {
-        tok_add(&tl, TOK_DEDENT, 0, NULL, line);
+        tok_add(&tl, TOK_DEDENT, 0, NULL, line, col);
         indent_top--;
     }
 
     if (tl.count > 0 && tl.tokens[tl.count-1].type != TOK_NEWLINE) {
-        tok_add(&tl, TOK_NEWLINE, 0, NULL, line);
+        tok_add(&tl, TOK_NEWLINE, 0, NULL, line, col);
     }
-    tok_add(&tl, TOK_EOF, 0, NULL, line);
+    tok_add(&tl, TOK_EOF, 0, NULL, line, col);
 
     return tl;
 }
