@@ -31,7 +31,7 @@ define play_chord(notes, duration, volume) as:
         return null
     mixed is audio_sine of [notes[0], duration, volume / n]
     i is 1
-    while i < n:
+    loop while i < n:
         s is audio_sine of [notes[i], duration, volume / n]
         mixed is audio_mix of [mixed, s]
         i is i + 1
@@ -62,5 +62,5 @@ define play_hihat(volume) as:
 
 # ---- Wait for playback to drain ----
 define audio_wait() as:
-    while audio_queue_size of null > 0:
+    loop while (audio_queue_size of null) > 0:
         gfx_delay of 10

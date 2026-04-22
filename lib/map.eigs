@@ -19,7 +19,7 @@
 # Keys are compared with ==. Last-write wins on duplicate keys.
 
 # ---- map_new: create an empty map ----
-define map_new(x) as:
+define map_new(_x) as:
     return []
 
 # ---- map_get: get value by key, or null if not found ----

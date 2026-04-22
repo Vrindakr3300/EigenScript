@@ -56,11 +56,11 @@ define upsert(handle, collection, key, record) as:
         return store_put of [handle, collection, record]
 
 define bulk_put(handle, collection, records) as:
-    keys is []
+    result_keys is []
     for i in range of (len of records):
         k is store_put of [handle, collection, records[i]]
-        append of [keys, k]
-    return keys
+        append of [result_keys, k]
+    return result_keys
 
 define to_dataframe(handle, collection) as:
     return store_query of [handle, collection]

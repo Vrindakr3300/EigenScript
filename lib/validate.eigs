@@ -122,9 +122,9 @@ define is_alpha(value) as:
         return 0
     if (len of value) == 0:
         return 0
-    lower is str_lower of value
-    for i in range of (len of lower):
-        c is char_at of [lower, i]
+    lc is str_lower of value
+    for i in range of (len of lc):
+        c is char_at of [lc, i]
         code is num of c
         # a-z check via lowercase comparison
         if (contains of ["abcdefghijklmnopqrstuvwxyz", c]) == 0:
@@ -137,10 +137,10 @@ define is_alphanumeric(value) as:
         return 0
     if (len of value) == 0:
         return 0
-    lower is str_lower of value
+    lc is str_lower of value
     allowed is "abcdefghijklmnopqrstuvwxyz0123456789"
-    for i in range of (len of lower):
-        c is char_at of [lower, i]
+    for i in range of (len of lc):
+        c is char_at of [lc, i]
         if (contains of [allowed, c]) == 0:
             return 0
     return 1

@@ -38,7 +38,7 @@ define clean_response(text) as:
     return text
 
 # ---- Check OpenAI API key availability ----
-define check_openai(x) as:
+define check_openai(_x) as:
     key is env_get of "AI_INTEGRATIONS_OPENAI_API_KEY"
     if key == "":
         key is env_get of "OPENAI_API_KEY"

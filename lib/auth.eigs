@@ -47,7 +47,7 @@ define _extract_bearer(headers) as:
     return ""
 
 # ---- Check: validate bearer token from request headers ----
-define auth_check(x) as:
+define auth_check(_x) as:
     if _auth_token == "":
         return json_build of ["status", "error", "error", "not logged in"]
     headers is http_request_headers of null
@@ -57,17 +57,17 @@ define auth_check(x) as:
     return json_build of ["status", "error", "error", "invalid token"]
 
 # ---- Logout: clear token ----
-define auth_logout(x) as:
+define auth_logout(_x) as:
     _auth_token is ""
     return json_build of ["status", "ok"]
 
 # ---- Get current token (for session check) ----
-define auth_get_token(x) as:
+define auth_get_token(_x) as:
     return _auth_token
 
 # ---- require_auth: called by HTTP handler for authed routes ----
 # Returns "" if auth is valid, or an error JSON string if not.
-define require_auth(x) as:
+define require_auth(_x) as:
     if _auth_token == "":
         return json_build of ["error", "not authenticated"]
     headers is http_request_headers of null

@@ -60,7 +60,7 @@ define df_from_rows(headers, rows) as:
     return result
 
 # df_new: empty dataframe (returns empty list)
-define df_new(headers) as:
+define df_new(_headers) as:
     return []
 
 # ---- Selection & Filtering ----

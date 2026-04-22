@@ -562,8 +562,9 @@ static void check_unused_params(ASTNode *node, LintContext *ctx) {
         /* For each param, check if it's referenced in the function body */
         for (int p = 0; p < node->data.func.param_count; p++) {
             const char *param = node->data.func.params[p];
-            /* Skip _-prefixed params */
+            /* Skip _-prefixed params and auto-bound 'n' */
             if (param[0] == '_') continue;
+            if (strcmp(param, "n") == 0) continue;
 
             /* Build a temporary ref context for this function body */
             LintContext body_ctx = {0};
@@ -651,11 +652,28 @@ int eigenscript_lint(const char *path) {
     collect_refs(ast, &ctx);
 
     /* Check unused variables (top-level only — conservative) */
+    /* Build set of function-defined names (these are intentional exports) */
+    int func_name_count = 0;
+    char *func_names[MAX_VARS];
+    if (ast && ast->type == AST_PROGRAM) {
+        for (int i = 0; i < ast->data.program.count; i++) {
+            ASTNode *s = ast->data.program.stmts[i];
+            if (s && s->type == AST_FUNC)
+                func_names[func_name_count++] = s->data.func.name;
+        }
+    }
     for (int i = 0; i < ctx.assign_count; i++) {
         const char *name = ctx.assigns[i];
-        /* Skip _ prefixed, builtins, function definitions */
+        /* Skip _ prefixed */
         if (name[0] == '_') continue;
-        if (is_builtin_name(name)) continue; /* already warned about shadow */
+        /* Skip builtins (already warned about shadow) */
+        if (is_builtin_name(name)) continue;
+        /* Skip function definitions — always intentional */
+        int is_func = 0;
+        for (int j = 0; j < func_name_count; j++) {
+            if (strcmp(func_names[j], name) == 0) { is_func = 1; break; }
+        }
+        if (is_func) continue;
         if (!is_ref(&ctx, name)) {
             lint_warn(&ctx, ctx.assign_lines[i], "unused variable '%s'", name);
         }

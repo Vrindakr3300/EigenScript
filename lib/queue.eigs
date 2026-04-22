@@ -29,7 +29,7 @@
 # Queue (FIFO)
 # ============================================================
 
-define queue_new(x) as:
+define queue_new(_x) as:
     return []
 
 define enqueue(q, item) as:
@@ -64,7 +64,7 @@ define queue_empty(q) as:
 # Stack (LIFO)
 # ============================================================
 
-define stack_new(x) as:
+define stack_new(_x) as:
     return []
 
 define push(s, item) as:
