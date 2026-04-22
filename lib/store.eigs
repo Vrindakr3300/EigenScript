@@ -1,0 +1,66 @@
+# EigenStore — native embedded database
+
+define open(path) as:
+    return store_open of path
+
+define close(handle) as:
+    return store_close of handle
+
+define put(handle, collection, record) as:
+    return store_put of [handle, collection, record]
+
+define get(handle, collection, key) as:
+    return store_get of [handle, collection, key]
+
+define delete(handle, collection, key) as:
+    return store_delete of [handle, collection, key]
+
+define query(handle, collection) as:
+    return store_query of [handle, collection]
+
+define count(handle, collection) as:
+    return store_count of [handle, collection]
+
+define update(handle, collection, key, record) as:
+    return store_update of [handle, collection, key, record]
+
+define collections(handle) as:
+    return store_collections of handle
+
+define drop(handle, collection) as:
+    return store_drop of [handle, collection]
+
+# Higher-level operations
+
+define find(handle, collection, predicate) as:
+    all is store_query of [handle, collection]
+    results is []
+    for i in range of (len of all):
+        if predicate of all[i]:
+            append of [results, all[i]]
+    return results
+
+define find_one(handle, collection, predicate) as:
+    all is store_query of [handle, collection]
+    for i in range of (len of all):
+        if predicate of all[i]:
+            return all[i]
+    return null
+
+define upsert(handle, collection, key, record) as:
+    existing is store_get of [handle, collection, key]
+    if existing != null:
+        return store_update of [handle, collection, key, record]
+    else:
+        record._id is key
+        return store_put of [handle, collection, record]
+
+define bulk_put(handle, collection, records) as:
+    keys is []
+    for i in range of (len of records):
+        k is store_put of [handle, collection, records[i]]
+        append of [keys, k]
+    return keys
+
+define to_dataframe(handle, collection) as:
+    return store_query of [handle, collection]

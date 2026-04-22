@@ -1,0 +1,80 @@
+load_file of "lib/test.eigs"
+
+# Clean up any leftover test database
+if file_exists of "/tmp/test_eigenstore.db":
+    rm of "/tmp/test_eigenstore.db"
+
+# Open creates file
+db is store_open of "/tmp/test_eigenstore.db"
+assert of [db != null, "store_open returns handle"]
+assert of [file_exists of "/tmp/test_eigenstore.db", "db file created"]
+
+# Collections starts empty
+cols is store_collections of db
+assert_eq of [len of cols, 0, "no collections initially"]
+
+# Put
+k1 is store_put of [db, "users", {"name": "Alice", "age": 30}]
+assert of [k1 != null, "put returns key"]
+
+k2 is store_put of [db, "users", {"name": "Bob", "age": 25}]
+
+# Collections
+cols is store_collections of db
+assert_eq of [len of cols, 1, "one collection"]
+
+# Count
+c is store_count of [db, "users"]
+assert_eq of [c, 2, "two records"]
+
+# Get
+r is store_get of [db, "users", k1]
+assert of [r != null, "get returns record"]
+assert_eq of [r.name, "Alice", "get returns correct record"]
+
+# Query all
+all is store_query of [db, "users"]
+assert_eq of [len of all, 2, "query returns all"]
+
+# Update
+store_update of [db, "users", k1, {"name": "Alice", "age": 31}]
+r2 is store_get of [db, "users", k1]
+assert_eq of [r2.age, 31, "update works"]
+
+# Delete
+d is store_delete of [db, "users", k2]
+assert_eq of [d, 1, "delete returns 1"]
+c2 is store_count of [db, "users"]
+assert_eq of [c2, 1, "count after delete"]
+
+# Custom key
+store_put of [db, "config", {"_id": "theme", "value": "dark"}]
+cfg is store_get of [db, "config", "theme"]
+assert_eq of [cfg.value, "dark", "custom key works"]
+
+# Persistence — close and reopen
+store_close of db
+db2 is store_open of "/tmp/test_eigenstore.db"
+r3 is store_get of [db2, "users", k1]
+assert_eq of [r3.name, "Alice", "persists after close/reopen"]
+c3 is store_count of [db2, "users"]
+assert_eq of [c3, 1, "count persists"]
+cfg2 is store_get of [db2, "config", "theme"]
+assert_eq of [cfg2.value, "dark", "config persists"]
+
+# Drop collection
+store_drop of [db2, "config"]
+cols2 is store_collections of db2
+assert_eq of [len of cols2, 1, "drop removes collection"]
+
+# Multiple collections
+store_put of [db2, "logs", {"msg": "test"}]
+cols3 is store_collections of db2
+assert_eq of [len of cols3, 2, "multiple collections"]
+
+store_close of db2
+
+# Clean up
+rm of "/tmp/test_eigenstore.db"
+
+test_summary of null

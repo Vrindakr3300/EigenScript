@@ -315,4 +315,7 @@ void ne_matmul_buf(double *a, int64_t a_rows, int64_t a_cols,
 Value* json_obj_get(Value *obj, const char *key);
 #endif
 
+/* ---- EigenStore embedded database ---- */
+void register_store_builtins(Env *env);
+
 #endif /* EIGENSCRIPT_H */

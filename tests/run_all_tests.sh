@@ -1189,6 +1189,21 @@ else
 fi
 echo ""
 
+# [56] EigenStore embedded database
+echo "[56] EigenStore Database (14 checks)"
+ST_OUTPUT=$(./eigenscript ../tests/test_store.eigs 2>&1)
+if echo "$ST_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 14))
+    PASS=$((PASS + 14))
+    echo "  PASS: all 14 store checks"
+else
+    TOTAL=$((TOTAL + 14))
+    FAIL=$((FAIL + 14))
+    echo "  FAIL: store tests"
+    echo "$ST_OUTPUT" | grep -i "FAIL\|assert\|error" | head -5
+fi
+echo ""
+
 # [54] Example smoke tests
 echo "[54] Example Smoke Tests"
 EX_OUTPUT=$(bash "$TESTS_DIR/test_examples.sh" 2>&1)

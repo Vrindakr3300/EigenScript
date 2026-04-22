@@ -152,6 +152,7 @@ int main(int argc, char **argv) {
 #if EIGENSCRIPT_EXT_GFX
         register_gfx_builtins(global);
 #endif
+        register_store_builtins(global);
 
         eigenscript_repl(global);
         return 0;
@@ -197,6 +198,7 @@ int main(int argc, char **argv) {
 #if EIGENSCRIPT_EXT_GFX
     register_gfx_builtins(global);
 #endif
+    register_store_builtins(global);
 
     g_parse_errors = 0;
     TokenList tl = tokenize(source);
