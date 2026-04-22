@@ -208,8 +208,11 @@ int main(int argc, char **argv) {
         free(source);
         return 1;
     }
-    eval_node(ast, global);
+    Value *result = eval_node(ast, global);
+    if (result) val_decref(result);
 
+    free_ast(ast);
+    free_tokenlist(&tl);
     free(source);
     return 0;
 }

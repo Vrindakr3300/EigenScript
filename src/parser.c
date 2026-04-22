@@ -71,8 +71,7 @@ ASTNode* make_node(ASTType type, int line) {
 /* Currently unreferenced: the tree-walker keeps AST nodes alive for the
  * lifetime of any function defined in them. Retained for future use and
  * because freeing ASTs with partial parses has edge cases. */
-__attribute__((unused))
-static void free_ast(ASTNode *node) {
+void free_ast(ASTNode *node) {
     if (!node) return;
     switch (node->type) {
         case AST_STR:
