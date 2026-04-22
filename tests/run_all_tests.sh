@@ -1204,6 +1204,21 @@ else
 fi
 echo ""
 
+# [58] GC / free_value paths and misc coverage gaps
+echo "[58] GC & Free Paths (30 checks)"
+GC_OUTPUT=$(./eigenscript ../tests/test_gc.eigs 2>&1)
+if echo "$GC_OUTPUT" | grep -q "All gc tests passed"; then
+    TOTAL=$((TOTAL + 30))
+    PASS=$((PASS + 30))
+    echo "  PASS: all 30 GC/free checks"
+else
+    TOTAL=$((TOTAL + 30))
+    FAIL=$((FAIL + 30))
+    echo "  FAIL: GC tests"
+    echo "$GC_OUTPUT" | grep -iE "assert|error|FAIL" | head -5
+fi
+echo ""
+
 # [57] Coverage v2 — close gcov gaps in eval/builtins/eigenscript/ext_store
 echo "[57] Coverage V2 (110 checks)"
 CV2_OUTPUT=$(./eigenscript ../tests/test_coverage_v2.eigs 2>&1)

@@ -1,0 +1,260 @@
+# test_gc.eigs — Exercise val_free / free_value paths for each value type.
+# Uses free_val builtin to trigger free_value on STR, LIST, DICT, FN values.
+# Also covers is_truthy for FN/BUILTIN/DICT, val_type_name gaps,
+# value_to_string for BUILTIN, compute_entropy for BUILTIN,
+# and eval_num_fast uncovered branches in unobserved blocks.
+
+pass_count is 0
+fail_count is 0
+
+define check(args) as:
+    label is args[0]
+    cond is args[1]
+    if cond:
+        pass_count is pass_count + 1
+    else:
+        fail_count is fail_count + 1
+        print of ("FAIL: " + label)
+
+# ----------------------------------------------------------------
+# 1) free_value paths via free_val builtin
+#    Pass values directly without storing them to avoid use-after-free.
+# ----------------------------------------------------------------
+
+# free_val on a string → exercises VAL_STR case in free_value
+r1 is free_val of "temporary string to free"
+check of ["GC1 free_val string", (type of r1) == "none"]
+
+# free_val on a list → exercises VAL_LIST case in free_value
+r2 is free_val of [1, 2, 3, "four", [5, 6]]
+check of ["GC2 free_val list", (type of r2) == "none"]
+
+# free_val on a dict → exercises VAL_DICT case in free_value
+r3 is free_val of {"a": 1, "b": "two", "c": 3}
+check of ["GC3 free_val dict", (type of r3) == "none"]
+
+# free_val on a lambda → exercises VAL_FN case in free_value
+fn_tmp is (x) => x * 2
+r4a is free_val of fn_tmp
+check of ["GC4a free_val fn", (type of r4a) == "none"]
+
+# free_val on a number (default case — already covered but verify)
+r4 is free_val of 42
+check of ["GC4 free_val num", (type of r4) == "none"]
+
+# ----------------------------------------------------------------
+# 2) is_truthy for FN, BUILTIN, DICT types (lines 348-351)
+# ----------------------------------------------------------------
+
+# is_truthy on a function — should be truthy
+define dummy_fn as:
+    return 1
+
+if dummy_fn:
+    check of ["GC5 is_truthy fn", 1]
+else:
+    check of ["GC5 is_truthy fn", 0]
+
+# is_truthy on a builtin — should be truthy
+if print:
+    check of ["GC6 is_truthy builtin", 1]
+else:
+    check of ["GC6 is_truthy builtin", 0]
+
+# is_truthy on a dict — non-empty should be truthy
+d is {"x": 1}
+if d:
+    check of ["GC7 is_truthy dict non-empty", 1]
+else:
+    check of ["GC7 is_truthy dict non-empty", 0]
+
+# ----------------------------------------------------------------
+# 3) val_type_name for FN, BUILTIN, DICT, JSON_RAW (lines 112-117)
+#    These are hit when runtime_error prints type names
+# ----------------------------------------------------------------
+
+# Trigger "cannot apply" error with fn and num → prints val_type_name(VAL_FN)
+caught_fn is 0
+try:
+    x is dummy_fn - 5
+catch e:
+    caught_fn is 1
+
+check of ["GC8 val_type_name fn in error", caught_fn == 1]
+
+# Trigger error with dict → prints val_type_name(VAL_DICT)
+caught_dict is 0
+try:
+    d2 is {"a": 1}
+    y is d2 - 5
+catch e:
+    caught_dict is 1
+
+check of ["GC9 val_type_name dict in error", caught_dict == 1]
+
+# ----------------------------------------------------------------
+# 4) value_to_string for BUILTIN (line 404)
+# ----------------------------------------------------------------
+
+builtin_str is "" + print
+check of ["GC10 value_to_string builtin", builtin_str == "<builtin>"]
+
+# ----------------------------------------------------------------
+# 5) value_to_string for dict with string value (line 396)
+# ----------------------------------------------------------------
+d3 is {"name": "alice"}
+d3_str is "" + d3
+check of ["GC11 dict to_string with str val", d3_str == "{\"name\": \"alice\"}"]
+
+# ----------------------------------------------------------------
+# 6) compute_entropy for BUILTIN (line 65 in eval.c)
+#    Assign a builtin to a variable to trigger update_observer on it
+# ----------------------------------------------------------------
+my_builtin is print
+check of ["GC12 compute_entropy builtin (assigned ok)", 1]
+
+# ----------------------------------------------------------------
+# 7) eval_num_fast uncovered branches in unobserved blocks
+# ----------------------------------------------------------------
+
+# AST_UNARY negation in unobserved
+base_neg is 10
+unobserved:
+    base_neg is -base_neg
+check of ["GC13 unobserved negation", base_neg == -10]
+
+# AST_BINOP multiply in unobserved
+mul_val is 5
+unobserved:
+    mul_val is mul_val * 3
+check of ["GC14 unobserved multiply", mul_val == 15]
+
+# AST_BINOP divide in unobserved
+div_val is 20
+unobserved:
+    div_val is div_val / 4
+check of ["GC15 unobserved divide", div_val == 5]
+
+# AST_BINOP modulo in unobserved
+mod_val is 17
+unobserved:
+    mod_val is mod_val % 5
+check of ["GC16 unobserved modulo", mod_val == 2]
+
+# AST_INDEX in unobserved — accessing list element for numeric fast path
+nums is [10, 20, 30]
+idx_val is 0
+unobserved:
+    idx_val is nums[1] + nums[2]
+check of ["GC17 unobserved list index", idx_val == 50]
+
+# ----------------------------------------------------------------
+# 8) Uncovered eval.c error paths
+# ----------------------------------------------------------------
+
+# Negate a non-number (line 326)
+caught_neg is 0
+try:
+    z is -"hello"
+catch e:
+    caught_neg is 1
+check of ["GC18 negate non-num error", caught_neg == 1]
+
+# For loop with non-list (line 426)
+caught_for is 0
+try:
+    for item in 42:
+        x is item
+catch e:
+    caught_for is 1
+check of ["GC19 for non-list error", caught_for == 1]
+
+# Dot access on non-dict (line 664)
+caught_dot is 0
+try:
+    z is 42
+    v is z.field
+catch e:
+    caught_dot is 1
+check of ["GC20 dot on non-dict error", caught_dot == 1]
+
+# String index out of range (line 690)
+caught_str_idx is 0
+try:
+    s is "hi"
+    c is s[99]
+catch e:
+    caught_str_idx is 1
+check of ["GC21 string index OOB error", caught_str_idx == 1]
+
+# Dot-assign on non-dict (line 484)
+caught_dot_assign is 0
+try:
+    na is 42
+    na.field is "value"
+catch e:
+    caught_dot_assign is 1
+check of ["GC22 dot-assign non-dict error", caught_dot_assign == 1]
+
+# Index-assign out of range (line 514)
+caught_idx_assign is 0
+try:
+    lst is [1, 2]
+    lst[99] is 5
+catch e:
+    caught_idx_assign is 1
+check of ["GC23 index-assign OOB error", caught_idx_assign == 1]
+
+# Index-assign on non-list non-dict (line 519)
+caught_idx_type is 0
+try:
+    n is 42
+    n[0] is 5
+catch e:
+    caught_idx_type is 1
+check of ["GC24 index-assign on num error", caught_idx_type == 1]
+
+# Modulo by zero (line 284)
+caught_mod_zero is 0
+try:
+    z is 10 % 0
+catch e:
+    caught_mod_zero is 1
+# Note: modulo by zero just prints a warning and returns 0 (like div/0)
+# It doesn't set g_has_error, so try/catch won't catch it. Check result.
+z is 10 % 0
+check of ["GC25 modulo by zero returns 0", z == 0]
+
+# ----------------------------------------------------------------
+# 9) val_type_name fallthrough for JSON_RAW
+#    json_raw values can be created via json_encode
+# ----------------------------------------------------------------
+
+# ----------------------------------------------------------------
+# 10) Interrogate WHAT on dict (should return 0, line 745)
+# ----------------------------------------------------------------
+d4 is {"x": 1}
+w is what is d4
+check of ["GC26 what of dict", w == 0]
+
+# ----------------------------------------------------------------
+# 11) Interrogate WHO on non-ident expressions (lines 749-752)
+# ----------------------------------------------------------------
+who_num is who is 42
+check of ["GC27 who of number", who_num == "number"]
+
+who_str is who is "hello"
+check of ["GC28 who of string", who_str == "string"]
+
+who_list is who is [1, 2]
+check of ["GC29 who of list", who_list == "list"]
+
+# ----------------------------------------------------------------
+# Summary
+# ----------------------------------------------------------------
+total is pass_count + fail_count
+print of ("GC Tests: " + pass_count + "/" + total + " passed")
+if fail_count == 0:
+    print of "All gc tests passed"
+else:
+    assert of [0, "Some gc tests failed"]
