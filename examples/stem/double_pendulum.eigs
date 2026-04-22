@@ -1,0 +1,108 @@
+# examples/stem/double_pendulum.eigs
+# Double Pendulum — Chaotic Dynamics via RK4
+#
+# Simulates two double pendulums with nearly identical initial conditions.
+# A double pendulum has state [theta1, omega1, theta2, omega2].
+# The equations of motion are the full Lagrangian-derived coupled ODEs.
+# We show that tiny perturbations (1e-6 rad) lead to wildly divergent
+# trajectories — the hallmark of deterministic chaos.
+
+load_file of "lib/calculus.eigs"
+load_file of "lib/physics.eigs"
+load_file of "lib/stats.eigs"
+
+print of "=== Double Pendulum: Sensitivity to Initial Conditions ==="
+print of ""
+
+# Physical parameters
+g is 9.80665
+L1 is 1.0       # length of first arm (m)
+L2 is 1.0       # length of second arm (m)
+m1 is 1.0       # mass of first bob (kg)
+m2 is 1.0       # mass of second bob (kg)
+
+# Equations of motion for double pendulum
+# State: [theta1, omega1, theta2, omega2]
+define double_pend_deriv(t, y) as:
+    th1 is y[0]
+    w1 is y[1]
+    th2 is y[2]
+    w2 is y[3]
+    delta is th1 - th2
+    sd is sin of delta
+    cd is cos of delta
+    den1 is (m1 + m2) * L1 - m2 * L1 * cd * cd
+    den2 is (L2 / L1) * den1
+    dw1 is (m2 * L1 * w1 * w1 * sd * cd + m2 * g * (sin of th2) * cd + m2 * L2 * w2 * w2 * sd - (m1 + m2) * g * (sin of th1)) / den1
+    dw2 is (0 - m2 * L2 * w2 * w2 * sd * cd + (m1 + m2) * g * (sin of th1) * cd - (m1 + m2) * L1 * w1 * w1 * sd - (m1 + m2) * g * (sin of th2)) / den2
+    return [w1, dw1, w2, dw2]
+
+# Initial conditions — two pendulums with tiny difference in theta1
+pi_val is pi of null
+theta1_init is pi_val / 2       # 90 degrees
+theta2_init is pi_val / 2
+
+y_A is [theta1_init, 0, theta2_init, 0]
+y_B is [theta1_init + 1e-6, 0, theta2_init, 0]   # perturbed by 1 microradian
+
+# Simulate both using RK4
+dt is 0.01
+duration is 10.0
+steps is floor of (duration / dt)
+
+print of "Initial perturbation: 1e-6 radians (0.000057 degrees)"
+print of "Simulating for 10 seconds..."
+print of ""
+print of "  Time    theta1_A   theta1_B   Divergence"
+print of "  ----    --------   --------   ----------"
+
+divergence_detected is 0
+unobserved:
+    for i in range of steps:
+        # RK4 step for pendulum A
+        k1a is double_pend_deriv of [0, y_A]
+        tmp is [y_A[0] + dt/2*k1a[0], y_A[1] + dt/2*k1a[1], y_A[2] + dt/2*k1a[2], y_A[3] + dt/2*k1a[3]]
+        k2a is double_pend_deriv of [0, tmp]
+        tmp is [y_A[0] + dt/2*k2a[0], y_A[1] + dt/2*k2a[1], y_A[2] + dt/2*k2a[2], y_A[3] + dt/2*k2a[3]]
+        k3a is double_pend_deriv of [0, tmp]
+        tmp is [y_A[0] + dt*k3a[0], y_A[1] + dt*k3a[1], y_A[2] + dt*k3a[2], y_A[3] + dt*k3a[3]]
+        k4a is double_pend_deriv of [0, tmp]
+        y_A is [y_A[0] + dt/6*(k1a[0]+2*k2a[0]+2*k3a[0]+k4a[0]), y_A[1] + dt/6*(k1a[1]+2*k2a[1]+2*k3a[1]+k4a[1]), y_A[2] + dt/6*(k1a[2]+2*k2a[2]+2*k3a[2]+k4a[2]), y_A[3] + dt/6*(k1a[3]+2*k2a[3]+2*k3a[3]+k4a[3])]
+
+        # RK4 step for pendulum B
+        k1b is double_pend_deriv of [0, y_B]
+        tmp is [y_B[0] + dt/2*k1b[0], y_B[1] + dt/2*k1b[1], y_B[2] + dt/2*k1b[2], y_B[3] + dt/2*k1b[3]]
+        k2b is double_pend_deriv of [0, tmp]
+        tmp is [y_B[0] + dt/2*k2b[0], y_B[1] + dt/2*k2b[1], y_B[2] + dt/2*k2b[2], y_B[3] + dt/2*k2b[3]]
+        k3b is double_pend_deriv of [0, tmp]
+        tmp is [y_B[0] + dt*k3b[0], y_B[1] + dt*k3b[1], y_B[2] + dt*k3b[2], y_B[3] + dt*k3b[3]]
+        k4b is double_pend_deriv of [0, tmp]
+        y_B is [y_B[0] + dt/6*(k1b[0]+2*k2b[0]+2*k3b[0]+k4b[0]), y_B[1] + dt/6*(k1b[1]+2*k2b[1]+2*k3b[1]+k4b[1]), y_B[2] + dt/6*(k1b[2]+2*k2b[2]+2*k3b[2]+k4b[2]), y_B[3] + dt/6*(k1b[3]+2*k2b[3]+2*k3b[3]+k4b[3])]
+
+        t is (i + 1) * dt
+
+        # Compute divergence
+        d1 is y_A[0] - y_B[0]
+        d2 is y_A[2] - y_B[2]
+        div is sqrt of (d1 * d1 + d2 * d2)
+
+        # Print at regular intervals
+        if (i % 100) == 99:
+            print of ("  " + (str of t) + "    " + (str of y_A[0]) + "   " + (str of y_B[0]) + "   " + (str of div))
+
+# Use observer to detect divergence in final trajectory difference
+div_final is y_A[0] - y_B[0]
+d2_final is y_A[2] - y_B[2]
+final_div is sqrt of (div_final * div_final + d2_final * d2_final)
+
+print of ""
+print of ("Final divergence: " + (str of final_div) + " radians")
+print of ("Amplification factor: " + (str of (final_div / 1e-6)))
+print of ""
+
+status is report of final_div
+if final_div > 0.1:
+    print of "RESULT: Chaotic divergence confirmed — tiny perturbation grew enormously"
+else:
+    print of "RESULT: Trajectories remained close (increase simulation time for divergence)"
+print of ("Observer status of divergence: " + status)

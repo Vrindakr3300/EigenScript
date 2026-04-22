@@ -1,0 +1,107 @@
+# examples/stem/heat_diffusion.eigs
+# 1D Heat Equation — Hot Rod Cooling
+#
+# A metal rod with a temperature spike in the center and boundaries
+# fixed at 0 C. Heat diffuses according to the 1D heat equation:
+#   dT/dt = alpha * d2T/dx2
+# Uses the simulation library's heat_equation_1d with observer-based
+# equilibrium detection. Prints temperature profiles at key timesteps.
+
+load_file of "lib/simulation.eigs"
+load_file of "lib/stats.eigs"
+
+print of "=== 1D Heat Diffusion: Rod Cooling ==="
+print of ""
+
+# Rod parameters
+rod_length is 1.0        # meters
+n_points is 21           # spatial grid points
+dx is rod_length / (n_points - 1)
+alpha is 0.01            # thermal diffusivity (m^2/s) — like iron
+dt is 0.0001             # time step (must satisfy stability: dt < dx^2/(2*alpha))
+
+stability is alpha * dt / (dx * dx)
+print of ("Spatial points: " + (str of n_points))
+print of ("dx = " + (str of dx) + " m")
+print of ("dt = " + (str of dt) + " s")
+print of ("Stability parameter (alpha*dt/dx^2): " + (str of stability) + "  (must be < 0.5)")
+print of ""
+
+# Initial condition: temperature spike in center, boundaries at 0
+initial is []
+mid is floor of (n_points / 2)
+for i in range of n_points:
+    if i == mid:
+        append of [initial, 100.0]
+    elif i == (mid - 1) or i == (mid + 1):
+        append of [initial, 50.0]
+    else:
+        append of [initial, 0.0]
+
+# Helper: print temperature profile as text bar chart
+define print_profile(label, temps) as:
+    print of label
+    for i in range of (len of temps):
+        bar_len is floor of (temps[i] / 2)
+        if bar_len < 0:
+            bar_len is 0
+        bar is ""
+        for j in range of bar_len:
+            bar is bar + "#"
+        temp_str is str of temps[i]
+        # Pad position
+        pos_str is str of i
+        if i < 10:
+            pos_str is " " + pos_str
+        print of ("  [" + pos_str + "] " + temp_str + "  " + bar)
+    print of ""
+
+# Print initial profile
+print_profile of ["=== Initial Temperature Profile (t=0) ===", initial]
+
+# Run heat equation in stages, printing profiles
+u is []
+for i in range of n_points:
+    append of [u, initial[i]]
+
+# Stage 1: 50 steps
+steps_per_stage is 50
+for stage in range of 4:
+    unobserved:
+        for step in range of steps_per_stage:
+            new_u is [u[0]]
+            for i in range of (n_points - 2):
+                val is u[i+1] + alpha * dt / (dx * dx) * (u[i] - 2*u[i+1] + u[i+2])
+                append of [new_u, val]
+            append of [new_u, u[n_points - 1]]
+            u is new_u
+
+    t_now is (stage + 1) * steps_per_stage * dt
+    label is "=== Temperature Profile at t=" + (str of t_now) + "s ==="
+    print_profile of [label, u]
+
+# Continue until observer detects equilibrium
+print of "Continuing to equilibrium..."
+max_temp is u[mid]
+equil_steps is 0
+unobserved:
+    for i in range of 5000:
+        equil_steps is equil_steps + 1
+        new_u is [u[0]]
+        for j in range of (n_points - 2):
+            val is u[j+1] + alpha * dt / (dx * dx) * (u[j] - 2*u[j+1] + u[j+2])
+            append of [new_u, val]
+        append of [new_u, u[n_points - 1]]
+        u is new_u
+        max_temp is u[mid]
+
+status is report of max_temp
+total_time is (200 + equil_steps) * dt
+print of ""
+print of ("Additional steps to settle: " + (str of equil_steps))
+print of ("Total simulation time: " + (str of total_time) + " s")
+print of ("Center temperature: " + (str of max_temp) + " C")
+print of ("Observer status: " + status)
+print of ""
+print_profile of ["=== Final Temperature Profile ===", u]
+print of "Heat has diffused from the central spike toward the boundaries."

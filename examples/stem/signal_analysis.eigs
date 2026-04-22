@@ -1,0 +1,138 @@
+# examples/stem/signal_analysis.eigs
+# Signal Analysis — DFT Frequency Detection and Smoothing
+#
+# Generates a signal composed of two sinusoids at known frequencies
+# plus random noise. Uses the DFT to recover the frequencies from
+# the magnitude spectrum. Also applies moving average smoothing.
+
+load_file of "lib/engineering.eigs"
+load_file of "lib/stats.eigs"
+
+print of "=== Signal Analysis: Frequency Detection ==="
+print of ""
+
+# Signal parameters
+N is 64                # number of samples
+fs is 100.0            # sampling frequency (Hz)
+dt is 1 / fs
+f1 is 10.0             # first signal frequency (Hz)
+f2 is 25.0             # second signal frequency (Hz)
+A1 is 1.0              # amplitude of f1
+A2 is 0.6              # amplitude of f2
+noise_amp is 0.3       # noise amplitude
+
+print of ("Sampling frequency: " + (str of fs) + " Hz")
+print of ("Samples: " + (str of N))
+print of ("Signal: " + (str of A1) + "*sin(2*pi*" + (str of f1) + "*t) + " + (str of A2) + "*sin(2*pi*" + (str of f2) + "*t) + noise")
+print of ""
+
+# Generate signal
+pi_val is pi of null
+signal is []
+clean_signal is []
+for i in range of N:
+    t is i * dt
+    s_clean is A1 * (sin of (2 * pi_val * f1 * t)) + A2 * (sin of (2 * pi_val * f2 * t))
+    noise is (random of null - 0.5) * 2 * noise_amp
+    append of [signal, s_clean + noise]
+    append of [clean_signal, s_clean]
+
+# Display signal (first 32 samples)
+print of "=== Raw Signal (first 32 samples) ==="
+for i in range of 32:
+    bar_offset is 20
+    bar_len is floor of (signal[i] * 10) + bar_offset
+    if bar_len < 0:
+        bar_len is 0
+    if bar_len > 40:
+        bar_len is 40
+    bar is ""
+    for j in range of bar_len:
+        bar is bar + "#"
+    print of ("  |" + bar)
+print of ""
+
+# Compute DFT
+print of "Computing DFT..."
+spectrum is dft of signal
+magnitudes is magnitude_spectrum of spectrum
+
+# Normalize magnitudes (divide by N/2 for amplitude)
+print of ""
+print of "=== Magnitude Spectrum ==="
+print of "  Bin   Freq(Hz)   Magnitude   Spectrum"
+print of "  ---   --------   ---------   --------"
+
+# Only show first half (positive frequencies)
+half_N is N / 2
+peak1_mag is 0
+peak1_freq is 0
+peak2_mag is 0
+peak2_freq is 0
+
+for i in range of half_N:
+    freq is i * fs / N
+    mag is magnitudes[i] / (N / 2)
+    if i == 0:
+        mag is magnitudes[i] / N   # DC component
+
+    # Track two largest peaks (skip DC)
+    if i > 0:
+        if mag > peak1_mag:
+            peak2_mag is peak1_mag
+            peak2_freq is peak1_freq
+            peak1_mag is mag
+            peak1_freq is freq
+        elif mag > peak2_mag:
+            peak2_mag is mag
+            peak2_freq is freq
+
+    # Text bar
+    bar_len is floor of (mag * 30)
+    if bar_len > 45:
+        bar_len is 45
+    bar is ""
+    for j in range of bar_len:
+        bar is bar + "#"
+
+    marker is ""
+    if (abs of (freq - f1)) < (fs / N):
+        marker is " <-- f1"
+    if (abs of (freq - f2)) < (fs / N):
+        marker is " <-- f2"
+
+    print of ("  " + (str of i) + "     " + (str of freq) + "      " + (str of mag) + "  |" + bar + marker)
+
+print of ""
+print of "=== Detected Peaks ==="
+print of ("  Peak 1: " + (str of peak1_freq) + " Hz, amplitude " + (str of peak1_mag))
+print of ("  Peak 2: " + (str of peak2_freq) + " Hz, amplitude " + (str of peak2_mag))
+print of ("  Expected: " + (str of f1) + " Hz (amp " + (str of A1) + "), " + (str of f2) + " Hz (amp " + (str of A2) + ")")
+print of ""
+
+# Moving average smoothing
+print of "=== Moving Average Smoothing (window=5) ==="
+smoothed is moving_average of [signal, 5]
+
+# Compare noise levels
+noise_vals is []
+smooth_noise is []
+for i in range of N:
+    append of [noise_vals, signal[i] - clean_signal[i]]
+    append of [smooth_noise, smoothed[i] - clean_signal[i]]
+
+raw_noise_std is std_dev of noise_vals
+smooth_noise_std is std_dev of smooth_noise
+print of ("Raw signal noise std: " + (str of raw_noise_std))
+print of ("Smoothed signal noise std: " + (str of smooth_noise_std))
+print of ("Noise reduction: " + (str of ((1 - smooth_noise_std / raw_noise_std) * 100)) + "%")
+print of ""
+
+# Show smoothed vs raw for a few samples
+print of "  Sample   Raw       Smoothed   Clean"
+print of "  ------   ---       --------   -----"
+for i in range of 16:
+    print of ("  " + (str of i) + "       " + (str of signal[i]) + "  " + (str of smoothed[i]) + "  " + (str of clean_signal[i]))
+
+print of ""
+print of "DFT successfully recovered both frequency components from noisy data."

@@ -1,0 +1,80 @@
+# examples/stem/diffraction_pattern.eigs
+# Single-Slit Diffraction Pattern
+#
+# Computes the Fraunhofer diffraction pattern for a single slit:
+#   I(theta) = I0 * (sin(beta)/beta)^2
+#   where beta = pi * a * sin(theta) / lambda
+# Shows how slit width affects the diffraction pattern width.
+# Wider slit = narrower central maximum (and vice versa).
+
+load_file of "lib/physics.eigs"
+
+print of "=== Single-Slit Diffraction Pattern ==="
+print of ""
+
+# Parameters
+lambda_light is 550e-9    # wavelength: 550 nm (green light)
+I0 is 1.0                 # peak intensity
+
+print of ("Wavelength: 550 nm (green light)")
+print of ("Formula: I = I0 * (sin(beta)/beta)^2")
+print of ("  where beta = pi * a * sin(theta) / lambda")
+print of ""
+
+# sinc^2 function: (sin(x)/x)^2, with sinc(0) = 1
+define sinc_squared(x) as:
+    if (abs of x) < 1e-10:
+        return 1.0
+    s is sin of x
+    return (s / x) * (s / x)
+
+# Compute and display pattern for a given slit width
+define show_pattern(slit_width, label) as:
+    print of ("--- " + label + " (slit = " + (str of (slit_width * 1e6)) + " um) ---")
+
+    # Angular range: -5 to +5 degrees
+    n_pts is 41
+    pi_val is pi of null
+    deg_to_rad is pi_val / 180
+
+    print of "  Angle(deg)  Intensity   Pattern"
+    for i in range of n_pts:
+        angle_deg is -4.0 + i * 0.2
+        theta is angle_deg * deg_to_rad
+        sin_theta is sin of theta
+        beta is pi_val * slit_width * sin_theta / lambda_light
+        intensity is I0 * (sinc_squared of beta)
+
+        # Text bar
+        bar_len is floor of (intensity * 50)
+        if bar_len < 0:
+            bar_len is 0
+        bar is ""
+        for j in range of bar_len:
+            bar is bar + "#"
+
+        # Format angle
+        angle_str is str of angle_deg
+        print of ("  " + angle_str + "       " + (str of intensity) + "  |" + bar)
+    print of ""
+
+    # First minimum at sin(theta) = lambda/a -> theta = arcsin(lambda/a)
+    ratio is lambda_light / slit_width
+    if ratio <= 1:
+        first_min is asin of ratio
+        first_min_deg is first_min / deg_to_rad
+        print of ("  First minimum at: " + (str of first_min_deg) + " degrees")
+    else:
+        print of "  Slit narrower than wavelength: no distinct minima"
+    print of ""
+
+# Three different slit widths
+show_pattern of [10e-6, "Narrow slit (10 um)"]
+show_pattern of [25e-6, "Medium slit (25 um)"]
+show_pattern of [50e-6, "Wide slit (50 um)"]
+
+print of "=== Key Physics ==="
+print of "- Narrower slit -> wider diffraction pattern (more spreading)"
+print of "- Wider slit -> narrower pattern (approaches geometric optics)"
+print of "- Central maximum is always twice as wide as side maxima"
+print of "- Minima occur at sin(theta) = n * lambda / a"

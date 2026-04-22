@@ -1,0 +1,89 @@
+# examples/stem/rc_circuit_response.eigs
+# RC Circuit Step Response — Analytical vs Numerical
+#
+# Simulates the charging of a capacitor through a resistor when a
+# step voltage is applied. Compares the exact analytical solution
+# V(t) = V0*(1 - e^(-t/RC)) with Euler method numerical integration.
+# Prints a text-based plot of voltage over time.
+
+load_file of "lib/physics.eigs"
+load_file of "lib/engineering.eigs"
+load_file of "lib/calculus.eigs"
+
+print of "=== RC Circuit Step Response ==="
+print of ""
+
+# Circuit parameters
+V0 is 5.0        # Step voltage (V)
+R is 1000.0      # Resistance (Ohms)
+C is 0.001       # Capacitance (Farads) = 1 mF
+tau is R * C      # Time constant = 1 second
+
+print of ("Supply voltage: " + (str of V0) + " V")
+print of ("Resistance: " + (str of R) + " Ohms")
+print of ("Capacitance: " + (str of C) + " F")
+print of ("Time constant (RC): " + (str of tau) + " s")
+print of ""
+
+# Analytical solution
+define v_analytical(t) as:
+    return V0 * (1 - (exp of (0 - t / tau)))
+
+# Numerical: Euler method for dV/dt = (V0 - V) / (R*C)
+dt is 0.05
+duration is 5.0
+steps is floor of (duration / dt)
+
+v_euler is 0.0
+max_error is 0.0
+errors is []
+
+print of "  Time(s)  Analytical  Euler     Error      Plot"
+print of "  ------   ----------  -----     -----      ----"
+
+unobserved:
+    for i in range of steps:
+        t is (i + 1) * dt
+
+        # Euler step: dV/dt = (V0 - V_euler) / (R * C)
+        dVdt is (V0 - v_euler) / (R * C)
+        v_euler is v_euler + dVdt * dt
+
+        # Analytical
+        v_exact is v_analytical of t
+
+        # Error
+        err is abs of (v_euler - v_exact)
+        append of [errors, err]
+        if err > max_error:
+            max_error is err
+
+        # Print every 10 steps (0.5s intervals)
+        if (i % 10) == 9:
+            # Text plot: # characters proportional to voltage
+            bar_len is floor of (v_exact / V0 * 40)
+            bar is ""
+            for j in range of bar_len:
+                bar is bar + "#"
+            print of ("  " + (str of t) + "      " + (str of v_exact) + "  " + (str of v_euler) + "  " + (str of err) + "  |" + bar)
+
+print of ""
+print of ("Maximum Euler error: " + (str of max_error) + " V")
+print of ""
+
+# Verify key time points
+v_1tau is v_analytical of tau
+v_3tau is v_analytical of (3 * tau)
+v_5tau is v_analytical of (5 * tau)
+
+print of "=== Characteristic RC Timing ==="
+print of ("  At 1*RC (" + (str of tau) + "s): V = " + (str of v_1tau) + " V  (expect 63.2% = " + (str of (V0 * 0.632)) + ")")
+print of ("  At 3*RC (" + (str of (3*tau)) + "s): V = " + (str of v_3tau) + " V  (expect 95.0% = " + (str of (V0 * 0.950)) + ")")
+print of ("  At 5*RC (" + (str of (5*tau)) + "s): V = " + (str of v_5tau) + " V  (expect 99.3% = " + (str of (V0 * 0.993)) + ")")
+print of ""
+
+# Observer: track convergence of voltage to V0
+conv_metric is V0 - v_5tau
+status is report of conv_metric
+print of ("Observer status of remaining voltage gap: " + status)
+print of "The capacitor is effectively fully charged after 5 time constants."

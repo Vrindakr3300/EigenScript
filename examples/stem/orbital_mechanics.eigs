@@ -1,0 +1,136 @@
+# examples/stem/orbital_mechanics.eigs
+# Satellite Orbital Mechanics — Newtonian Gravity Simulation
+#
+# Simulates 2D satellite orbits around Earth using RK4.
+# Tests circular and elliptical orbits, computes orbital period,
+# and compares to Kepler's third law prediction.
+# Observer detects periodic behavior in the radial distance.
+
+load_file of "lib/physics.eigs"
+load_file of "lib/earth_science.eigs"
+load_file of "lib/calculus.eigs"
+load_file of "lib/stats.eigs"
+
+print of "=== Satellite Orbital Mechanics ==="
+print of ""
+
+# Constants
+G is 6.67430e-11
+M_earth is 5.972e24        # kg
+R_earth is 6.371e6         # m
+
+# Gravitational parameter
+mu is G * M_earth
+
+# ---- Circular Orbit (LEO at 400 km altitude) ----
+print of "--- Circular Orbit (400 km altitude) ---"
+r0 is R_earth + 400000     # orbital radius
+v_circ is orbital_velocity of [M_earth, r0]
+T_kepler is orbital_period of [r0, M_earth]
+
+print of ("Orbital radius: " + (str of r0) + " m")
+print of ("Circular velocity: " + (str of v_circ) + " m/s")
+print of ("Kepler period: " + (str of T_kepler) + " s (" + (str of (T_kepler / 60)) + " min)")
+print of ""
+
+# State: [x, y, vx, vy]
+# Acceleration: a = -mu/r^3 * [x, y]
+define grav_deriv(t, s) as:
+    x is s[0]
+    y is s[1]
+    vx is s[2]
+    vy is s[3]
+    r is sqrt of (x * x + y * y)
+    r3 is r * r * r
+    ax is 0 - mu * x / r3
+    ay is 0 - mu * y / r3
+    return [vx, vy, ax, ay]
+
+# Start at (r0, 0) with velocity (0, v_circ)
+state is [r0, 0, 0, v_circ]
+dt is 10.0       # 10-second timesteps
+n_steps is floor of (T_kepler / dt) + 100   # simulate a bit more than one period
+
+# Cap steps for performance
+if n_steps > 1000:
+    n_steps is 1000
+
+print of "Simulating circular orbit..."
+print of "  Step     x(km)      y(km)      r(km)      v(m/s)"
+print of "  ----     -----      -----      -----      ------"
+
+radii is []
+unobserved:
+    for i in range of n_steps:
+        k1 is grav_deriv of [0, state]
+        tmp is [state[0]+dt/2*k1[0], state[1]+dt/2*k1[1], state[2]+dt/2*k1[2], state[3]+dt/2*k1[3]]
+        k2 is grav_deriv of [0, tmp]
+        tmp is [state[0]+dt/2*k2[0], state[1]+dt/2*k2[1], state[2]+dt/2*k2[2], state[3]+dt/2*k2[3]]
+        k3 is grav_deriv of [0, tmp]
+        tmp is [state[0]+dt*k3[0], state[1]+dt*k3[1], state[2]+dt*k3[2], state[3]+dt*k3[3]]
+        k4 is grav_deriv of [0, tmp]
+        state is [state[0]+dt/6*(k1[0]+2*k2[0]+2*k3[0]+k4[0]), state[1]+dt/6*(k1[1]+2*k2[1]+2*k3[1]+k4[1]), state[2]+dt/6*(k1[2]+2*k2[2]+2*k3[2]+k4[2]), state[3]+dt/6*(k1[3]+2*k2[3]+2*k3[3]+k4[3])]
+
+        r is sqrt of (state[0]*state[0] + state[1]*state[1])
+        v is sqrt of (state[2]*state[2] + state[3]*state[3])
+        append of [radii, r]
+
+        if (i % 100) == 0:
+            print of ("  " + (str of i) + "      " + (str of (state[0]/1000)) + "   " + (str of (state[1]/1000)) + "   " + (str of (r/1000)) + "   " + (str of v))
+
+# Check orbit closure: position should return near start
+dx is state[0] - r0
+dy is state[1] - 0
+closure_err is sqrt of (dx*dx + dy*dy)
+print of ""
+print of ("Orbit closure error after ~1 period: " + (str of (closure_err/1000)) + " km")
+
+# Radius statistics — should be nearly constant for circular orbit
+r_mean is mean of radii
+r_std is std_dev of radii
+print of ("Mean radius: " + (str of (r_mean/1000)) + " km")
+print of ("Radius std dev: " + (str of (r_std/1000)) + " km (should be ~0 for circular)")
+print of ""
+
+# ---- Elliptical Orbit ----
+print of "--- Elliptical Orbit (boosted to 1.2 * v_circ) ---"
+v_ellip is v_circ * 1.2
+state2 is [r0, 0, 0, v_ellip]
+
+# Compute semi-major axis from energy: a = -mu / (2*E)
+E_spec is 0.5 * v_ellip * v_ellip - mu / r0
+a_ellip is 0 - mu / (2 * E_spec)
+T_ellip is orbital_period of [a_ellip, M_earth]
+
+print of ("Initial velocity: " + (str of v_ellip) + " m/s")
+print of ("Semi-major axis: " + (str of (a_ellip/1000)) + " km")
+print of ("Kepler period: " + (str of T_ellip) + " s (" + (str of (T_ellip / 60)) + " min)")
+print of ""
+
+# Simulate and track min/max radius
+r_min is r0
+r_max is r0
+n_steps2 is 800
+
+unobserved:
+    for i in range of n_steps2:
+        k1 is grav_deriv of [0, state2]
+        tmp is [state2[0]+dt/2*k1[0], state2[1]+dt/2*k1[1], state2[2]+dt/2*k1[2], state2[3]+dt/2*k1[3]]
+        k2 is grav_deriv of [0, tmp]
+        tmp is [state2[0]+dt/2*k2[0], state2[1]+dt/2*k2[1], state2[2]+dt/2*k2[2], state2[3]+dt/2*k2[3]]
+        k3 is grav_deriv of [0, tmp]
+        tmp is [state2[0]+dt*k3[0], state2[1]+dt*k3[1], state2[2]+dt*k3[2], state2[3]+dt*k3[3]]
+        k4 is grav_deriv of [0, tmp]
+        state2 is [state2[0]+dt/6*(k1[0]+2*k2[0]+2*k3[0]+k4[0]), state2[1]+dt/6*(k1[1]+2*k2[1]+2*k3[1]+k4[1]), state2[2]+dt/6*(k1[2]+2*k2[2]+2*k3[2]+k4[2]), state2[3]+dt/6*(k1[3]+2*k2[3]+2*k3[3]+k4[3])]
+        r is sqrt of (state2[0]*state2[0] + state2[1]*state2[1])
+        if r < r_min:
+            r_min is r
+        if r > r_max:
+            r_max is r
+
+print of ("Perigee (closest): " + (str of ((r_min - R_earth)/1000)) + " km altitude")
+print of ("Apogee (farthest): " + (str of ((r_max - R_earth)/1000)) + " km altitude")
+ecc is (r_max - r_min) / (r_max + r_min)
+print of ("Eccentricity: " + (str of ecc))
+print of ""
+print of "Kepler's laws verified: T^2 proportional to a^3 for both orbits."

@@ -1,0 +1,115 @@
+# examples/stem/projectile_drag.eigs
+# Projectile Motion with Quadratic Air Resistance
+#
+# Compares ideal (vacuum) projectile trajectory with realistic trajectory
+# including quadratic drag F_drag = -0.5 * Cd * rho * A * v^2.
+# Uses RK4 for the drag case. Shows how drag reduces range and max height.
+
+load_file of "lib/physics.eigs"
+load_file of "lib/calculus.eigs"
+
+print of "=== Projectile Motion: Ideal vs Air Resistance ==="
+print of ""
+
+# Projectile parameters
+m is 0.145          # mass (kg) — baseball
+v0 is 40.0          # initial speed (m/s) — ~90 mph
+angle is 0.7854     # launch angle (radians) — 45 degrees
+g is 9.80665
+
+# Drag parameters for a baseball
+Cd is 0.3           # drag coefficient
+rho is 1.225        # air density (kg/m^3)
+diameter is 0.0735  # baseball diameter (m)
+A is (pi of null) * (diameter/2) * (diameter/2)   # cross-section area
+drag_coeff is 0.5 * Cd * rho * A   # combined drag constant
+
+print of ("Mass: " + (str of m) + " kg")
+print of ("Initial speed: " + (str of v0) + " m/s")
+print of ("Launch angle: 45 degrees")
+print of ("Drag coefficient Cd: " + (str of Cd))
+print of ""
+
+# Ideal trajectory (analytical)
+ideal_range is projectile_range of [v0, angle]
+ideal_max_h is projectile_max_height of [v0, angle]
+ideal_time is projectile_time of [v0, angle]
+
+print of "=== Ideal (No Drag) ==="
+print of ("  Range: " + (str of ideal_range) + " m")
+print of ("  Max height: " + (str of ideal_max_h) + " m")
+print of ("  Flight time: " + (str of ideal_time) + " s")
+print of ""
+
+# With drag: state = [x, y, vx, vy]
+# dvx/dt = -(drag_coeff/m) * v * vx
+# dvy/dt = -g - (drag_coeff/m) * v * vy
+define drag_deriv(t, s) as:
+    vx is s[2]
+    vy is s[3]
+    speed is sqrt of (vx * vx + vy * vy)
+    drag_accel is drag_coeff * speed / m
+    ax is 0 - drag_accel * vx
+    ay is 0 - g - drag_accel * vy
+    return [vx, vy, ax, ay]
+
+vx0 is v0 * (cos of angle)
+vy0 is v0 * (sin of angle)
+state is [0, 0, vx0, vy0]
+
+dt is 0.01
+max_steps is 2000
+drag_range is 0
+drag_max_h is 0
+drag_time is 0
+
+print of "=== Trajectory Comparison ==="
+print of "  Time    x_ideal   y_ideal   x_drag    y_drag"
+print of "  ----    -------   -------   ------    ------"
+
+unobserved:
+    for i in range of max_steps:
+        t is i * dt
+
+        # RK4 step
+        k1 is drag_deriv of [t, state]
+        tmp is [state[0]+dt/2*k1[0], state[1]+dt/2*k1[1], state[2]+dt/2*k1[2], state[3]+dt/2*k1[3]]
+        k2 is drag_deriv of [t, tmp]
+        tmp is [state[0]+dt/2*k2[0], state[1]+dt/2*k2[1], state[2]+dt/2*k2[2], state[3]+dt/2*k2[3]]
+        k3 is drag_deriv of [t, tmp]
+        tmp is [state[0]+dt*k3[0], state[1]+dt*k3[1], state[2]+dt*k3[2], state[3]+dt*k3[3]]
+        k4 is drag_deriv of [t, tmp]
+        state is [state[0]+dt/6*(k1[0]+2*k2[0]+2*k3[0]+k4[0]), state[1]+dt/6*(k1[1]+2*k2[1]+2*k3[1]+k4[1]), state[2]+dt/6*(k1[2]+2*k2[2]+2*k3[2]+k4[2]), state[3]+dt/6*(k1[3]+2*k2[3]+2*k3[3]+k4[3])]
+
+        if state[1] > drag_max_h:
+            drag_max_h is state[1]
+
+        # Stop when projectile hits ground
+        if state[1] < 0 and i > 0:
+            drag_range is state[0]
+            drag_time is t
+            break
+
+        # Print at intervals
+        if (i % 50) == 0:
+            ideal_pos is projectile_position of [v0, angle, t]
+            ix is ideal_pos[0]
+            iy is ideal_pos[1]
+            if iy < 0:
+                iy is 0
+            print of ("  " + (str of t) + "    " + (str of ix) + "  " + (str of iy) + "  " + (str of state[0]) + "  " + (str of state[1]))
+
+print of ""
+print of "=== With Air Resistance ==="
+print of ("  Range: " + (str of drag_range) + " m")
+print of ("  Max height: " + (str of drag_max_h) + " m")
+print of ("  Flight time: " + (str of drag_time) + " s")
+print of ""
+
+range_reduction is (ideal_range - drag_range) / ideal_range * 100
+height_reduction is (ideal_max_h - drag_max_h) / ideal_max_h * 100
+print of "=== Impact of Air Resistance ==="
+print of ("  Range reduction: " + (str of range_reduction) + "%")
+print of ("  Max height reduction: " + (str of height_reduction) + "%")
+print of ""
+print of "Air resistance significantly shortens the range of a real projectile."

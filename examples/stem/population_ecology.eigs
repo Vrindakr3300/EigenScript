@@ -1,0 +1,105 @@
+# examples/stem/population_ecology.eigs
+# Lotka-Volterra Predator-Prey Dynamics
+#
+# Simulates the classic predator-prey model with two parameter sets:
+# 1) Stable oscillations — populations cycle indefinitely
+# 2) Extinction scenario — predators overshoot and crash
+# Uses the simulation library and observer to detect oscillation.
+
+load_file of "lib/simulation.eigs"
+load_file of "lib/biology.eigs"
+load_file of "lib/stats.eigs"
+
+print of "=== Lotka-Volterra Predator-Prey Model ==="
+print of ""
+print of "  dx/dt = alpha*x - beta*x*y    (prey growth - predation)"
+print of "  dy/dt = delta*x*y - gamma*y    (predator growth - death)"
+print of ""
+
+# ---- Scenario 1: Stable Oscillations ----
+print of "=== Scenario 1: Stable Oscillations ==="
+alpha is 1.0      # prey birth rate
+beta is 0.1       # predation rate
+gamma is 1.5      # predator death rate
+delta is 0.075    # predator growth from prey
+
+result is lotka_volterra of [40, 9, alpha, beta, gamma, delta, 0.01, 30]
+
+prey is result.prey
+pred is result.predators
+n_pts is len of prey
+
+# Sample at regular intervals
+print of "  Time  Prey   Predators"
+print of "  ----  ----   ---------"
+sample_step is floor of (n_pts / 15)
+for i in range of 15:
+    idx is i * sample_step
+    if idx < n_pts:
+        t is idx * 0.01
+        print of ("  " + (str of t) + "   " + (str of prey[idx]) + "   " + (str of pred[idx]))
+
+print of ""
+
+# Detect oscillation via observer on prey population
+# Sample prey at intervals and analyze
+prey_samples is []
+for i in range of 30:
+    idx is i * sample_step
+    if idx < n_pts:
+        append of [prey_samples, prey[idx]]
+
+stability is analyze_stability of prey_samples
+print of ("Observer dominant behavior: " + stability.dominant)
+print of ("Final prey: " + (str of result.final_prey))
+print of ("Final predators: " + (str of result.final_predators))
+print of ""
+
+# Find peaks in prey population to estimate period
+print of "Prey population peaks (oscillation evidence):"
+peak_times is []
+unobserved:
+    for i in range of (n_pts - 2):
+        if i > 0:
+            if prey[i] > prey[i-1] and prey[i] > prey[i+1]:
+                if prey[i] > 50:
+                    t_peak is i * 0.01
+                    append of [peak_times, t_peak]
+                    if (len of peak_times) <= 5:
+                        print of ("  Peak at t=" + (str of t_peak) + ", prey=" + (str of prey[i]))
+
+if (len of peak_times) >= 2:
+    period is peak_times[1] - peak_times[0]
+    print of ("  Estimated period: " + (str of period) + " time units")
+print of ""
+
+# Text plot: prey population
+print of "Prey population over time:"
+plot_step is floor of (n_pts / 30)
+for i in range of 30:
+    idx is i * plot_step
+    if idx < n_pts:
+        bar_len is floor of (prey[idx] / 3)
+        if bar_len < 0:
+            bar_len is 0
+        if bar_len > 50:
+            bar_len is 50
+        bar is ""
+        for j in range of bar_len:
+            bar is bar + "#"
+        print of ("  |" + bar)
+
+print of ""
+
+# ---- Scenario 2: Extinction ----
+print of "=== Scenario 2: Predator Overshoot -> Extinction ==="
+# High predation rate drives prey to near zero, then predators starve
+result2 is lotka_volterra of [20, 15, 0.5, 0.5, 0.5, 0.2, 0.01, 20]
+print of ("Final prey: " + (str of result2.final_prey))
+print of ("Final predators: " + (str of result2.final_predators))
+if result2.final_prey < 1:
+    print of "RESULT: Prey effectively extinct — ecosystem collapsed"
+elif result2.final_predators < 1:
+    print of "RESULT: Predators extinct — prey will recover"
+else:
+    print of "RESULT: Both populations survived with these parameters"

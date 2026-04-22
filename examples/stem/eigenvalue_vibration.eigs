@@ -1,0 +1,108 @@
+# examples/stem/eigenvalue_vibration.eigs
+# Natural Frequencies of a Vibrating String
+#
+# Discretizes a vibrating string into N segments, forming a tridiagonal
+# stiffness matrix. Uses power iteration to find the dominant eigenvalue
+# (highest natural frequency), then compares all eigenvalues to the
+# analytical result: f_n = n/(2L) * sqrt(T/mu).
+
+load_file of "lib/linalg.eigs"
+load_file of "lib/numerics.eigs"
+load_file of "lib/physics.eigs"
+
+print of "=== Natural Frequencies of a Vibrating String ==="
+print of ""
+
+# Physical parameters
+L is 1.0          # string length (m)
+T is 100.0        # tension (N)
+mu is 0.01        # linear mass density (kg/m)
+c is sqrt of (T / mu)    # wave speed
+
+print of ("String length: " + (str of L) + " m")
+print of ("Tension: " + (str of T) + " N")
+print of ("Linear density: " + (str of mu) + " kg/m")
+print of ("Wave speed: " + (str of c) + " m/s")
+print of ""
+
+# Discretize: N interior points
+N is 8
+dx is L / (N + 1)
+
+# Stiffness matrix: tridiagonal K where K_ii = 2, K_{i,i+1} = K_{i,i-1} = -1
+# Eigenvalues of this matrix: lambda_n = 2 - 2*cos(n*pi/(N+1))
+# which correspond to frequencies: f_n = (1/(2*pi)) * sqrt(lambda_n * T/(mu*dx^2))
+
+print of ("Grid points (interior): " + (str of N))
+print of ("dx = " + (str of dx) + " m")
+print of ""
+
+# Build the tridiagonal matrix
+K is mat_new of [N, N, 0]
+for i in range of N:
+    K[i][i] is 2.0
+    if i > 0:
+        K[i][i-1] is -1.0
+    if i < (N - 1):
+        K[i][i+1] is -1.0
+
+print of "Stiffness matrix K (tridiagonal):"
+for i in range of N:
+    row_str is "  ["
+    for j in range of N:
+        row_str is row_str + " " + (str of K[i][j])
+    row_str is row_str + " ]"
+    print of row_str
+print of ""
+
+# Scale factor: eigenvalue of K -> frequency
+# omega^2 = eigenvalue * T / (mu * dx^2)
+scale is T / (mu * dx * dx)
+
+# Power iteration to find dominant eigenvalue
+result is power_iteration of [K, 200]
+lambda_max is result.eigenvalue
+print of "=== Power Iteration Results ==="
+print of ("Dominant eigenvalue: " + (str of lambda_max))
+print of ("Iterations: " + (str of result.iterations))
+print of ("Observer status: " + result.status)
+print of ""
+
+# Dominant eigenvalue corresponds to highest mode (N-th)
+omega_max is sqrt of (lambda_max * scale)
+f_max is omega_max / (2 * (pi of null))
+print of ("Highest natural frequency: " + (str of f_max) + " Hz")
+print of ""
+
+# Analytical eigenvalues for comparison
+print of "=== Analytical vs Numerical Eigenvalues ==="
+print of "  Mode  lambda(analyt)  omega(analyt)  f(analyt) Hz"
+print of "  ----  --------------  -------------  -----------"
+pi_val is pi of null
+for n in range of N:
+    mode is n + 1
+    # Analytical eigenvalue of tridiagonal matrix
+    lambda_n is 2 - 2 * (cos of (mode * pi_val / (N + 1)))
+    omega_n is sqrt of (lambda_n * scale)
+    f_n is omega_n / (2 * pi_val)
+
+    # Continuous string analytical frequency: f = n/(2L) * sqrt(T/mu)
+    f_exact is mode * c / (2 * L)
+
+    print of ("  " + (str of mode) + "     " + (str of lambda_n) + "       " + (str of omega_n) + "      " + (str of f_n))
+
+print of ""
+print of "=== Continuous String Analytical Frequencies ==="
+print of "  Mode   f_exact (Hz)    f_discrete (Hz)"
+print of "  ----   ------------    ---------------"
+for n in range of N:
+    mode is n + 1
+    f_exact is mode * c / (2 * L)
+    lambda_n is 2 - 2 * (cos of (mode * pi_val / (N + 1)))
+    f_disc is (sqrt of (lambda_n * scale)) / (2 * pi_val)
+    err is abs of (f_disc - f_exact) / f_exact * 100
+    print of ("  " + (str of mode) + "      " + (str of f_exact) + "          " + (str of f_disc) + "  (err " + (str of err) + "%)")
+
+print of ""
+print of "The fundamental frequency (mode 1) matches well."
+print of "Higher modes show discretization error — more grid points improve accuracy."

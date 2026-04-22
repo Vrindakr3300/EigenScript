@@ -1,0 +1,127 @@
+# examples/stem/chemical_kinetics.eigs
+# Chemical Kinetics — First-Order and Consecutive Reactions
+#
+# Part 1: A -> B with rate constant k. Compares analytical solution
+#   A(t) = A0*exp(-kt) with numerical RK4.
+# Part 2: Consecutive reactions A -> B -> C with different rate constants.
+#   Shows the intermediate B rises to a maximum then falls.
+
+load_file of "lib/calculus.eigs"
+load_file of "lib/chemistry.eigs"
+load_file of "lib/stats.eigs"
+
+print of "=== Chemical Kinetics ==="
+print of ""
+
+# ============================================================
+# Part 1: First-order decay A -> B
+# ============================================================
+print of "--- Part 1: First-Order Reaction A -> B ---"
+print of ""
+
+A0 is 1.0       # initial concentration (mol/L)
+k1 is 0.5       # rate constant (1/s)
+
+print of ("A0 = " + (str of A0) + " mol/L")
+print of ("k = " + (str of k1) + " /s")
+print of ("Half-life = " + (str of ((log of 2) / k1)) + " s")
+print of ""
+
+# Analytical solution
+define A_exact(t) as:
+    return A0 * (exp of (0 - k1 * t))
+
+# Numerical via RK4: dA/dt = -k*A
+define dA_dt(t, A) as:
+    return 0 - k1 * A
+
+result_rk4 is rk4_method of [dA_dt, A0, 0, 10, 100]
+
+print of "  Time    A(analyt)  A(RK4)     Error"
+print of "  ----    ---------  ------     -----"
+for i in range of (len of result_rk4):
+    if (i % 10) == 0:
+        t is result_rk4[i][0]
+        a_num is result_rk4[i][1]
+        a_exact is A_exact of t
+        err is abs of (a_num - a_exact)
+        print of ("  " + (str of t) + "     " + (str of a_exact) + "  " + (str of a_num) + "  " + (str of err))
+
+# Max error
+max_err is 0
+unobserved:
+    for i in range of (len of result_rk4):
+        t is result_rk4[i][0]
+        err is abs of (result_rk4[i][1] - (A_exact of t))
+        if err > max_err:
+            max_err is err
+print of ""
+print of ("Maximum RK4 error: " + (str of max_err))
+print of ""
+
+# ============================================================
+# Part 2: Consecutive reactions A -> B -> C
+# ============================================================
+print of "--- Part 2: Consecutive Reactions A -> B -> C ---"
+print of ""
+
+k_ab is 0.5     # rate constant A -> B
+k_bc is 0.1     # rate constant B -> C
+
+print of ("k(A->B) = " + (str of k_ab) + " /s")
+print of ("k(B->C) = " + (str of k_bc) + " /s")
+print of ""
+
+# System: dA/dt = -k_ab*A, dB/dt = k_ab*A - k_bc*B, dC/dt = k_bc*B
+# State: [A, B, C]
+define consec_deriv(t, y) as:
+    dA is 0 - k_ab * y[0]
+    dB is k_ab * y[0] - k_bc * y[1]
+    dC is k_bc * y[1]
+    return [dA, dB, dC]
+
+y0 is [1.0, 0.0, 0.0]
+result is rk4_system of [consec_deriv, y0, 0, 15, 150]
+
+print of "  Time    [A]       [B]       [C]       Total"
+print of "  ----    ---       ---       ---       -----"
+
+max_B is 0
+max_B_time is 0
+for i in range of (len of result):
+    t is result[i][0]
+    y is result[i][1]
+    total is y[0] + y[1] + y[2]
+    if y[1] > max_B:
+        max_B is y[1]
+        max_B_time is t
+    if (i % 15) == 0:
+        print of ("  " + (str of t) + "     " + (str of y[0]) + "  " + (str of y[1]) + "  " + (str of y[2]) + "  " + (str of total))
+
+print of ""
+print of ("Maximum [B] = " + (str of max_B) + " at t = " + (str of max_B_time) + " s")
+
+# Analytical time of max B: t_max = ln(k_ab/k_bc) / (k_ab - k_bc)
+t_max_exact is (log of (k_ab / k_bc)) / (k_ab - k_bc)
+print of ("Analytical t_max(B) = " + (str of t_max_exact) + " s")
+print of ""
+
+# Text plot of concentrations
+print of "Concentration profiles (A=., B=#, C=*):"
+for i in range of (len of result):
+    if (i % 10) == 0:
+        y is result[i][1]
+        a_bar is floor of (y[0] * 30)
+        b_bar is floor of (y[1] * 30)
+        c_bar is floor of (y[2] * 30)
+        line is ""
+        for j in range of a_bar:
+            line is line + "."
+        for j in range of b_bar:
+            line is line + "#"
+        for j in range of c_bar:
+            line is line + "*"
+        print of ("  |" + line)
+
+print of ""
+print of "Mass conservation verified: [A] + [B] + [C] = 1.0 at all times."

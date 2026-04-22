@@ -1,0 +1,104 @@
+# examples/stem/genetic_drift.eigs
+# Genetic Drift in Small Populations
+#
+# Simulates allele frequency changes due to random sampling in
+# finite populations (Wright-Fisher model). Runs multiple trials
+# to show how drift causes random walks in allele frequency,
+# sometimes leading to fixation or loss. Compares to Hardy-Weinberg.
+
+load_file of "lib/biology.eigs"
+load_file of "lib/stats.eigs"
+load_file of "lib/probability.eigs"
+
+print of "=== Genetic Drift Simulation ==="
+print of ""
+
+# Parameters
+pop_size is 20           # diploid individuals (40 alleles)
+n_alleles is 2 * pop_size
+p_init is 0.5            # initial frequency of allele A
+n_generations is 50
+n_trials is 10
+
+print of ("Population size: " + (str of pop_size) + " individuals (" + (str of n_alleles) + " alleles)")
+print of ("Initial allele frequency p(A) = " + (str of p_init))
+print of ("Generations: " + (str of n_generations))
+print of ("Trials: " + (str of n_trials))
+print of ""
+
+# Hardy-Weinberg expectation (no drift): p stays at 0.5
+hw is hardy_weinberg of p_init
+print of "Hardy-Weinberg equilibrium (expected without drift):"
+print of ("  AA: " + (str of hw[0]) + "  Aa: " + (str of hw[1]) + "  aa: " + (str of hw[2]))
+print of ""
+
+# Simulate drift: each generation, sample 2N alleles with replacement
+# from current frequency p
+fixations is 0
+losses is 0
+final_freqs is []
+
+for trial in range of n_trials:
+    p is p_init
+    trajectory is ""
+
+    for gen in range of n_generations:
+        # Count A alleles in next generation by binomial sampling
+        # Each of 2N alleles independently has probability p of being A
+        count_A is 0
+        unobserved:
+            for allele in range of n_alleles:
+                r is random of null
+                if r < p:
+                    count_A is count_A + 1
+        p is count_A / n_alleles
+
+        # Build mini-trajectory bar
+        if (gen % 5) == 0:
+            bar_pos is floor of (p * 20)
+            trajectory is trajectory + (str of bar_pos) + " "
+
+        # Check for fixation or loss
+        if p >= 1.0:
+            p is 1.0
+            break
+        if p <= 0.0:
+            p is 0.0
+            break
+
+    append of [final_freqs, p]
+
+    # Report
+    outcome is "polymorphic"
+    if p >= 1.0:
+        outcome is "FIXED (A=1)"
+        fixations is fixations + 1
+    elif p <= 0.0:
+        outcome is "LOST (A=0)"
+        losses is losses + 1
+
+    print of ("  Trial " + (str of (trial + 1)) + ": p(A) = " + (str of p) + "  " + outcome + "  [" + trajectory + "]")
+
+print of ""
+print of "=== Summary ==="
+print of ("Allele A fixed: " + (str of fixations) + "/" + (str of n_trials))
+print of ("Allele A lost: " + (str of losses) + "/" + (str of n_trials))
+print of ("Still polymorphic: " + (str of (n_trials - fixations - losses)) + "/" + (str of n_trials))
+print of ""
+
+# Statistics on final frequencies
+avg_freq is mean of final_freqs
+sd_freq is std_dev of final_freqs
+print of ("Mean final frequency: " + (str of avg_freq) + "  (expected: 0.5)")
+print of ("Std dev of final frequency: " + (str of sd_freq))
+print of ""
+
+# Theoretical variance of allele frequency after t generations:
+# Var(p) = p0*(1-p0) * (1 - (1-1/(2N))^t)
+expected_var is p_init * (1 - p_init) * (1 - (pow of [(1 - 1/n_alleles), n_generations]))
+print of ("Theoretical variance: " + (str of expected_var))
+print of ("Observed variance: " + (str of (sd_freq * sd_freq)))
+print of ""
+print of "Key insight: In small populations, random drift alone can fix"
+print of "or eliminate alleles, regardless of fitness. This is why"
+print of "genetic diversity is lost in small populations."

@@ -1,0 +1,113 @@
+# examples/stem/spring_resonance.eigs
+# Forced Harmonic Oscillator — Resonance Detection
+#
+# A spring-mass-damper system driven by a sinusoidal force:
+#   m*x'' + c*x' + k*x = F0*cos(omega_d * t)
+# Sweeps driving frequency to find resonance (max amplitude at omega_n).
+# Observer detects when amplitude stabilizes at each frequency.
+
+load_file of "lib/physics.eigs"
+load_file of "lib/calculus.eigs"
+load_file of "lib/stats.eigs"
+
+print of "=== Forced Harmonic Oscillator: Resonance ==="
+print of ""
+
+# System parameters
+m is 1.0          # mass (kg)
+k is 100.0        # spring constant (N/m)
+c is 2.0          # damping coefficient (N*s/m)
+F0 is 10.0        # driving force amplitude (N)
+
+omega_n is sqrt of (k / m)
+f_n is omega_n / (2 * (pi of null))
+zeta is c / (2 * m * omega_n)
+
+print of ("Natural frequency: omega_n = " + (str of omega_n) + " rad/s")
+print of ("Natural frequency: f_n = " + (str of f_n) + " Hz")
+print of ("Damping ratio: zeta = " + (str of zeta))
+print of ("Driving force: F0 = " + (str of F0) + " N")
+print of ""
+
+# Analytical steady-state amplitude:
+# A = F0 / sqrt((k - m*omega^2)^2 + (c*omega)^2)
+define analytical_amplitude(omega_d) as:
+    term1 is k - m * omega_d * omega_d
+    term2 is c * omega_d
+    return F0 / (sqrt of (term1 * term1 + term2 * term2))
+
+# Sweep driving frequency from 0.2*omega_n to 2.0*omega_n
+n_freq is 19
+print of "=== Frequency Sweep ==="
+print of "  omega_d   A(theory)  A(simulated)  Ratio"
+print of "  -------   ---------  ------------  -----"
+
+max_amplitude is 0
+resonance_freq is 0
+
+for fi in range of n_freq:
+    ratio is 0.2 + fi * 0.1
+    omega_d is ratio * omega_n
+
+    # Simulate: state = [x, v]
+    x is 0
+    v is 0
+    dt is 0.001
+    # Run for enough time to reach steady state (transient dies in ~2/zeta/omega_n seconds)
+    settle_time is 5.0
+    sample_time is 3.0
+    total_steps is floor of ((settle_time + sample_time) / dt)
+    settle_steps is floor of (settle_time / dt)
+
+    # Track amplitude after settling
+    x_max is 0
+
+    unobserved:
+        for i in range of total_steps:
+            t is i * dt
+            force is F0 * (cos of (omega_d * t))
+            accel is (force - c * v - k * x) / m
+            v is v + accel * dt
+            x is x + v * dt
+
+            # After settling, track peak amplitude
+            if i > settle_steps:
+                ax is abs of x
+                if ax > x_max:
+                    x_max is ax
+
+    a_theory is analytical_amplitude of omega_d
+
+    if x_max > max_amplitude:
+        max_amplitude is x_max
+        resonance_freq is omega_d
+
+    # Print with text bar
+    bar_len is floor of (x_max * 10)
+    if bar_len > 40:
+        bar_len is 40
+    bar is ""
+    for j in range of bar_len:
+        bar is bar + "#"
+    print of ("  " + (str of omega_d) + "   " + (str of a_theory) + "  " + (str of x_max) + "   " + bar)
+
+print of ""
+print of "=== Resonance Results ==="
+print of ("Peak simulated amplitude: " + (str of max_amplitude))
+print of ("Resonance frequency: " + (str of resonance_freq) + " rad/s")
+print of ("Natural frequency: " + (str of omega_n) + " rad/s")
+
+# Analytical resonance frequency for damped system: omega_r = omega_n * sqrt(1 - 2*zeta^2)
+omega_r is omega_n * (sqrt of (1 - 2 * zeta * zeta))
+print of ("Theoretical damped resonance: " + (str of omega_r) + " rad/s")
+print of ""
+
+# Quality factor
+Q is 1 / (2 * zeta)
+print of ("Quality factor Q = " + (str of Q))
+print of "Higher Q means sharper resonance peak and larger amplitude."
+print of ""
+
+# Observer check on the peak amplitude series
+amp_status is report of max_amplitude
+print of ("Observer status of peak amplitude: " + amp_status)

@@ -1,0 +1,123 @@
+# examples/stem/radioactive_decay_chain.eigs
+# Radioactive Decay Chain: U-238 -> Th-234 -> Pa-234 -> U-234
+#
+# Models the Bateman equations for a 4-nuclide decay chain using RK4.
+# Tracks concentrations over time and uses the observer to detect
+# when the system reaches secular equilibrium (all activities equal).
+
+load_file of "lib/calculus.eigs"
+load_file of "lib/physics.eigs"
+load_file of "lib/simulation.eigs"
+
+print of "=== Radioactive Decay Chain ==="
+print of "U-238 -> Th-234 -> Pa-234 -> U-234"
+print of ""
+
+# Half-lives (converted to years for practical timescale)
+# U-238: 4.468e9 years, Th-234: 24.10 days, Pa-234: 6.70 hours, U-234: 2.455e5 years
+# For demonstration, we use scaled half-lives in arbitrary time units
+# to show the approach to secular equilibrium within a reasonable simulation
+
+# Use time unit = 1 day
+t_half_U238 is 4.468e9 * 365.25       # days (effectively constant source)
+t_half_Th234 is 24.10                  # days
+t_half_Pa234 is 6.70 / 24.0           # days (6.70 hours)
+t_half_U234 is 2.455e5 * 365.25       # days
+
+# Decay constants: lambda = ln(2) / t_half
+ln2 is log of 2
+lam1 is ln2 / t_half_U238
+lam2 is ln2 / t_half_Th234
+lam3 is ln2 / t_half_Pa234
+lam4 is ln2 / t_half_U234
+
+print of ("Decay constants (per day):")
+print of ("  U-238:  " + (str of lam1))
+print of ("  Th-234: " + (str of lam2))
+print of ("  Pa-234: " + (str of lam3))
+print of ("  U-234:  " + (str of lam4))
+print of ""
+
+# State: [N_U238, N_Th234, N_Pa234, N_U234]
+# dN1/dt = -lam1 * N1
+# dN2/dt = lam1 * N1 - lam2 * N2
+# dN3/dt = lam2 * N2 - lam3 * N3
+# dN4/dt = lam3 * N3 - lam4 * N4
+
+define decay_deriv(t, y) as:
+    dN1 is 0 - lam1 * y[0]
+    dN2 is lam1 * y[0] - lam2 * y[1]
+    dN3 is lam2 * y[1] - lam3 * y[2]
+    dN4 is lam3 * y[2] - lam4 * y[3]
+    return [dN1, dN2, dN3, dN4]
+
+# Start with pure U-238
+N0 is 1.0e6
+y0 is [N0, 0, 0, 0]
+
+# Simulate for 200 days (enough for Th-234 and Pa-234 to reach equilibrium)
+duration is 200.0
+dt is 0.1
+steps is floor of (duration / dt)
+
+print of "Simulating 200 days with dt = 0.1 days..."
+print of ""
+print of "  Day     N(Th-234)    N(Pa-234)    A(Th-234)/A(U-238)"
+print of "  ---     ---------    ---------    -------------------"
+
+y is [y0[0], y0[1], y0[2], y0[3]]
+equilibrium_day is 0
+equil_metric is 0
+
+unobserved:
+    for i in range of steps:
+        k1 is decay_deriv of [0, y]
+        tmp is [y[0]+dt/2*k1[0], y[1]+dt/2*k1[1], y[2]+dt/2*k1[2], y[3]+dt/2*k1[3]]
+        k2 is decay_deriv of [0, tmp]
+        tmp is [y[0]+dt/2*k2[0], y[1]+dt/2*k2[1], y[2]+dt/2*k2[2], y[3]+dt/2*k2[3]]
+        k3 is decay_deriv of [0, tmp]
+        tmp is [y[0]+dt*k3[0], y[1]+dt*k3[1], y[2]+dt*k3[2], y[3]+dt*k3[3]]
+        k4 is decay_deriv of [0, tmp]
+        y is [y[0]+dt/6*(k1[0]+2*k2[0]+2*k3[0]+k4[0]), y[1]+dt/6*(k1[1]+2*k2[1]+2*k3[1]+k4[1]), y[2]+dt/6*(k1[2]+2*k2[2]+2*k3[2]+k4[2]), y[3]+dt/6*(k1[3]+2*k2[3]+2*k3[3]+k4[3])]
+
+        t is (i + 1) * dt
+
+        # Activity = lambda * N
+        A_U238 is lam1 * y[0]
+        A_Th234 is lam2 * y[1]
+
+        # Activity ratio approaches 1 at secular equilibrium
+        ratio is 0
+        if A_U238 > 0:
+            ratio is A_Th234 / A_U238
+
+        if (i % 200) == 199:
+            print of ("  " + (str of t) + "     " + (str of y[1]) + "    " + (str of y[2]) + "    " + (str of ratio))
+
+# Check secular equilibrium via observer
+equil_metric is lam2 * y[1] - lam1 * y[0]
+status is report of equil_metric
+
+print of ""
+print of "=== Final State (Day 200) ==="
+print of ("  N(U-238):  " + (str of y[0]))
+print of ("  N(Th-234): " + (str of y[1]))
+print of ("  N(Pa-234): " + (str of y[2]))
+print of ("  N(U-234):  " + (str of y[3]))
+
+A_final_U is lam1 * y[0]
+A_final_Th is lam2 * y[1]
+A_final_Pa is lam3 * y[2]
+print of ""
+print of "Activities (decays/day):"
+print of ("  A(U-238):  " + (str of A_final_U))
+print of ("  A(Th-234): " + (str of A_final_Th))
+print of ("  A(Pa-234): " + (str of A_final_Pa))
+
+ratio_th is A_final_Th / A_final_U
+ratio_pa is A_final_Pa / A_final_U
+print of ""
+print of ("  A(Th-234)/A(U-238) = " + (str of ratio_th) + "  (should approach 1.0)")
+print of ("  A(Pa-234)/A(U-238) = " + (str of ratio_pa) + "  (should approach 1.0)")
+print of ""
+print of "At secular equilibrium, all daughter activities equal the parent activity."

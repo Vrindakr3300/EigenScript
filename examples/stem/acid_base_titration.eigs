@@ -1,0 +1,112 @@
+# examples/stem/acid_base_titration.eigs
+# Acid-Base Titration: Weak Acid with Strong Base
+#
+# Simulates the titration of acetic acid (CH3COOH) with NaOH.
+# Calculates pH at each step using Henderson-Hasselbalch in the
+# buffer region and direct calculation at the equivalence point.
+# Produces a text-based pH curve showing the characteristic S-shape.
+
+load_file of "lib/chemistry.eigs"
+
+print of "=== Acid-Base Titration ==="
+print of "Titrating acetic acid (CH3COOH) with NaOH"
+print of ""
+
+# Parameters
+C_acid is 0.1       # concentration of acid (mol/L)
+V_acid is 50.0      # volume of acid (mL)
+C_base is 0.1       # concentration of NaOH (mol/L)
+pKa is 4.76         # pKa of acetic acid
+Ka is pow of [10, 0 - pKa]
+
+print of ("Acid: " + (str of C_acid) + " M CH3COOH, " + (str of V_acid) + " mL")
+print of ("Base: " + (str of C_base) + " M NaOH")
+print of ("pKa = " + (str of pKa))
+print of ""
+
+# Moles of acid
+mol_acid is C_acid * V_acid / 1000
+
+# Equivalence volume
+V_equiv is mol_acid / C_base * 1000
+print of ("Equivalence point: " + (str of V_equiv) + " mL NaOH")
+print of ""
+
+# Calculate pH at each addition step
+print of "  V(NaOH) mL   pH     |  pH Curve"
+print of "  -----------   --     |  --------"
+
+n_steps is 51
+max_vol is 100.0
+half_equiv_ph is 0
+equiv_ph is 0
+
+for i in range of n_steps:
+    V_base is i * max_vol / (n_steps - 1)
+    mol_base is C_base * V_base / 1000
+    V_total is V_acid + V_base
+
+    # Calculate pH based on region
+    pH is 0
+
+    if mol_base < 0.0001:
+        # Pure weak acid: pH = 0.5 * (pKa - log10(C_acid))
+        H is sqrt of (Ka * C_acid)
+        pH is ph of H
+    elif mol_base < (mol_acid - 0.0001):
+        # Buffer region: Henderson-Hasselbalch
+        mol_remaining_acid is mol_acid - mol_base
+        mol_conjugate_base is mol_base
+        pH is buffer_ph of [pKa, mol_remaining_acid, mol_conjugate_base]
+    elif (abs of (mol_base - mol_acid)) < 0.0001:
+        # Equivalence point: solution of conjugate base (CH3COO-)
+        # Kb = Kw/Ka, pH from hydrolysis
+        Kw is 1e-14
+        Kb is Kw / Ka
+        conc_base is mol_acid / (V_total / 1000)
+        OH is sqrt of (Kb * conc_base)
+        pOH is 0 - (log of OH) / (log of 10)
+        pH is 14 - pOH
+        equiv_ph is pH
+    else:
+        # Excess base region
+        mol_excess is mol_base - mol_acid
+        OH_conc is mol_excess / (V_total / 1000)
+        pOH is 0 - (log of OH_conc) / (log of 10)
+        pH is 14 - pOH
+
+    # Record half-equivalence point
+    if (abs of (V_base - V_equiv / 2)) < 1.5:
+        half_equiv_ph is pH
+
+    # Text bar for pH
+    bar_len is floor of (pH * 3)
+    if bar_len < 0:
+        bar_len is 0
+    if bar_len > 45:
+        bar_len is 45
+    bar is ""
+    for j in range of bar_len:
+        bar is bar + "#"
+
+    # Mark special points
+    marker is ""
+    if (abs of (V_base - V_equiv / 2)) < 1.5:
+        marker is " <-- half-equivalence"
+    if (abs of (V_base - V_equiv)) < 1.5:
+        marker is " <-- equivalence point"
+
+    # Format volume
+    vol_str is str of V_base
+    ph_str is str of pH
+    print of ("  " + vol_str + "         " + ph_str + "  |" + bar + marker)
+
+print of ""
+print of "=== Key Points ==="
+print of ("  Initial pH: " + (str of (0.5 * (pKa + (0 - (log of C_acid) / (log of 10))))))
+print of ("  Half-equivalence pH: " + (str of half_equiv_ph) + "  (should equal pKa = " + (str of pKa) + ")")
+print of ("  Equivalence point pH: " + (str of equiv_ph) + "  (basic due to conjugate base hydrolysis)")
+print of ("  Equivalence volume: " + (str of V_equiv) + " mL")
+print of ""
+print of "At the half-equivalence point, [HA] = [A-], so pH = pKa."
+print of "This is the principle behind buffer capacity."

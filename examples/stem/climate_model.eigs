@@ -1,0 +1,117 @@
+# examples/stem/climate_model.eigs
+# Simple Energy Balance Climate Model
+#
+# Earth absorbs solar radiation and emits thermal radiation.
+# Greenhouse gases (CO2) reduce outgoing radiation via radiative forcing.
+# Solves for equilibrium temperature at different CO2 levels.
+# Observer detects when temperature reaches equilibrium.
+#
+# Energy balance: S*(1-albedo)/4 = sigma*T^4 - delta_F
+# where delta_F = 5.35 * ln(CO2/CO2_ref)
+
+load_file of "lib/physics.eigs"
+load_file of "lib/earth_science.eigs"
+load_file of "lib/simulation.eigs"
+
+print of "=== Simple Energy Balance Climate Model ==="
+print of ""
+
+# Constants
+S is 1361.0              # Solar constant (W/m^2)
+albedo is 0.30           # Earth's average albedo
+sigma is 5.670374419e-8  # Stefan-Boltzmann constant
+CO2_ref is 280.0         # Pre-industrial CO2 (ppm)
+
+# Absorbed solar flux
+Q is S * (1 - albedo) / 4
+print of ("Solar constant: " + (str of S) + " W/m^2")
+print of ("Albedo: " + (str of albedo))
+print of ("Absorbed solar flux: " + (str of Q) + " W/m^2")
+print of ""
+
+# Without greenhouse effect: T = (Q/sigma)^0.25
+T_bare is pow of [(Q / sigma), 0.25]
+print of ("Bare rock temperature (no greenhouse): " + (str of T_bare) + " K (" + (str of (T_bare - 273.15)) + " C)")
+print of ""
+
+# With greenhouse effect, use a simple parameterization:
+# Effective emissivity reduces outgoing radiation
+# sigma * epsilon * T^4 = Q + delta_F
+# We use: epsilon ~ 0.62 (calibrated so T=288K at 280 ppm)
+
+# Solve iteratively for equilibrium temperature at each CO2 level
+define find_equilibrium_temp(CO2_ppm) as:
+    # Radiative forcing from CO2 change
+    delta_F is co2_radiative_forcing of [CO2_ppm, CO2_ref]
+
+    # Iterate: dT/dt = (Q + delta_F - epsilon*sigma*T^4) / C_heat
+    # where C_heat is heat capacity (we just iterate to equilibrium)
+    epsilon is 0.62
+    T is 288.0   # start near current temperature
+    for i in range of 500:
+        outgoing is epsilon * sigma * T * T * T * T
+        imbalance is Q + delta_F - outgoing
+        # Simple relaxation
+        T is T + imbalance * 0.01
+
+        # Observer check for convergence
+        status is report of T
+        if status == "converged" or status == "equilibrium":
+            break
+    return T
+
+# Test different CO2 levels
+print of "=== Equilibrium Temperature vs CO2 ==="
+print of "  CO2 (ppm)   dF (W/m^2)   T (K)      T (C)     dT (C)"
+print of "  ---------   ----------   ------     ------    ------"
+
+co2_levels is [180, 200, 280, 350, 400, 450, 560, 700, 800, 1000, 1200]
+T_ref is 0
+
+for i in range of (len of co2_levels):
+    co2 is co2_levels[i]
+    T_eq is find_equilibrium_temp of co2
+    T_celsius is T_eq - 273.15
+    dF is co2_radiative_forcing of [co2, CO2_ref]
+
+    if co2 == 280:
+        T_ref is T_celsius
+
+    dT is T_celsius - T_ref
+
+    # Text bar showing temperature anomaly
+    bar is ""
+    bar_len is floor of ((dT + 5) * 3)
+    if bar_len < 0:
+        bar_len is 0
+    if bar_len > 40:
+        bar_len is 40
+    for j in range of bar_len:
+        bar is bar + "#"
+
+    print of ("  " + (str of co2) + "         " + (str of dF) + "      " + (str of T_eq) + "   " + (str of T_celsius) + "    " + (str of dT) + "  " + bar)
+
+print of ""
+
+# Climate sensitivity: temperature change per doubling of CO2
+T_280 is find_equilibrium_temp of 280
+T_560 is find_equilibrium_temp of 560
+ECS is (T_560 - T_280)
+print of "=== Climate Sensitivity ==="
+print of ("Equilibrium Climate Sensitivity (2x CO2): " + (str of ECS) + " K")
+print of "(IPCC range: 2.5-4.0 K per doubling)"
+print of ""
+
+# Current CO2 level
+T_current is find_equilibrium_temp of 420
+warming is (T_current - 273.15) - (T_280 - 273.15)
+print of ("Current CO2 (~420 ppm) equilibrium warming: " + (str of warming) + " C above pre-industrial")
+print of ""
+
+# Observer status
+status is report of T_current
+print of ("Observer status of equilibrium search: " + status)
+print of ""
+print of "NOTE: This is a zero-dimensional energy balance model."
+print of "Real climate models include ocean circulation, ice feedbacks,"
+print of "cloud dynamics, and spatial resolution."
