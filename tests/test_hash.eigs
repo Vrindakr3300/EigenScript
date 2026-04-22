@@ -1,0 +1,27 @@
+load_file of "lib/test.eigs"
+
+# SHA-256 test vectors (NIST FIPS 180-4)
+assert_eq of [sha256 of "", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 empty"]
+assert_eq of [sha256 of "abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 abc"]
+assert_eq of [sha256 of "hello world", "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9", "sha256 hello world"]
+
+# MD5 test vectors (RFC 1321)
+assert_eq of [md5 of "", "d41d8cd98f00b204e9800998ecf8427e", "md5 empty"]
+assert_eq of [md5 of "abc", "900150983cd24fb0d6963f7d28e17f72", "md5 abc"]
+assert_eq of [md5 of "hello world", "5eb63bbbe01eeed093cb22bb8f5acdc3", "md5 hello world"]
+
+# File hashing
+write_text of ["/tmp/test_hash.txt", "hello world"]
+assert_eq of [sha256_file of "/tmp/test_hash.txt", "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9", "sha256_file"]
+assert_eq of [md5_file of "/tmp/test_hash.txt", "5eb63bbbe01eeed093cb22bb8f5acdc3", "md5_file"]
+rm of "/tmp/test_hash.txt"
+
+# HMAC-SHA256
+assert_eq of [hmac_sha256 of ["key", "hello"], "9307b3b915efb5171ff14d8cb55fbcc798c6c0ef1456d66ded1a6aa723a58b7b", "hmac-sha256"]
+
+# Edge cases
+assert_eq of [sha256 of null, "", "sha256 null returns empty"]
+assert_eq of [md5 of null, "", "md5 null returns empty"]
+assert_eq of [sha256_file of "/nonexistent", "", "sha256_file missing returns empty"]
+
+test_summary of null

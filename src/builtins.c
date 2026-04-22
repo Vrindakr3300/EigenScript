@@ -2590,6 +2590,9 @@ void register_builtins(Env *env) {
     env_set_local(env, "close_channel", make_builtin(builtin_close_channel));
     env_set_local(env, "channel_closed", make_builtin(builtin_channel_closed));
 
+    /* ---- Hash builtins (sha256, md5, hmac) ---- */
+    register_hash_builtins(env);
+
 #if EIGENSCRIPT_EXT_HTTP
     register_http_builtins(env);
 #endif

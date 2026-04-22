@@ -1281,6 +1281,21 @@ else
 fi
 echo ""
 
+# [61] Hash builtins (SHA-256, MD5, HMAC-SHA256)
+echo "[61] Hash Builtins (14 checks)"
+HA_OUTPUT=$(./eigenscript ../tests/test_hash.eigs 2>&1)
+if echo "$HA_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 14))
+    PASS=$((PASS + 14))
+    echo "  PASS: all 14 hash checks"
+else
+    TOTAL=$((TOTAL + 14))
+    FAIL=$((FAIL + 14))
+    echo "  FAIL: hash tests"
+    echo "$HA_OUTPUT" | grep -iE "assert|error|FAIL" | head -5
+fi
+echo ""
+
 echo "============================================"
 echo "  RESULTS: $PASS/$TOTAL passed, $FAIL failed"
 echo "============================================"

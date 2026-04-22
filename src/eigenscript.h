@@ -287,6 +287,7 @@ char* value_to_string(Value *v);
 /* ---- Registration ---- */
 
 void register_builtins(Env *env);
+void register_hash_builtins(Env *env);
 void eigenscript_set_args(int argc, char **argv);
 extern Env *g_global_env;
 
