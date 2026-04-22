@@ -1,0 +1,92 @@
+# ============================================================
+# Experiment Library Tests
+# ============================================================
+load_file of "lib/test.eigs"
+load_file of "lib/experiment.eigs"
+
+print of "=== EXPERIMENT LIBRARY TESTS ==="
+
+# ---- track_measurements on converging series ----
+print of "--- track_measurements (converging) ---"
+converging is [10, 5, 3, 2, 1.5, 1.2, 1.1, 1.05, 1.02, 1.01, 1.005, 1.002, 1.001]
+tracked is track_measurements of converging
+assert_eq of [len of tracked, 13, "tracked all 13 measurements"]
+assert_eq of [tracked[0].value, 10, "first value is 10"]
+assert_eq of [tracked[12].value, 1.001, "last value is 1.001"]
+# Each entry should have status, entropy, dH
+assert_true of [(type of tracked[5].status) == "str", "status is string"]
+assert_true of [(type of tracked[5].entropy) == "num", "entropy is numeric"]
+print of ("  first status: " + tracked[0].status)
+print of ("  last status: " + tracked[12].status)
+
+# ---- is_measurement_stable on stable data ----
+print of "--- is_measurement_stable (stable) ---"
+stable_data is [5, 5, 5, 5, 5, 5, 5, 5, 5, 5]
+result is is_measurement_stable of [stable_data, 3]
+assert_eq of [result, 1, "stable data is stable"]
+print of ("  stable: " + (str of result))
+
+# ---- is_measurement_stable on noisy data ----
+print of "--- is_measurement_stable (noisy) ---"
+noisy_data is [1, 10, 2, 9, 3, 8, 4, 7, 5, 6]
+result2 is is_measurement_stable of [noisy_data, 5]
+assert_eq of [result2, 0, "noisy data not stable for 5"]
+print of ("  stable: " + (str of result2))
+
+# ---- detect_entropy_spikes finds outliers ----
+print of "--- detect_entropy_spikes ---"
+# Smooth data with one big jump — dH spikes at ~0.08
+spike_data is [1, 1, 1, 1, 1, 100, 1, 1, 1, 1]
+spikes is detect_entropy_spikes of [spike_data, 0.05]
+assert_true of [(len of spikes) > 0, "detected at least one spike"]
+print of ("  spikes found: " + (str of (len of spikes)))
+for i in range of (len of spikes):
+    print of ("    index=" + (str of spikes[i].index) + " value=" + (str of spikes[i].value) + " dH=" + (str of spikes[i].dH))
+
+# ---- detect_entropy_spikes on smooth data ----
+print of "--- detect_entropy_spikes (smooth) ---"
+smooth is [5, 5, 5, 5, 5, 5, 5, 5]
+spikes2 is detect_entropy_spikes of [smooth, 0.05]
+# After initial assignment, constant values should have low dH
+print of ("  spikes on smooth: " + (str of (len of spikes2)))
+
+# ---- convergence_rate on converging sequence ----
+print of "--- convergence_rate ---"
+conv_seq is [10, 5, 3, 2, 1.5, 1.2, 1.1, 1.05, 1.02, 1.01, 1.005, 1.002, 1.001]
+cr is convergence_rate of conv_seq
+assert_true of [(type of cr.average_dH) == "num", "average_dH is numeric"]
+print of ("  average_dH: " + (str of cr.average_dH))
+print of ("  final_status: " + cr.final_status)
+print of ("  is_converging: " + (str of cr.is_converging))
+
+# ---- convergence_rate on diverging sequence ----
+print of "--- convergence_rate (diverging) ---"
+div_seq is [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+cr2 is convergence_rate of div_seq
+print of ("  average_dH: " + (str of cr2.average_dH))
+print of ("  final_status: " + cr2.final_status)
+
+# ---- detect_regimes identifies phase changes ----
+print of "--- detect_regimes ---"
+# Build a sequence that goes through phases:
+# declining, then constant, then jumping
+regime_data is [100, 80, 60, 40, 20, 10, 10, 10, 10, 10, 10, 10, 50, 50, 50, 50, 50]
+regimes is detect_regimes of regime_data
+assert_true of [(len of regimes) >= 1, "detected at least 1 regime"]
+print of ("  regimes found: " + (str of (len of regimes)))
+for i in range of (len of regimes):
+    r is regimes[i]
+    print of ("    [" + (str of r.start) + "-" + (str of r.end) + "] " + r.status + " (duration=" + (str of r.duration) + ")")
+
+# ---- detect_regimes on multi-phase data ----
+print of "--- detect_regimes (multi-phase) ---"
+# Increasing then stabilizing
+phase_data is [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10, 10, 10]
+regimes2 is detect_regimes of phase_data
+assert_true of [(len of regimes2) >= 1, "multi-phase has regimes"]
+print of ("  regimes: " + (str of (len of regimes2)))
+for i in range of (len of regimes2):
+    r is regimes2[i]
+    print of ("    [" + (str of r.start) + "-" + (str of r.end) + "] " + r.status)
+
+test_summary of null

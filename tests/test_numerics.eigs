@@ -1,0 +1,90 @@
+# ============================================================
+# Numerics Library Tests
+# ============================================================
+load_file of "lib/test.eigs"
+load_file of "lib/numerics.eigs"
+
+print of "=== NUMERICS LIBRARY TESTS ==="
+
+# ---- Jacobi Solve: 3x3 diagonal-dominant system ----
+# 4x - y + z = 7     => x = 2
+# -x + 3y + z = 4    => y = 1
+# x + y + 5z = 6     => z = 0.6 (approx)
+print of "--- jacobi_solve 3x3 ---"
+A is [[4, -1, 1], [-1, 3, 1], [1, 1, 5]]
+b is [7, 4, 6]
+jac is jacobi_solve of [A, b, 200]
+print of ("  x: " + (str of jac.x))
+print of ("  residual: " + (str of jac.residual))
+print of ("  iterations: " + (str of jac.iterations))
+print of ("  status: " + jac.status)
+
+# Verify solution approximately satisfies Ax = b
+# Row 0: 4*x0 - x1 + x2 should be ~7
+r0 is 4 * jac.x[0] - jac.x[1] + jac.x[2]
+assert_near of [r0, 7, 0.5, "jacobi row 0"]
+
+r1 is 0 - jac.x[0] + 3 * jac.x[1] + jac.x[2]
+assert_near of [r1, 4, 0.5, "jacobi row 1"]
+
+r2 is jac.x[0] + jac.x[1] + 5 * jac.x[2]
+assert_near of [r2, 6, 0.5, "jacobi row 2"]
+
+# ---- Jacobi on simple 2x2 system ----
+# 3x + y = 5   => x=1, y=2
+# x + 2y = 5
+print of "--- jacobi_solve 2x2 ---"
+A2 is [[3, 1], [1, 2]]
+b2 is [5, 5]
+jac2 is jacobi_solve of [A2, b2, 200]
+assert_near of [jac2.x[0], 1, 0.5, "jacobi 2x2 x0=1"]
+assert_near of [jac2.x[1], 2, 0.5, "jacobi 2x2 x1=2"]
+print of ("  x: " + (str of jac2.x))
+
+# ---- Gauss-Seidel: same 3x3 system ----
+print of "--- gauss_seidel_solve 3x3 ---"
+gs is gauss_seidel_solve of [A, b, 200]
+print of ("  x: " + (str of gs.x))
+print of ("  iterations: " + (str of gs.iterations))
+print of ("  status: " + gs.status)
+
+gs_r0 is 4 * gs.x[0] - gs.x[1] + gs.x[2]
+assert_near of [gs_r0, 7, 0.5, "gauss-seidel row 0"]
+
+# Gauss-Seidel should converge at least as fast as Jacobi
+assert_true of [gs.iterations <= jac.iterations + 5, "gauss-seidel converges no slower than jacobi"]
+
+# ---- Power Iteration: [[2,1],[1,2]] -> eigenvalue 3 ----
+print of "--- power_iteration [[2,1],[1,2]] ---"
+M is [[2, 1], [1, 2]]
+pi is power_iteration of [M, 200]
+assert_near of [pi.eigenvalue, 3, 0.1, "power iteration eigenvalue=3"]
+print of ("  eigenvalue: " + (str of pi.eigenvalue))
+print of ("  eigenvector: " + (str of pi.eigenvector))
+print of ("  iterations: " + (str of pi.iterations))
+print of ("  status: " + pi.status)
+
+# ---- Power Iteration: [[4,1],[2,3]] -> eigenvalue 5 ----
+print of "--- power_iteration [[4,1],[2,3]] ---"
+M2 is [[4, 1], [2, 3]]
+pi2 is power_iteration of [M2, 200]
+assert_near of [pi2.eigenvalue, 5, 0.1, "power iteration eigenvalue=5"]
+print of ("  eigenvalue: " + (str of pi2.eigenvalue))
+
+# ---- Fixed Point: cos(x) -> x ~= 0.7391 ----
+print of "--- fixed_point cos(x) ---"
+g is (x) => cos of x
+fp is fixed_point of [g, 1, 500]
+assert_near of [fp.x, 0.7391, 0.01, "fixed point cos(x)=x"]
+print of ("  x: " + (str of fp.x))
+print of ("  iterations: " + (str of fp.iterations))
+print of ("  status: " + fp.status)
+
+# ---- Fixed Point: sqrt(2+x) -> x ~= 2 (golden ratio related) ----
+print of "--- fixed_point sqrt(2+x) ---"
+g2 is (x) => sqrt of (2 + x)
+fp2 is fixed_point of [g2, 1, 500]
+assert_near of [fp2.x, 2, 0.1, "fixed point sqrt(2+x)=x"]
+print of ("  x: " + (str of fp2.x))
+
+test_summary of null

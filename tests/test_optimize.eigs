@@ -1,0 +1,73 @@
+# ============================================================
+# Optimize Library Tests
+# ============================================================
+load_file of "lib/test.eigs"
+load_file of "lib/optimize.eigs"
+
+print of "=== OPTIMIZE LIBRARY TESTS ==="
+
+# ---- Gradient Descent: minimize (x-3)^2 ----
+print of "--- gradient_descent on (x-3)^2 ---"
+f1 is (x) => (x - 3) * (x - 3)
+result is gradient_descent of [f1, 10, 0.1, 500]
+assert_near of [result.x, 3, 0.1, "gd finds x=3"]
+assert_near of [result.loss, 0, 0.1, "gd loss near 0"]
+assert_true of [result.iterations > 0, "gd ran iterations"]
+print of ("  status: " + result.final_status)
+print of ("  x: " + (str of result.x))
+
+# ---- Gradient Descent: minimize x^2 ----
+print of "--- gradient_descent on x^2 ---"
+f2 is (x) => x * x
+result2 is gradient_descent of [f2, 5, 0.1, 500]
+assert_near of [result2.x, 0, 0.5, "gd finds x=0"]
+print of ("  x: " + (str of result2.x))
+
+# ---- Multi-variable Gradient Descent: minimize x^2 + y^2 ----
+print of "--- gradient_descent_multi on x^2+y^2 ---"
+f3 is (v) => v[0] * v[0] + v[1] * v[1]
+result3 is gradient_descent_multi of [f3, [5, 3], 0.1, 500]
+assert_near of [result3.loss, 0, 0.5, "gd_multi loss near 0"]
+assert_near of [result3.x[0], 0, 0.5, "gd_multi x[0] near 0"]
+assert_near of [result3.x[1], 0, 0.5, "gd_multi x[1] near 0"]
+print of ("  x: " + (str of result3.x))
+
+# ---- Simulated Annealing: minimize (x-5)^2 ----
+print of "--- simulated_annealing on (x-5)^2 ---"
+f4 is (x) => (x - 5) * (x - 5)
+result4 is simulated_annealing of [f4, 0, 10, 0.995, 5000]
+assert_near of [result4.x, 5, 2, "sa finds x near 5"]
+assert_true of [result4.energy < 4, "sa energy reasonably low"]
+print of ("  x: " + (str of result4.x))
+print of ("  energy: " + (str of result4.energy))
+print of ("  status: " + result4.status)
+
+# ---- Golden Section: minimize x^2-4x (min at x=2) ----
+print of "--- golden_section on x^2-4x ---"
+f5 is (x) => x * x - 4 * x
+result5 is golden_section of [f5, 0, 5, 200]
+assert_near of [result5.x, 2, 0.1, "golden section finds x=2"]
+assert_near of [result5.f, -4, 0.1, "golden section f=-4"]
+print of ("  x: " + (str of result5.x))
+print of ("  f: " + (str of result5.f))
+
+# ---- Genetic Algorithm: maximize -(x-7)^2 (max at x=7) ----
+print of "--- genetic_optimize on -(x-7)^2 ---"
+fit_fn is (x) => 0 - (x - 7) * (x - 7)
+result6 is genetic_optimize of [fit_fn, [0, 15], 30, 100]
+assert_near of [result6.x, 7, 3, "ga finds x near 7"]
+print of ("  x: " + (str of result6.x))
+print of ("  fitness: " + (str of result6.fitness))
+print of ("  status: " + result6.status)
+
+# ---- Observer adaptation: verify lr adaptation works ----
+print of "--- observer lr adaptation ---"
+# Use a moderate function where lr adaptation helps
+f_mod is (x) => (x - 2) * (x - 2) + 1
+result7 is gradient_descent of [f_mod, 8, 0.05, 500]
+assert_near of [result7.x, 2, 0.5, "adaptive gd with lr adaptation"]
+assert_true of [result7.iterations > 1, "took multiple iterations"]
+print of ("  x: " + (str of result7.x))
+print of ("  iterations: " + (str of result7.iterations))
+
+test_summary of null

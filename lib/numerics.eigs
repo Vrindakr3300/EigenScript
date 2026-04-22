@@ -1,0 +1,137 @@
+# ============================================================
+# Numerics Library — observer-aware iterative numerical methods
+# ============================================================
+#
+# How to use:
+#   load_file of "lib/numerics.eigs"
+#
+#   jacobi_solve of [A, b, max_iter]
+#   gauss_seidel_solve of [A, b, max_iter]
+#   power_iteration of [A, max_iter]
+#   fixed_point of [g, x0, max_iter]
+#
+# All methods use the observer to detect convergence of residuals
+# or iterates, stopping as soon as the trajectory is classified
+# as "converged" — no manual tolerance needed.
+
+# ---- jacobi_solve: solve Ax = b via Jacobi iteration ----
+define jacobi_solve(A, b, max_iter) as:
+    n is len of b
+    x is []
+    for i in range of n:
+        append of [x, 0]
+
+    residual is 999
+    iters is 0
+
+    for iter in range of max_iter:
+        iters is iters + 1
+        x_new is []
+        for i in range of n:
+            s is b[i]
+            for j in range of n:
+                if j != i:
+                    s is s - A[i][j] * x[j]
+            append of [x_new, s / A[i][i]]
+
+        residual is 0
+        for i in range of n:
+            d is x_new[i] - x[i]
+            residual is residual + d * d
+        residual is sqrt of residual
+
+        x is x_new
+
+        if (report of residual) == "converged":
+            break
+
+    return {"x": x, "residual": residual, "iterations": iters, "status": report of residual}
+
+# ---- gauss_seidel_solve: solve Ax = b via Gauss-Seidel (in-place updates) ----
+define gauss_seidel_solve(A, b, max_iter) as:
+    n is len of b
+    x is []
+    for i in range of n:
+        append of [x, 0]
+
+    residual is 999
+    iters is 0
+
+    for iter in range of max_iter:
+        iters is iters + 1
+        x_old is []
+        for i in range of n:
+            append of [x_old, x[i]]
+
+        for i in range of n:
+            s is b[i]
+            for j in range of n:
+                if j != i:
+                    s is s - A[i][j] * x[j]
+            x[i] is s / A[i][i]
+
+        residual is 0
+        for i in range of n:
+            d is x[i] - x_old[i]
+            residual is residual + d * d
+        residual is sqrt of residual
+
+        if (report of residual) == "converged":
+            break
+
+    return {"x": x, "residual": residual, "iterations": iters, "status": report of residual}
+
+# ---- power_iteration: find dominant eigenvalue and eigenvector ----
+define power_iteration(A, max_iter) as:
+    n is len of A
+    v is []
+    for i in range of n:
+        append of [v, random of null]
+
+    # Normalize initial vector
+    norm is 0
+    for i in range of n:
+        norm is norm + v[i] * v[i]
+    norm is sqrt of norm
+    for i in range of n:
+        v[i] is v[i] / norm
+
+    eigenvalue is 0
+    iters is 0
+
+    for iter in range of max_iter:
+        iters is iters + 1
+        w is []
+        for i in range of n:
+            s is 0
+            for j in range of n:
+                s is s + A[i][j] * v[j]
+            append of [w, s]
+
+        norm is 0
+        for i in range of n:
+            norm is norm + w[i] * w[i]
+        norm is sqrt of norm
+
+        eigenvalue is norm
+        for i in range of n:
+            v[i] is w[i] / norm
+
+        if (report of eigenvalue) == "converged":
+            break
+
+    return {"eigenvalue": eigenvalue, "eigenvector": v, "iterations": iters, "status": report of eigenvalue}
+
+# ---- fixed_point: find x where g(x) = x ----
+define fixed_point(g, x0, max_iter) as:
+    x is x0
+    iters is 0
+
+    for i in range of max_iter:
+        iters is iters + 1
+        x is g of x
+        status is report of x
+        if status == "converged" or status == "equilibrium":
+            break
+
+    return {"x": x, "iterations": iters, "status": report of x}

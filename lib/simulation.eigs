@@ -1,0 +1,155 @@
+# ============================================================
+# Simulation Library — observer-aware physical simulations
+# ============================================================
+#
+# How to use:
+#   load_file of "lib/simulation.eigs"
+#
+#   simulate_to_equilibrium of [step_fn, state, max_steps]
+#   analyze_stability of time_series
+#   spring_mass_damper of [m, k, c, x0, v0, dt, duration]
+#   lotka_volterra of [prey0, pred0, alpha, beta, gamma, delta, dt, duration]
+#   heat_equation_1d of [initial, dx, dt, alpha, steps]
+#
+# Each simulation uses the observer to detect equilibrium,
+# convergence, and classify system behavior automatically.
+
+# ---- simulate_to_equilibrium: run step_fn until observer detects equilibrium ----
+define simulate_to_equilibrium(step_fn, state, max_steps) as:
+    metric is 0
+    trajectory is []
+
+    step_count is 0
+    for i in range of max_steps:
+        step_count is step_count + 1
+        state is step_fn of state
+
+        if (type of state) == "num":
+            metric is state
+        elif (type of state) == "dict":
+            if has_key of [state, "energy"]:
+                metric is state.energy
+            elif has_key of [state, "value"]:
+                metric is state.value
+        elif (type of state) == "list":
+            metric is state[0]
+
+        append of [trajectory, metric]
+
+        status is report of metric
+        if status == "equilibrium" or status == "converged":
+            return {"state": state, "steps": step_count, "status": status, "trajectory": trajectory}
+
+    return {"state": state, "steps": max_steps, "status": report of metric, "trajectory": trajectory}
+
+# ---- analyze_stability: classify behavior of a time series via observer ----
+define analyze_stability(time_series) as:
+    tracker is 0
+    statuses is []
+
+    for i in range of (len of time_series):
+        tracker is time_series[i]
+        append of [statuses, report of tracker]
+
+    phase_counts is {"improving": 0, "diverging": 0, "stable": 0, "equilibrium": 0, "oscillating": 0, "converged": 0}
+    for i in range of (len of statuses):
+        s is statuses[i]
+        if has_key of [phase_counts, s]:
+            phase_counts[s] is phase_counts[s] + 1
+
+    dominant is "unknown"
+    max_count is 0
+    for k in keys of phase_counts:
+        if phase_counts[k] > max_count:
+            max_count is phase_counts[k]
+            dominant is k
+
+    obs is observe of tracker
+
+    return {
+        "dominant": dominant,
+        "phases": phase_counts,
+        "final_status": report of tracker,
+        "entropy": obs[1],
+        "dH": obs[2],
+        "total_steps": len of time_series
+    }
+
+# ---- spring_mass_damper: simulate damped harmonic oscillator ----
+define spring_mass_damper(m, k, c, x0, v0, dt, duration) as:
+    x is x0
+    v is v0
+    t is 0
+    positions is []
+    energy is 0.5 * k * x * x + 0.5 * m * v * v
+
+    steps is floor of (duration / dt)
+    for i in range of steps:
+        a is (0 - k * x - c * v) / m
+        v is v + a * dt
+        x is x + v * dt
+        t is t + dt
+        energy is 0.5 * k * x * x + 0.5 * m * v * v
+        append of [positions, x]
+
+        # Only check observer after warmup (need enough data points)
+        if (len of positions) > 500:
+            e_status is report of energy
+            if e_status == "converged" or e_status == "equilibrium":
+                break
+
+    return {"positions": positions, "final_x": x, "final_v": v, "final_energy": energy, "status": report of energy, "steps": len of positions}
+
+# ---- lotka_volterra: predator-prey simulation ----
+define lotka_volterra(prey0, pred0, alpha, beta, gamma, delta, dt, duration) as:
+    x is prey0
+    y is pred0
+    prey_history is []
+    pred_history is []
+
+    steps is floor of (duration / dt)
+    for i in range of steps:
+        dx is (alpha * x - beta * x * y) * dt
+        dy is (delta * x * y - gamma * y) * dt
+        x is x + dx
+        y is y + dy
+        if x < 0:
+            x is 0
+        if y < 0:
+            y is 0
+        append of [prey_history, x]
+        append of [pred_history, y]
+
+    return {
+        "prey": prey_history,
+        "predators": pred_history,
+        "prey_status": report of x,
+        "predator_status": report of y,
+        "final_prey": x,
+        "final_predators": y
+    }
+
+# ---- heat_equation_1d: 1D heat diffusion with observer equilibrium detection ----
+define heat_equation_1d(initial, dx, dt, alpha, steps) as:
+    n is len of initial
+    u is []
+    for i in range of n:
+        append of [u, initial[i]]
+
+    max_temp is u[floor of (n / 2)]
+
+    steps_run is 0
+    for step in range of steps:
+        steps_run is steps_run + 1
+        new_u is [u[0]]
+        for i in range of (n - 2):
+            val is u[i + 1] + alpha * dt / (dx * dx) * (u[i] - 2 * u[i + 1] + u[i + 2])
+            append of [new_u, val]
+        append of [new_u, u[n - 1]]
+        u is new_u
+        max_temp is u[floor of (n / 2)]
+
+        if (report of max_temp) == "equilibrium" or (report of max_temp) == "converged":
+            break
+
+    return {"u": u, "max_temp": max_temp, "status": report of max_temp, "steps_run": steps_run}

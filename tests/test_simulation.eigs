@@ -1,0 +1,78 @@
+# ============================================================
+# Simulation Library Tests
+# ============================================================
+load_file of "lib/test.eigs"
+load_file of "lib/simulation.eigs"
+
+print of "=== SIMULATION LIBRARY TESTS ==="
+
+# ---- Spring-Mass-Damper with damping ----
+print of "--- spring_mass_damper (damped) ---"
+# m=1, k=10, c=5 (moderately damped), x0=5, v0=0, dt=0.01, duration=30
+smd is spring_mass_damper of [1, 10, 5, 5, 0, 0.01, 30]
+assert_near of [smd.final_x, 0, 2, "smd settles near 0"]
+assert_true of [smd.final_energy < 5, "smd energy dissipated"]
+print of ("  final_x: " + (str of smd.final_x))
+print of ("  final_energy: " + (str of smd.final_energy))
+print of ("  status: " + smd.status)
+print of ("  steps: " + (str of smd.steps))
+
+# ---- Spring-Mass-Damper with heavy damping ----
+print of "--- spring_mass_damper (heavily damped) ---"
+smd2 is spring_mass_damper of [1, 10, 10, 5, 0, 0.01, 20]
+assert_near of [smd2.final_x, 0, 0.5, "heavy damp settles to 0"]
+print of ("  final_x: " + (str of smd2.final_x))
+print of ("  status: " + smd2.status)
+
+# ---- analyze_stability on declining series ----
+print of "--- analyze_stability (declining) ---"
+declining is [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
+analysis is analyze_stability of declining
+assert_true of [(type of analysis.dominant) == "str", "dominant is string"]
+print of ("  dominant: " + analysis.dominant)
+print of ("  phases: " + (str of analysis.phases))
+
+# ---- analyze_stability on constant series ----
+print of "--- analyze_stability (constant) ---"
+constant is [5, 5, 5, 5, 5, 5, 5, 5, 5, 5]
+analysis2 is analyze_stability of constant
+assert_eq of [analysis2.dominant, "equilibrium", "constant series is equilibrium"]
+print of ("  dominant: " + analysis2.dominant)
+
+# ---- analyze_stability on converging series ----
+print of "--- analyze_stability (converging to 1) ---"
+converging is [10, 5, 3, 2, 1.5, 1.2, 1.1, 1.05, 1.02, 1.01, 1.005, 1.002, 1.001]
+analysis3 is analyze_stability of converging
+print of ("  dominant: " + analysis3.dominant)
+print of ("  final_status: " + analysis3.final_status)
+
+# ---- simulate_to_equilibrium ----
+print of "--- simulate_to_equilibrium ---"
+decay_fn is (s) => s * 0.95
+eq_result is simulate_to_equilibrium of [decay_fn, 100, 500]
+assert_true of [eq_result.steps > 0, "equilibrium took steps"]
+print of ("  steps: " + (str of eq_result.steps))
+print of ("  status: " + eq_result.status)
+print of ("  final state: " + (str of eq_result.state))
+
+# ---- Lotka-Volterra ----
+print of "--- lotka_volterra ---"
+lv is lotka_volterra of [40, 9, 0.1, 0.02, 0.3, 0.01, 0.01, 50]
+assert_true of [lv.final_prey > 0, "prey survives"]
+assert_true of [lv.final_predators > 0, "predators survive"]
+print of ("  final_prey: " + (str of lv.final_prey))
+print of ("  final_predators: " + (str of lv.final_predators))
+print of ("  prey_status: " + lv.prey_status)
+print of ("  predator_status: " + lv.predator_status)
+
+# ---- Heat Equation 1D ----
+print of "--- heat_equation_1d ---"
+# Initial: hot spike in middle, boundaries at 0
+initial is [0, 0, 0, 0, 100, 0, 0, 0, 0]
+heat is heat_equation_1d of [initial, 1, 0.1, 0.4, 500]
+assert_true of [heat.max_temp < 100, "heat diffused from peak"]
+print of ("  max_temp: " + (str of heat.max_temp))
+print of ("  status: " + heat.status)
+print of ("  steps_run: " + (str of heat.steps_run))
+
+test_summary of null

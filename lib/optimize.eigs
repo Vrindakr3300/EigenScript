@@ -1,0 +1,210 @@
+# ============================================================
+# Optimize Library — observer-aware optimization algorithms
+# ============================================================
+#
+# How to use:
+#   load_file of "lib/optimize.eigs"
+#
+#   gradient_descent of [f, x0, lr, max_iter]
+#   gradient_descent_multi of [f, x0, lr, max_iter]
+#   simulated_annealing of [f, x0, T0, cooling, max_iter]
+#   golden_section of [f, a, b, max_iter]
+#   genetic_optimize of [fitness_fn, bounds, pop_size, generations]
+#
+# Each algorithm uses EigenScript's observer system to:
+#   - Detect convergence and stop early
+#   - Adapt parameters based on trajectory classification
+#   - Report final trajectory status
+
+# ---- gradient_descent: 1D observer-adaptive gradient descent ----
+define gradient_descent(f, x0, lr, max_iter) as:
+    x is x0
+    best_x is x
+    best_loss is f of x
+    history is []
+    iters is 0
+
+    for i in range of max_iter:
+        iters is iters + 1
+        h is 1e-7
+        f_plus is f of (x + h)
+        f_minus is f of (x - h)
+        grad is (f_plus - f_minus) / (2 * h)
+        x is x - lr * grad
+        loss is f of x
+        append of [history, loss]
+
+        if loss < best_loss:
+            best_loss is loss
+            best_x is x
+
+        status is report of loss
+        if status == "oscillating":
+            lr is lr * 0.7
+        elif status == "improving":
+            lr is lr * 1.05
+        elif status == "converged":
+            break
+        elif status == "equilibrium":
+            break
+
+    return {"x": best_x, "loss": best_loss, "iterations": iters, "history": history, "final_status": report of best_loss}
+
+# ---- gradient_descent_multi: multi-variable observer-adaptive gradient descent ----
+define gradient_descent_multi(f, x0, lr, max_iter) as:
+    x is []
+    for idx in range of (len of x0):
+        append of [x, x0[idx]]
+
+    loss is f of x
+    iters is 0
+
+    for iter_i in range of max_iter:
+        iters is iters + 1
+        grad is []
+        h is 1e-7
+        for i in range of (len of x):
+            x_plus is []
+            x_minus is []
+            for j in range of (len of x):
+                if j == i:
+                    append of [x_plus, x[j] + h]
+                    append of [x_minus, x[j] - h]
+                else:
+                    append of [x_plus, x[j]]
+                    append of [x_minus, x[j]]
+            fp is f of x_plus
+            fm is f of x_minus
+            g is (fp - fm) / (2 * h)
+            append of [grad, g]
+
+        for i in range of (len of x):
+            x[i] is x[i] - lr * grad[i]
+
+        loss is f of x
+
+        status is report of loss
+        if status == "oscillating":
+            lr is lr * 0.7
+        elif status == "improving":
+            lr is lr * 1.05
+        elif status == "converged":
+            break
+        elif status == "equilibrium":
+            break
+
+    return {"x": x, "loss": loss, "iterations": iters, "status": report of loss}
+
+# ---- simulated_annealing: observer-convergence-aware SA ----
+define simulated_annealing(f, x0, T0, cooling, max_iter) as:
+    x is x0
+    energy is f of x
+    best_x is x
+    best_energy is energy
+    T is T0
+    iters is 0
+
+    for i in range of max_iter:
+        iters is iters + 1
+        dx is ((random of null) - 0.5) * 2 * T
+        candidate is x + dx
+        new_energy is f of candidate
+
+        delta is new_energy - energy
+        if delta < 0:
+            x is candidate
+            energy is new_energy
+        else:
+            p is exp of (0 - delta / T)
+            if (random of null) < p:
+                x is candidate
+                energy is new_energy
+
+        if energy < best_energy:
+            best_energy is energy
+            best_x is x
+
+        T is T * cooling
+
+        if (report of energy) == "converged":
+            break
+
+    return {"x": best_x, "energy": best_energy, "iterations": iters, "status": report of energy}
+
+# ---- golden_section: 1D minimization with observer convergence ----
+define golden_section(f, a, b, max_iter) as:
+    phi is (1 + sqrt of 5) / 2
+    resphi is 2 - phi
+    x1 is a + resphi * (b - a)
+    x2 is b - resphi * (b - a)
+    f1 is f of x1
+    f2 is f of x2
+    width is b - a
+    iters is 0
+
+    for i in range of max_iter:
+        iters is iters + 1
+        if f1 < f2:
+            b is x2
+            x2 is x1
+            f2 is f1
+            x1 is a + resphi * (b - a)
+            f1 is f of x1
+        else:
+            a is x1
+            x1 is x2
+            f1 is f2
+            x2 is b - resphi * (b - a)
+            f2 is f of x2
+
+        width is b - a
+        if (report of width) == "converged":
+            break
+
+    mid is (a + b) / 2
+    return {"x": mid, "f": f of mid, "width": width, "iterations": iters}
+
+# ---- genetic_optimize: GA with observer convergence detection ----
+define genetic_optimize(fitness_fn, bounds, pop_size, generations) as:
+    population is []
+    for i in range of pop_size:
+        x is bounds[0] + (random of null) * (bounds[1] - bounds[0])
+        append of [population, x]
+
+    best_fitness is fitness_fn of population[0]
+    best_individual is population[0]
+    gen_count is 0
+
+    for gen in range of generations:
+        gen_count is gen_count + 1
+        fits is []
+        for i in range of pop_size:
+            fit is fitness_fn of population[i]
+            append of [fits, fit]
+            if fit > best_fitness:
+                best_fitness is fit
+                best_individual is population[i]
+
+        if (report of best_fitness) == "converged":
+            break
+
+        new_pop is []
+        for i in range of pop_size:
+            a_idx is random_int of [0, pop_size - 1]
+            b_idx is random_int of [0, pop_size - 1]
+            pa is population[a_idx]
+            pb is population[b_idx]
+            parent is pa
+            fa is fitness_fn of pa
+            fb is fitness_fn of pb
+            if fb > fa:
+                parent is pb
+            child is parent + ((random of null) - 0.5) * (bounds[1] - bounds[0]) * 0.1
+            if child < bounds[0]:
+                child is bounds[0]
+            if child > bounds[1]:
+                child is bounds[1]
+            append of [new_pop, child]
+        population is new_pop
+
+    return {"x": best_individual, "fitness": best_fitness, "generations": gen_count, "status": report of best_fitness}

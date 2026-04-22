@@ -1,0 +1,110 @@
+# ============================================================
+# Experiment Library — observer-aware experimental analysis
+# ============================================================
+#
+# How to use:
+#   load_file of "lib/experiment.eigs"
+#
+#   track_measurements of values
+#   is_measurement_stable of [values, min_stable_count]
+#   detect_entropy_spikes of [values, threshold]
+#   convergence_rate of values
+#   detect_regimes of values
+#
+# These tools use the observer to analyze experimental data:
+# entropy spikes reveal anomalies, trajectory classification
+# identifies behavioral regimes, and convergence detection
+# determines when measurements have stabilized.
+
+# ---- track_measurements: annotate each measurement with observer state ----
+define track_measurements(values) as:
+    tracker is 0
+    results is []
+
+    for i in range of (len of values):
+        tracker is values[i]
+        obs is observe of tracker
+        append of [results, {
+            "value": values[i],
+            "entropy": obs[1],
+            "dH": obs[2],
+            "status": report of tracker,
+            "observation": i + 1
+        }]
+
+    return results
+
+# ---- is_measurement_stable: check if recent measurements are stable ----
+define is_measurement_stable(values, min_stable_count) as:
+    tracker is 0
+    stable_count is 0
+
+    for i in range of (len of values):
+        tracker is values[i]
+        s is report of tracker
+        if s == "stable" or s == "converged" or s == "equilibrium":
+            stable_count is stable_count + 1
+        else:
+            stable_count is 0
+
+    return stable_count >= min_stable_count
+
+# ---- detect_entropy_spikes: find anomalies via entropy derivative ----
+define detect_entropy_spikes(values, threshold) as:
+    tracker is 0
+    spikes is []
+
+    for i in range of (len of values):
+        tracker is values[i]
+        obs is observe of tracker
+        dH is obs[2]
+        if dH > threshold or dH < (0 - threshold):
+            append of [spikes, {"index": i, "value": values[i], "dH": dH}]
+
+    return spikes
+
+# ---- convergence_rate: estimate how fast a sequence converges ----
+define convergence_rate(values) as:
+    tracker is 0
+    dH_values is []
+
+    for i in range of (len of values):
+        tracker is values[i]
+        obs is observe of tracker
+        append of [dH_values, obs[2]]
+
+    n is len of dH_values
+    start is floor of (n * 3 / 4)
+    if start >= n:
+        start is 0
+    sum is 0
+    count is n - start
+    for i in range of count:
+        d is dH_values[start + i]
+        if d < 0:
+            d is 0 - d
+        sum is sum + d
+    avg_dH is sum / count
+
+    return {"average_dH": avg_dH, "final_status": report of tracker, "is_converging": avg_dH < 0.01}
+
+# ---- detect_regimes: identify behavioral phase transitions ----
+define detect_regimes(values) as:
+    tracker is 0
+    regimes is []
+    current_status is ""
+    regime_start is 0
+
+    for i in range of (len of values):
+        tracker is values[i]
+        s is report of tracker
+        if s != current_status:
+            if current_status != "":
+                append of [regimes, {"start": regime_start, "end": i - 1, "status": current_status, "duration": i - regime_start}]
+            current_status is s
+            regime_start is i
+
+    if current_status != "":
+        append of [regimes, {"start": regime_start, "end": (len of values) - 1, "status": current_status, "duration": (len of values) - regime_start}]
+
+    return regimes
