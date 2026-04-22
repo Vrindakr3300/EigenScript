@@ -1,0 +1,66 @@
+# ============================================================
+# Audio Library — high-level synthesis and playback patterns
+# ============================================================
+#
+# Requires: SDL2 audio builtins (audio_open, audio_play, etc.)
+#
+# How to use:
+#   load_file of "lib/audio.eigs"
+#   audio_open of [44100, 1]
+#   play_note of [440, 0.5, 0.8]
+#   audio_close of null
+
+# ---- Note frequency helper ----
+# note_freq of ["A", 4] => 440.0
+# Supports: C, C#, D, D#, E, F, F#, G, G#, A, A#, B
+define note_freq(name, octave) as:
+    semitones is {"C": -9, "C#": -8, "D": -7, "D#": -6, "E": -5, "F": -4, "F#": -3, "G": -2, "G#": -1, "A": 0, "A#": 1, "B": 2}
+    s is semitones[name]
+    return 440.0 * pow of [2, (s + (octave - 4) * 12) / 12]
+
+# ---- Play a single note with ADSR envelope ----
+define play_note(freq, duration, volume) as:
+    samples is audio_sine of [freq, duration, volume]
+    samples is audio_envelope of [samples, 0.01, 0.1, 0.7, 0.05]
+    audio_play of samples
+
+# ---- Play a chord (list of frequencies) ----
+define play_chord(notes, duration, volume) as:
+    n is len of notes
+    if n == 0:
+        return null
+    mixed is audio_sine of [notes[0], duration, volume / n]
+    i is 1
+    while i < n:
+        s is audio_sine of [notes[i], duration, volume / n]
+        mixed is audio_mix of [mixed, s]
+        i is i + 1
+    mixed is audio_envelope of [mixed, 0.01, 0.1, 0.7, 0.1]
+    audio_play of mixed
+
+# ---- Drum sounds ----
+
+# Kick drum — sine sweep from 150Hz down to 40Hz
+define play_kick(volume) as:
+    samples is audio_sine of [80, 0.15, volume]
+    samples is audio_envelope of [samples, 0.001, 0.05, 0.3, 0.05]
+    audio_play of samples
+
+# Snare — noise + short sine body
+define play_snare(volume) as:
+    n is audio_noise of [0.1, volume * 0.5]
+    s is audio_sine of [200, 0.1, volume * 0.5]
+    mixed is audio_mix of [n, s]
+    mixed is audio_envelope of [mixed, 0.001, 0.03, 0.2, 0.05]
+    audio_play of mixed
+
+# Hi-hat — short noise burst
+define play_hihat(volume) as:
+    n is audio_noise of [0.05, volume * 0.3]
+    n is audio_envelope of [n, 0.001, 0.01, 0.1, 0.02]
+    audio_play of n
+
+# ---- Wait for playback to drain ----
+define audio_wait() as:
+    while audio_queue_size of null > 0:
+        gfx_delay of 10

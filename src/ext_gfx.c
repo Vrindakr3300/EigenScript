@@ -39,8 +39,22 @@ typedef union {
 typedef void SDL_Window;
 typedef void SDL_Renderer;
 
+typedef struct {
+    int freq;
+    uint16_t format;
+    uint8_t channels;
+    uint8_t silence;
+    uint16_t samples;
+    uint16_t padding;
+    uint32_t size;
+    void (*callback)(void*, uint8_t*, int);
+    void *userdata;
+} SDL_AudioSpec;
+
 /* SDL2 constants */
 #define MY_SDL_INIT_VIDEO       0x00000020u
+#define MY_SDL_INIT_AUDIO       0x00000010u
+#define MY_SDL_AUDIO_S16LSB     0x8010
 #define MY_SDL_QUIT_EVENT       0x100u
 #define MY_SDL_KEYDOWN          0x300u
 #define MY_SDL_KEYUP            0x301u
@@ -81,6 +95,19 @@ static Uint32 (*p_SDL_GetTicks)(void);
 static void (*p_SDL_Delay)(Uint32);
 static int (*p_SDL_RenderSetClipRect)(SDL_Renderer*, const SDL_Rect*);
 
+/* Audio function pointers */
+static int (*p_SDL_OpenAudioDevice)(const char*, int, const SDL_AudioSpec*, SDL_AudioSpec*, int);
+static void (*p_SDL_CloseAudioDevice)(int);
+static int (*p_SDL_QueueAudio)(int, const void*, Uint32);
+static void (*p_SDL_PauseAudioDevice)(int, int);
+static Uint32 (*p_SDL_GetQueuedAudioSize)(int);
+static void (*p_SDL_ClearQueuedAudio)(int);
+
+/* Audio state */
+static int g_audio_device = 0;
+static int g_audio_freq = 44100;
+static int g_audio_channels = 1;
+
 static int load_sdl2(void) {
     if (g_sdl_lib) return 1;
     g_sdl_lib = dlopen("libSDL2-2.0.so.0", RTLD_LAZY);
@@ -96,6 +123,9 @@ static int load_sdl2(void) {
     LOAD(SDL_RenderDrawLine); LOAD(SDL_RenderDrawPoint);
     LOAD(SDL_RenderPresent); LOAD(SDL_PollEvent);
     LOAD(SDL_GetTicks); LOAD(SDL_Delay); LOAD(SDL_RenderSetClipRect);
+    LOAD(SDL_OpenAudioDevice); LOAD(SDL_CloseAudioDevice);
+    LOAD(SDL_QueueAudio); LOAD(SDL_PauseAudioDevice);
+    LOAD(SDL_GetQueuedAudioSize); LOAD(SDL_ClearQueuedAudio);
     #undef LOAD
     return 1;
 }
@@ -547,6 +577,239 @@ Value* builtin_gfx_text(Value *arg) {
     return make_null();
 }
 
+/* ---- Audio Builtins ---- */
+
+/* audio_open of [freq, channels] — open audio device with queue mode */
+Value* builtin_audio_open(Value *arg) {
+    if (!g_sdl_lib) { if (!load_sdl2()) return make_num(0); }
+    p_SDL_Init(MY_SDL_INIT_AUDIO);
+
+    SDL_AudioSpec want = {0}, have = {0};
+    want.freq = 44100;
+    want.format = MY_SDL_AUDIO_S16LSB;
+    want.channels = 1;
+    want.samples = 1024;
+    want.callback = NULL;
+
+    if (arg && arg->type == VAL_LIST && arg->data.list.count >= 2) {
+        want.freq = (int)arg->data.list.items[0]->data.num;
+        want.channels = (int)arg->data.list.items[1]->data.num;
+    }
+
+    g_audio_device = p_SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (g_audio_device < 2) { g_audio_device = 0; return make_num(0); }
+    g_audio_freq = have.freq;
+    g_audio_channels = have.channels;
+    p_SDL_PauseAudioDevice(g_audio_device, 0); /* start playing */
+    return make_num(g_audio_device);
+}
+
+/* audio_close of null */
+Value* builtin_audio_close(Value *arg) {
+    (void)arg;
+    if (g_audio_device) {
+        p_SDL_CloseAudioDevice(g_audio_device);
+        g_audio_device = 0;
+    }
+    return make_null();
+}
+
+/* audio_pause of flag — 1=pause, 0=unpause */
+Value* builtin_audio_pause(Value *arg) {
+    if (!g_audio_device) return make_null();
+    int pause = (arg && arg->type == VAL_NUM) ? (int)arg->data.num : 1;
+    p_SDL_PauseAudioDevice(g_audio_device, pause);
+    return make_null();
+}
+
+/* audio_play of samples — convert float list [-1,1] to int16, queue */
+Value* builtin_audio_play(Value *arg) {
+    if (!g_audio_device || !arg || arg->type != VAL_LIST) return make_null();
+    int n = arg->data.list.count;
+    if (n == 0) return make_null();
+    int16_t *buf = xmalloc_array(n, sizeof(int16_t));
+    for (int i = 0; i < n; i++) {
+        double s = (arg->data.list.items[i]->type == VAL_NUM) ? arg->data.list.items[i]->data.num : 0;
+        if (s > 1.0) s = 1.0;
+        if (s < -1.0) s = -1.0;
+        buf[i] = (int16_t)(s * 32767);
+    }
+    p_SDL_QueueAudio(g_audio_device, buf, n * sizeof(int16_t));
+    free(buf);
+    return make_null();
+}
+
+/* audio_queue_size of null — bytes queued */
+Value* builtin_audio_queue_size(Value *arg) {
+    (void)arg;
+    if (!g_audio_device) return make_num(0);
+    return make_num(p_SDL_GetQueuedAudioSize(g_audio_device));
+}
+
+/* audio_clear of null — clear audio queue */
+Value* builtin_audio_clear(Value *arg) {
+    (void)arg;
+    if (g_audio_device) p_SDL_ClearQueuedAudio(g_audio_device);
+    return make_null();
+}
+
+/* audio_sine of [freq, duration, amplitude] — generate sine wave samples */
+Value* builtin_audio_sine(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 3) return make_list(0);
+    double freq = arg->data.list.items[0]->data.num;
+    double dur = arg->data.list.items[1]->data.num;
+    double amp = arg->data.list.items[2]->data.num;
+    int rate = g_audio_freq > 0 ? g_audio_freq : 44100;
+    int n = (int)(dur * rate);
+    if (n <= 0 || n > rate * 30) return make_list(0);
+
+    Value *list = make_list(n);
+    for (int i = 0; i < n; i++) {
+        double t = (double)i / rate;
+        double s = sin(2.0 * M_PI * freq * t) * amp;
+        list_append(list, make_num(s));
+    }
+    return list;
+}
+
+/* audio_saw of [freq, duration, amplitude] — sawtooth wave */
+Value* builtin_audio_saw(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 3) return make_list(0);
+    double freq = arg->data.list.items[0]->data.num;
+    double dur = arg->data.list.items[1]->data.num;
+    double amp = arg->data.list.items[2]->data.num;
+    int rate = g_audio_freq > 0 ? g_audio_freq : 44100;
+    int n = (int)(dur * rate);
+    if (n <= 0 || n > rate * 30) return make_list(0);
+
+    Value *list = make_list(n);
+    for (int i = 0; i < n; i++) {
+        double t = (double)i / rate;
+        double s = 2.0 * (t * freq - floor(t * freq + 0.5)) * amp;
+        list_append(list, make_num(s));
+    }
+    return list;
+}
+
+/* audio_square of [freq, duration, amplitude] — square wave */
+Value* builtin_audio_square(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 3) return make_list(0);
+    double freq = arg->data.list.items[0]->data.num;
+    double dur = arg->data.list.items[1]->data.num;
+    double amp = arg->data.list.items[2]->data.num;
+    int rate = g_audio_freq > 0 ? g_audio_freq : 44100;
+    int n = (int)(dur * rate);
+    if (n <= 0 || n > rate * 30) return make_list(0);
+
+    Value *list = make_list(n);
+    for (int i = 0; i < n; i++) {
+        double t = (double)i / rate;
+        double s = (sin(2.0 * M_PI * freq * t) >= 0 ? 1.0 : -1.0) * amp;
+        list_append(list, make_num(s));
+    }
+    return list;
+}
+
+/* audio_noise of [duration, amplitude] — white noise */
+Value* builtin_audio_noise(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) return make_list(0);
+    double dur = arg->data.list.items[0]->data.num;
+    double amp = arg->data.list.items[1]->data.num;
+    int rate = g_audio_freq > 0 ? g_audio_freq : 44100;
+    int n = (int)(dur * rate);
+    if (n <= 0 || n > rate * 30) return make_list(0);
+
+    Value *list = make_list(n);
+    for (int i = 0; i < n; i++) {
+        double s = ((double)rand() / RAND_MAX * 2.0 - 1.0) * amp;
+        list_append(list, make_num(s));
+    }
+    return list;
+}
+
+/* audio_mix of [samples_a, samples_b] — add and clamp */
+Value* builtin_audio_mix(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) return make_list(0);
+    Value *a = arg->data.list.items[0];
+    Value *b = arg->data.list.items[1];
+    if (a->type != VAL_LIST || b->type != VAL_LIST) return make_list(0);
+    int n = a->data.list.count > b->data.list.count ? a->data.list.count : b->data.list.count;
+
+    Value *out = make_list(n);
+    for (int i = 0; i < n; i++) {
+        double sa = (i < a->data.list.count && a->data.list.items[i]->type == VAL_NUM) ? a->data.list.items[i]->data.num : 0;
+        double sb = (i < b->data.list.count && b->data.list.items[i]->type == VAL_NUM) ? b->data.list.items[i]->data.num : 0;
+        double mixed = sa + sb;
+        if (mixed > 1.0) mixed = 1.0;
+        if (mixed < -1.0) mixed = -1.0;
+        list_append(out, make_num(mixed));
+    }
+    return out;
+}
+
+/* audio_gain of [samples, volume] — scale and clamp */
+Value* builtin_audio_gain(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) return make_list(0);
+    Value *samples = arg->data.list.items[0];
+    if (samples->type != VAL_LIST) return make_list(0);
+    double vol = arg->data.list.items[1]->data.num;
+    int n = samples->data.list.count;
+
+    Value *out = make_list(n);
+    for (int i = 0; i < n; i++) {
+        double s = (samples->data.list.items[i]->type == VAL_NUM) ? samples->data.list.items[i]->data.num : 0;
+        s *= vol;
+        if (s > 1.0) s = 1.0;
+        if (s < -1.0) s = -1.0;
+        list_append(out, make_num(s));
+    }
+    return out;
+}
+
+/* audio_envelope of [samples, attack, decay, sustain_level, release] — ADSR */
+Value* builtin_audio_envelope(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 5) return make_list(0);
+    Value *samples = arg->data.list.items[0];
+    if (samples->type != VAL_LIST) return make_list(0);
+    double attack = arg->data.list.items[1]->data.num;
+    double decay = arg->data.list.items[2]->data.num;
+    double sustain = arg->data.list.items[3]->data.num;
+    double release = arg->data.list.items[4]->data.num;
+
+    int n = samples->data.list.count;
+    int rate = g_audio_freq > 0 ? g_audio_freq : 44100;
+    int a_samples = (int)(attack * rate);
+    int d_samples = (int)(decay * rate);
+    int r_samples = (int)(release * rate);
+    int s_start = a_samples + d_samples;
+    int r_start = n - r_samples;
+    if (r_start < s_start) r_start = s_start;
+
+    Value *out = make_list(n);
+    for (int i = 0; i < n; i++) {
+        double env;
+        if (i < a_samples) {
+            /* Attack: 0 -> 1 */
+            env = (a_samples > 0) ? (double)i / a_samples : 1.0;
+        } else if (i < s_start) {
+            /* Decay: 1 -> sustain */
+            double frac = (d_samples > 0) ? (double)(i - a_samples) / d_samples : 1.0;
+            env = 1.0 - (1.0 - sustain) * frac;
+        } else if (i < r_start) {
+            /* Sustain */
+            env = sustain;
+        } else {
+            /* Release: sustain -> 0 */
+            double frac = (r_samples > 0) ? (double)(i - r_start) / r_samples : 1.0;
+            env = sustain * (1.0 - frac);
+        }
+        double s = (samples->data.list.items[i]->type == VAL_NUM) ? samples->data.list.items[i]->data.num : 0;
+        s *= env;
+        list_append(out, make_num(s));
+    }
+    return out;
+}
+
 void register_gfx_builtins(Env *env) {
     env_set_local(env, "gfx_open", make_builtin(builtin_gfx_open));
     env_set_local(env, "gfx_close", make_builtin(builtin_gfx_close));
@@ -563,6 +826,21 @@ void register_gfx_builtins(Env *env) {
     env_set_local(env, "gfx_delay", make_builtin(builtin_gfx_delay));
     env_set_local(env, "gfx_title", make_builtin(builtin_gfx_title));
     env_set_local(env, "gfx_text", make_builtin(builtin_gfx_text));
+
+    /* Audio builtins */
+    env_set_local(env, "audio_open", make_builtin(builtin_audio_open));
+    env_set_local(env, "audio_close", make_builtin(builtin_audio_close));
+    env_set_local(env, "audio_pause", make_builtin(builtin_audio_pause));
+    env_set_local(env, "audio_play", make_builtin(builtin_audio_play));
+    env_set_local(env, "audio_queue_size", make_builtin(builtin_audio_queue_size));
+    env_set_local(env, "audio_clear", make_builtin(builtin_audio_clear));
+    env_set_local(env, "audio_sine", make_builtin(builtin_audio_sine));
+    env_set_local(env, "audio_saw", make_builtin(builtin_audio_saw));
+    env_set_local(env, "audio_square", make_builtin(builtin_audio_square));
+    env_set_local(env, "audio_noise", make_builtin(builtin_audio_noise));
+    env_set_local(env, "audio_mix", make_builtin(builtin_audio_mix));
+    env_set_local(env, "audio_gain", make_builtin(builtin_audio_gain));
+    env_set_local(env, "audio_envelope", make_builtin(builtin_audio_envelope));
 }
 
 #endif /* EIGENSCRIPT_EXT_GFX */

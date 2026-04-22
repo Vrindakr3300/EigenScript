@@ -1,0 +1,54 @@
+load_file of "lib/test.eigs"
+
+# Sine generates correct number of samples (at default 44100Hz)
+s is audio_sine of [440, 0.1, 0.8]
+assert_eq of [len of s, 4410, "sine 0.1s at 44100Hz"]
+
+# Saw
+s2 is audio_saw of [440, 0.1, 0.8]
+assert_eq of [len of s2, 4410, "saw 0.1s"]
+
+# Square
+s3 is audio_square of [440, 0.1, 0.8]
+assert_eq of [len of s3, 4410, "square 0.1s"]
+
+# Noise
+n is audio_noise of [0.1, 0.5]
+assert_eq of [len of n, 4410, "noise 0.1s"]
+
+# Mix preserves length
+m is audio_mix of [s, s2]
+assert_eq of [len of m, 4410, "mix preserves length"]
+
+# Gain preserves length
+g is audio_gain of [s, 0.5]
+assert_eq of [len of g, 4410, "gain preserves length"]
+
+# Envelope preserves length
+e is audio_envelope of [s, 0.01, 0.02, 0.7, 0.01]
+assert_eq of [len of e, 4410, "envelope preserves length"]
+
+# Samples are in range
+assert_true of [s[0] >= -1 and s[0] <= 1, "sine in range"]
+assert_true of [n[0] >= -1 and n[0] <= 1, "noise in range"]
+
+# Gain reduces amplitude
+assert_true of [abs of g[100] <= abs of s[100] + 0.0001, "gain reduces amplitude"]
+
+# Empty/bad args return empty lists
+bad is audio_sine of [440, 0, 0.5]
+assert_eq of [len of bad, 0, "zero duration = empty"]
+
+bad2 is audio_sine of [440]
+assert_eq of [len of bad2, 0, "too few args = empty"]
+
+bad3 is audio_mix of [42, 43]
+assert_eq of [len of bad3, 0, "non-list mix = empty"]
+
+# Mix of different lengths uses longer
+short is audio_sine of [220, 0.05, 0.5]
+long is audio_sine of [440, 0.1, 0.5]
+mixed is audio_mix of [short, long]
+assert_eq of [len of mixed, 4410, "mix uses longer length"]
+
+test_summary of null
