@@ -705,8 +705,9 @@ Value* builtin_coalesce(Value *arg) {
     return val;
 }
 
-/* Escape a string for safe embedding in JSON (keys and values) */
-static void json_escape_string(strbuf *out, const char *s) {
+/* Escape a string for safe embedding in JSON (keys and values).
+ * Shared across builtins.c, eigenscript.c, ext_store.c. */
+void eigs_json_escape_string(strbuf *out, const char *s) {
     strbuf_append_char(out, '"');
     for (const char *c = s; *c; c++) {
         switch (*c) {
@@ -737,7 +738,7 @@ Value* builtin_json_build(Value *arg) {
     for (int i = 0; i + 1 < count; i += 2) {
         if (i > 0) strbuf_append_n(&out, ", ", 2);
         char *key = value_to_string(arg->data.list.items[i]);
-        json_escape_string(&out, key);
+        eigs_json_escape_string(&out, key);
         free(key);
         strbuf_append_n(&out, ": ", 2);
         Value *val = arg->data.list.items[i + 1];
@@ -752,10 +753,10 @@ Value* builtin_json_build(Value *arg) {
         } else if (val->type == VAL_JSON_RAW) {
             strbuf_append(&out, val->data.str);
         } else if (val->type == VAL_STR) {
-            json_escape_string(&out, val->data.str);
+            eigs_json_escape_string(&out, val->data.str);
         } else {
             char *vs = value_to_string(val);
-            json_escape_string(&out, vs);
+            eigs_json_escape_string(&out, vs);
             free(vs);
         }
     }

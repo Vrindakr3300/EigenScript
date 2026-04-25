@@ -401,13 +401,24 @@ static void generate_session_id(char *buf, int len) {
     snprintf(buf, len, "sess_%lx_%d", (unsigned long)time(NULL), counter++);
 }
 
-/* Per-connection read deadline: 30 seconds total for header + body */
-#define HTTP_REQUEST_TIMEOUT_SEC 30
+/* Per-connection total deadline: 30 seconds for entire request (header + body).
+ * Uses monotonic clock — not reset by progress, so slow-trickle attacks are bounded.
+ * SO_RCVTIMEO is set to 5s as a per-read backstop (prevents blocking on a fully idle socket). */
+#define HTTP_REQUEST_DEADLINE_SEC 30
+#define HTTP_READ_TIMEOUT_SEC 5
+
+static double monotonic_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
 
 static void handle_request(int fd) {
-    /* Set socket read timeout to prevent slow-client stalls */
-    struct timeval tv = { .tv_sec = HTTP_REQUEST_TIMEOUT_SEC, .tv_usec = 0 };
+    /* Per-read timeout (backstop for fully idle sockets) */
+    struct timeval tv = { .tv_sec = HTTP_READ_TIMEOUT_SEC, .tv_usec = 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    double deadline = monotonic_now() + HTTP_REQUEST_DEADLINE_SEC;
 
     long max_body = http_max_body();
     size_t cap = 8192;
@@ -416,6 +427,10 @@ static void handle_request(int fd) {
     int header_end = -1;
 
     for (;;) {
+        /* Enforce total request deadline */
+        if (monotonic_now() >= deadline) {
+            free(reqbuf); close(fd); return;
+        }
         /* Grow when less than 4KB headroom, subject to max_body + 64KB header slack. */
         if ((size_t)total + 4096 >= cap) {
             size_t new_cap = cap * 2;

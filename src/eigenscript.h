@@ -284,6 +284,7 @@ Value* eval_block(ASTNode **stmts, int count, Env *env);
 
 int is_truthy(Value *v);
 char* value_to_string(Value *v);
+void eigs_json_escape_string(strbuf *out, const char *s);
 
 /* ---- Registration ---- */
 

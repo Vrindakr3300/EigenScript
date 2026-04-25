@@ -90,18 +90,7 @@ static void store_json_encode(Value *v, strbuf *out) {
             break;
         }
         case VAL_STR: {
-            strbuf_append_char(out, '"');
-            for (const char *c = v->data.str; *c; c++) {
-                switch (*c) {
-                    case '"': strbuf_append_n(out, "\\\"", 2); break;
-                    case '\\': strbuf_append_n(out, "\\\\", 2); break;
-                    case '\n': strbuf_append_n(out, "\\n", 2); break;
-                    case '\r': strbuf_append_n(out, "\\r", 2); break;
-                    case '\t': strbuf_append_n(out, "\\t", 2); break;
-                    default: strbuf_append_char(out, *c); break;
-                }
-            }
-            strbuf_append_char(out, '"');
+            eigs_json_escape_string(out, v->data.str);
             break;
         }
         case VAL_LIST: {
@@ -122,23 +111,7 @@ static void store_json_encode(Value *v, strbuf *out) {
                 if (key[0] == '_' && (strcmp(key, "_store") == 0)) continue;
                 if (!first) strbuf_append_char(out, ',');
                 first = 0;
-                strbuf_append_char(out, '"');
-                for (const char *c = key; *c; c++) {
-                    switch (*c) {
-                        case '"':  strbuf_append_n(out, "\\\"", 2); break;
-                        case '\\': strbuf_append_n(out, "\\\\", 2); break;
-                        case '\n': strbuf_append_n(out, "\\n", 2); break;
-                        case '\r': strbuf_append_n(out, "\\r", 2); break;
-                        case '\t': strbuf_append_n(out, "\\t", 2); break;
-                        default:
-                            if ((unsigned char)*c < 0x20)
-                                strbuf_append_fmt(out, "\\u%04x", (unsigned char)*c);
-                            else
-                                strbuf_append_char(out, *c);
-                            break;
-                    }
-                }
-                strbuf_append_char(out, '"');
+                eigs_json_escape_string(out, key);
                 strbuf_append_char(out, ':');
                 store_json_encode(v->data.dict.vals[i], out);
             }
@@ -411,8 +384,10 @@ static int store_load_catalog(Store *store) {
         Page page;
         if (store_read_page(store, pg, &page) != 0) break;
         if (page.type != PAGE_CATALOG) break;
-        if (page.count > 0) {
+        if (page.count > 0 && page.count <= STORE_PAGE_DATA_SIZE) {
             strbuf_append_n(&buf, page.data, page.count);
+        } else if (page.count > STORE_PAGE_DATA_SIZE) {
+            break;  /* corrupt catalog page */
         }
         if (page.next_page == 0) break;
         pg = page.next_page;
@@ -452,30 +427,13 @@ static Store* get_store(Value *v) {
  * Live record format:    [key_len : 2 bytes][key_data : key_len bytes][json_len : 4 bytes][json_data : json_len bytes]
  */
 
+/* Compute bytes used by records in a page. Uses store_record_next for safe bounds checking.
+ * Returns -1 if corrupt data is encountered. */
 static int page_data_used(Page *page) {
     int offset = 0;
     for (int i = 0; i < (int)page->count; i++) {
-        if (offset + 2 > STORE_PAGE_DATA_SIZE) break;
-        uint16_t key_len = (uint16_t)((unsigned char)page->data[offset] |
-                                      ((unsigned char)page->data[offset + 1] << 8));
-        offset += 2;
-        if (key_len == 0) {
-            /* Deleted slot: 4-byte skip length then that many bytes */
-            if (offset + 4 > STORE_PAGE_DATA_SIZE) break;
-            uint32_t skip = (uint32_t)((unsigned char)page->data[offset] |
-                                       ((unsigned char)page->data[offset + 1] << 8) |
-                                       ((unsigned char)page->data[offset + 2] << 16) |
-                                       ((unsigned char)page->data[offset + 3] << 24));
-            offset += 4 + skip;
-            continue;
-        }
-        offset += key_len;
-        if (offset + 4 > STORE_PAGE_DATA_SIZE) break;
-        uint32_t json_len = (uint32_t)((unsigned char)page->data[offset] |
-                                       ((unsigned char)page->data[offset + 1] << 8) |
-                                       ((unsigned char)page->data[offset + 2] << 16) |
-                                       ((unsigned char)page->data[offset + 3] << 24));
-        offset += 4 + json_len;
+        StoreRecord rec;
+        if (store_record_next(page, &offset, &rec) != 0) return -1;
     }
     return offset;
 }
@@ -649,6 +607,13 @@ static Value* builtin_store_put(Value *arg) {
     while (1) {
         store_read_page(store, pg, &page);
         int used = page_data_used(&page);
+        if (used < 0) {
+            /* Corrupt page — skip to next or allocate new */
+            if (page.next_page == 0) break;
+            prev_pg = pg;
+            pg = page.next_page;
+            continue;
+        }
         if ((size_t)(used + record_size) <= STORE_PAGE_DATA_SIZE) {
             /* Fits in this page */
             int off = used;

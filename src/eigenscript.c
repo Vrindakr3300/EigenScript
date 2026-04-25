@@ -375,7 +375,7 @@ char* value_to_string(Value *v) {
                 if (i > 0) strbuf_append_n(&out, ", ", 2);
                 char *s = value_to_string(v->data.list.items[i]);
                 if (v->data.list.items[i] && v->data.list.items[i]->type == VAL_STR)
-                    strbuf_append_fmt(&out, "\"%s\"", s);
+                    eigs_json_escape_string(&out, s);
                 else
                     strbuf_append(&out, s);
                 free(s);
@@ -390,10 +390,11 @@ char* value_to_string(Value *v) {
             strbuf_append_char(&out, '{');
             for (int i = 0; i < v->data.dict.count; i++) {
                 if (i > 0) strbuf_append_n(&out, ", ", 2);
-                strbuf_append_fmt(&out, "\"%s\": ", v->data.dict.keys[i]);
+                eigs_json_escape_string(&out, v->data.dict.keys[i]);
+                strbuf_append_n(&out, ": ", 2);
                 char *vs = value_to_string(v->data.dict.vals[i]);
                 if (v->data.dict.vals[i] && v->data.dict.vals[i]->type == VAL_STR)
-                    strbuf_append_fmt(&out, "\"%s\"", vs);
+                    eigs_json_escape_string(&out, vs);
                 else
                     strbuf_append(&out, vs);
                 free(vs);
