@@ -21,8 +21,9 @@ fail() { echo "  FAIL: $1${2:+ ($2)}"; FAIL=$((FAIL+1)); }
 
 SRC_MODEL=/tmp/eigs_mrt_src.json
 DST_MODEL=/tmp/eigs_mrt_dst.json
+DST_EIGEN=/tmp/eigs_mrt_dst.eigen
 
-cleanup() { rm -f "$SRC_MODEL" "$DST_MODEL" /tmp/eigs_mrt_*.log /tmp/eigs_mrt_*.eigs; }
+cleanup() { rm -f "$SRC_MODEL" "$DST_MODEL" "$DST_EIGEN" /tmp/eigs_mrt_*.log /tmp/eigs_mrt_*.eigs; }
 trap cleanup EXIT
 
 # ---- Step 1: generate tiny model ----
@@ -49,12 +50,19 @@ print of (eigen_model_info of null)
 s is model_save_weights of "$DST_MODEL"
 print of "SAVE:"
 print of s
+b is eigen_model_save_binary of "$DST_EIGEN"
+print of "SAVE_BIN:"
+print of b
+print of "BIN_INFO:"
+print of (eigen_checkpoint_info of "$DST_EIGEN")
 EIGS
 
 OUT=$("$EIGS" "$SCRIPT" 2>&1)
 LOADED=$(echo "$OUT" | grep -A1 '^LOAD:$' | tail -1)
 INFO=$(echo "$OUT" | grep -A1 '^INFO_BEFORE:$' | tail -1)
 SAVE_STATUS=$(echo "$OUT" | grep -A1 '^SAVE:$' | tail -1)
+SAVE_BIN_STATUS=$(echo "$OUT" | grep -A1 '^SAVE_BIN:$' | tail -1)
+BIN_INFO=$(echo "$OUT" | grep -A1 '^BIN_INFO:$' | tail -1)
 
 if [ "$LOADED" = "1" ]; then
     ok "MRT02 generated model loads (eigen_model_loaded == 1)"
@@ -78,6 +86,24 @@ if [ -s "$DST_MODEL" ]; then
     ok "MRT05 saved model file is non-empty"
 else
     fail "MRT05 saved file empty/missing"
+fi
+
+if echo "$SAVE_BIN_STATUS" | grep -q '"status": "saved"' && echo "$SAVE_BIN_STATUS" | grep -q '"format": "eigen"'; then
+    ok "MRT05b eigen_model_save_binary returns status=saved"
+else
+    fail "MRT05b binary save" "got '$SAVE_BIN_STATUS'"
+fi
+
+if [ -s "$DST_EIGEN" ]; then
+    ok "MRT05c binary .eigen file is non-empty"
+else
+    fail "MRT05c binary file empty/missing"
+fi
+
+if echo "$BIN_INFO" | grep -q '"format": "eigen"' && echo "$BIN_INFO" | grep -q '"vocab_size": 8' && echo "$BIN_INFO" | grep -q '"d_model": 4'; then
+    ok "MRT05d eigen_checkpoint_info reports binary config"
+else
+    fail "MRT05d binary checkpoint info" "got '$BIN_INFO'"
 fi
 
 # ---- Step 3: fresh process, reload saved file, confirm identical config ----
@@ -104,6 +130,32 @@ if echo "$INFO2" | grep -q '"vocab_size": 8' && echo "$INFO2" | grep -q '"d_mode
     ok "MRT07 reloaded model has same vocab=8 d_model=4"
 else
     fail "MRT07 config match" "got '$INFO2'"
+fi
+
+# ---- Step 3b: fresh process, reload binary .eigen checkpoint ----
+SCRIPT2B=/tmp/eigs_mrt_reload_eigen.eigs
+cat > "$SCRIPT2B" <<EIGS
+r is eigen_model_load of "$DST_EIGEN"
+print of "RELOAD_BIN:"
+print of (eigen_model_loaded of null)
+print of "INFO_BIN_AFTER:"
+print of (eigen_model_info of null)
+EIGS
+
+OUT2B=$("$EIGS" "$SCRIPT2B" 2>&1)
+RELOADED_BIN=$(echo "$OUT2B" | grep -A1 '^RELOAD_BIN:$' | tail -1)
+INFO2B=$(echo "$OUT2B" | grep -A1 '^INFO_BIN_AFTER:$' | tail -1)
+
+if [ "$RELOADED_BIN" = "1" ]; then
+    ok "MRT07b binary .eigen reloads in fresh process"
+else
+    fail "MRT07b binary reload" "reloaded='$RELOADED_BIN'"
+fi
+
+if echo "$INFO2B" | grep -q '"vocab_size": 8' && echo "$INFO2B" | grep -q '"d_model": 4'; then
+    ok "MRT07c binary reload has same vocab=8 d_model=4"
+else
+    fail "MRT07c binary config match" "got '$INFO2B'"
 fi
 
 # ---- Step 4: generate tokens, verify shape invariants ----

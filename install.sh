@@ -1,8 +1,11 @@
 #!/bin/bash
 # Install EigenScript to ~/.local/bin
-# Installs two binaries:
-#   eigenscript      — minimal build (language + stdlib, 104K)
-#   eigenscript-full — full build (+ HTTP/DB/model extensions, 168K)
+# Default install requires only gcc:
+#   eigenscript      - minimal build (language + stdlib)
+#
+# Optional:
+#   ./install.sh full installs eigenscript-full with HTTP/DB/model extensions
+#   and requires libpq development headers.
 set -e
 
 cd "$(dirname "$0")"
@@ -19,8 +22,8 @@ chmod +x ~/.local/bin/eigenscript
 cp -r lib/*.eigs ~/.local/lib/eigenscript/
 echo "Stdlib installed to ~/.local/lib/eigenscript/"
 
-# Build and install full (if requested or if HTTP/DB/model extensions needed)
-if [ "$1" != "minimal-only" ]; then
+# Build and install full only when explicitly requested.
+if [ "${1:-}" = "full" ]; then
     ./build.sh full
     cp src/eigenscript ~/.local/bin/eigenscript-full
     chmod +x ~/.local/bin/eigenscript-full
@@ -31,6 +34,7 @@ if [ "$1" != "minimal-only" ]; then
 else
     echo ""
     echo "Installed: ~/.local/bin/eigenscript (v$VERSION, minimal)"
+    echo "Run './install.sh full' to also install eigenscript-full."
 fi
 
 echo ""

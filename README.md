@@ -23,9 +23,11 @@ cd EigenScript
 ./install.sh
 ```
 
-This builds a ~172K binary and installs it to `~/.local/bin/eigenscript`.
+This builds a ~204K minimal binary and installs it to `~/.local/bin/eigenscript`.
 
 Requires only `gcc` — no external dependencies.
+Run `./install.sh full` to also build the optional HTTP/DB/model binary
+(`eigenscript-full`); that path requires PostgreSQL development headers.
 
 ## Run
 
@@ -236,6 +238,7 @@ eigenscript examples/stem/orbital_mechanics.eigs   # Kepler orbits via RK4
 eigenscript examples/stem/climate_model.eigs       # energy balance, CO2 sensitivity
 eigenscript examples/stem/genetic_drift.eigs       # Wright-Fisher population genetics
 eigenscript examples/stem/signal_analysis.eigs     # DFT frequency detection
+eigenscript examples/stem/greenhouse_controller.eigs # closed-loop STEM controller
 ```
 
 ## Test Suite
@@ -257,7 +260,7 @@ cd tests
 
 ```bash
 make                  # build
-make test             # build and run 817 tests
+make test             # build and run 832 tests
 make gfx              # build with SDL2 graphics (UI toolkit, games)
 make install          # install to ~/.local/bin
 make clean            # remove build artifacts
@@ -265,4 +268,4 @@ make clean            # remove build artifacts
 
 Or use the shell scripts directly: `./build.sh` and `./install.sh`.
 
-The binary is a single C program with no runtime dependencies.
+The minimal binary is a single C program with no runtime dependencies.

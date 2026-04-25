@@ -19,7 +19,9 @@ We are committed to making participation in this project a welcoming experience 
 
 ## Enforcement
 
-Instances of unacceptable behavior may be reported to InauguralPhysicist@gmail.com. All complaints will be reviewed and addressed.
+Instances of unacceptable behavior may be reported to
+contact@inauguralsystems.com with the subject prefix `[CONDUCT]`.
+All complaints will be reviewed and addressed.
 
 Project maintainers may remove, edit, or reject contributions that violate this Code of Conduct, and may ban contributors for repeated violations.
 

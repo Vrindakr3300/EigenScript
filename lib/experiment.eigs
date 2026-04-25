@@ -77,14 +77,14 @@ define convergence_rate(values) as:
     start is floor of (n * 3 / 4)
     if start >= n:
         start is 0
-    sum is 0
+    dH_total is 0
     count is n - start
     for i in range of count:
         d is dH_values[start + i]
         if d < 0:
             d is 0 - d
-        sum is sum + d
-    avg_dH is sum / count
+        dH_total is dH_total + d
+    avg_dH is dH_total / count
 
     return {"average_dH": avg_dH, "final_status": report of tracker, "is_converging": avg_dH < 0.01}
 

@@ -4,7 +4,11 @@
 
 If you discover a security vulnerability in EigenScript, please report it responsibly.
 
-**Email**: InauguralPhysicist@gmail.com
+**Email**: contact@inauguralsystems.com
+**Subject prefix**: `[SECURITY]`
+
+Please do not file public GitHub issues for suspected vulnerabilities.
+Security reports are triaged before general support mail.
 
 Please include:
 - Description of the vulnerability
@@ -51,4 +55,16 @@ Out of scope:
 
 | Version | Supported |
 |---------|-----------|
-| 0.5.x   | Yes      |
+| 0.9.x   | Yes      |
+| < 0.9   | No       |
+
+## Contact Routing
+
+All project contact uses `contact@inauguralsystems.com`. Use one of these
+subject prefixes so reports can be triaged quickly:
+
+- `[SECURITY]` Vulnerabilities or suspected security issues
+- `[BUG]` Reproducible EigenScript bugs
+- `[SUPPORT]` Installation, usage, or release questions
+- `[PRESS]` Media, interviews, or public inquiries
+- `[LEGAL]` Licensing or trademark questions

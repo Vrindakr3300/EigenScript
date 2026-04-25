@@ -16,6 +16,34 @@
 #define MAX_D_MODEL 128
 #define MAX_D_FF 512
 
+/* ---- .eigen binary checkpoint format ---- */
+
+#define EIGEN_FORMAT_VERSION 1
+#define EIGEN_MAGIC "EIGEN\n"
+#define EIGEN_MAGIC_LEN 6
+
+/* Section types for .eigen TOC */
+#define EIGEN_SEC_CONFIG       0x0001
+#define EIGEN_SEC_TRAIN_META   0x0002
+#define EIGEN_SEC_TOKEN_EMBED  0x0010
+#define EIGEN_SEC_OUTPUT_PROJ  0x0011
+#define EIGEN_SEC_LAYER        0x0020
+#define EIGEN_SEC_OBSERVER     0x0030
+#define EIGEN_SEC_CORPUS_FP    0x0040
+#define EIGEN_SEC_LOSS_HISTORY 0x0050
+#define EIGEN_SEC_SENTINEL     0xFFFFFFFF
+
+/* Preamble flags */
+#define EIGEN_FLAG_HAS_OBSERVER  (1 << 0)
+#define EIGEN_FLAG_HAS_CORPUS_FP (1 << 1)
+#define EIGEN_FLAG_HAS_HISTORY   (1 << 2)
+
+/* Observer shadow buffer — parallel to weight arrays, 5 doubles per element */
+typedef struct {
+    double *data;           /* [total_elements * 5]: entropy, dH, last_entropy, obs_age, prev_dH */
+    int total_elements;     /* sum of all weight matrix element counts */
+} ObserverBuffer;
+
 typedef struct {
     int vocab_size;
     int d_model;
@@ -73,6 +101,8 @@ typedef struct {
      *                1 = ternary_weight_only (use _tern copies).
      * Set by load_model_weights from JSON "weight_format" field. */
     int weight_format;
+    /* Observer state — populated on .eigen load, written on .eigen save */
+    ObserverBuffer observer;
 } TransformerModel;
 
 #define WEIGHT_FORMAT_FP32 0
@@ -166,6 +196,12 @@ void ne_fused_ffn_forward_buf_packed_f(
 
 int load_model_weights(const char *path, TransformerModel *model);
 int save_model_weights(const char *path, TransformerModel *model);
+int save_model_eigen(const char *path, TransformerModel *model);
+int load_model_eigen(const char *path, TransformerModel *model);
+int detect_checkpoint_format(const char *path);
+int model_total_weight_count(TransformerModel *model);
+void observer_buffer_init(ObserverBuffer *obs, int total_elements);
+void observer_buffer_free(ObserverBuffer *obs);
 Value* json_obj_get(Value *obj, const char *key);
 
 /* ---- Registration ---- */
@@ -176,6 +212,8 @@ void register_model_builtins(Env *env);
 
 Value* builtin_eigen_model_load(Value *arg);
 Value* builtin_model_save_weights(Value *arg);
+Value* builtin_eigen_model_save_binary(Value *arg);
+Value* builtin_eigen_checkpoint_info(Value *arg);
 Value* builtin_eigen_generate(Value *arg);
 Value* builtin_eigen_model_loaded(Value *arg);
 Value* builtin_eigen_model_info(Value *arg);

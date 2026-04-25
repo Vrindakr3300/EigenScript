@@ -100,6 +100,11 @@ run_example "stdlib_demo" 10 "map double"
 run_example "tensors" 10 "Softmax"
 echo ""
 
+# ---- Integrated STEM applications ----
+echo "Integrated STEM applications:"
+run_example "stem/greenhouse_controller" 30 "Decision: APPROVE RUN"
+echo ""
+
 # ---- Simulation examples ----
 echo "Simulation examples:"
 run_example "physics" 10 "Rigid Body"

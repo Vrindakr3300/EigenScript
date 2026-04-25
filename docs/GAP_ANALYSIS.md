@@ -2,6 +2,10 @@
 
 Version surveyed: **0.8.1**
 
+Note: this is a historical gap analysis for the 0.8.1 line. Later releases
+closed several listed gaps, including concurrency, hashing/HMAC, UI tooling,
+STEM libraries, and the expanded 49-module standard library.
+
 EigenScript is a general-purpose language, but some program classes stress
 capabilities that the current runtime and standard library do not provide.
 This document catalogs those gaps so authors can decide when EigenScript fits
@@ -18,7 +22,7 @@ The survey is grounded in the current state of `src/`, `lib/`, `docs/`, and
 - Reference-counted GC plus arena allocator (`arena_mark` / `arena_reset`)
 - Native binary, zero runtime dependencies
 
-**Standard library highlights** (25 modules, all pure EigenScript)
+**Standard library highlights** (25 modules in 0.8.1; 49 modules in current 0.9.3, all pure EigenScript)
 - File I/O and path manipulation
 - JSON encode/decode, CSV, INI, `.env`
 - List / set / queue / map / state-machine / template / format helpers

@@ -28,6 +28,7 @@ typedef struct {
     char *session_id;
     char *request_headers;
     int early_bind_fd;
+    char *cors_origin;  /* NULL = no CORS headers, "*" = wildcard */
 } Server;
 
 extern Server g_server;

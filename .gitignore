@@ -39,3 +39,5 @@ tests/*.tmp
 .codex
 fuzz/fuzz_stdin
 fuzz/fuzz_eigenscript
+eigenlsp
+massif.out.*

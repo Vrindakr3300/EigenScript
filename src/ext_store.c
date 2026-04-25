@@ -6,6 +6,70 @@
 #include "ext_store_internal.h"
 
 /* ================================================================
+ * Bounded record iteration — validates all on-disk lengths before use.
+ *
+ * Record format within a page:
+ *   [key_len:2][key:key_len][json_len:4][json:json_len]
+ * Deleted records: key_len=0, followed by [json_len:4][json:json_len]
+ *
+ * store_record_next() advances offset safely, returning -1 on corruption.
+ * ================================================================ */
+
+typedef struct {
+    uint16_t key_len;       /* 0 = deleted */
+    int key_offset;         /* offset of key data within page.data */
+    uint32_t json_len;
+    int json_offset;        /* offset of json data within page.data */
+    int next_offset;        /* offset after this record */
+} StoreRecord;
+
+/* Parse one record from page.data starting at *offset.
+ * Returns 0 on success (fills rec), -1 on bounds violation. */
+static int store_record_next(const Page *page, int *offset, StoreRecord *rec) {
+    int off = *offset;
+    int limit = STORE_PAGE_DATA_SIZE;
+
+    /* Read key_len (2 bytes) */
+    if (off + 2 > limit) return -1;
+    rec->key_len = (uint16_t)((unsigned char)page->data[off] |
+                               ((unsigned char)page->data[off + 1] << 8));
+    off += 2;
+
+    if (rec->key_len == 0) {
+        /* Deleted record: skip json_len + json */
+        if (off + 4 > limit) return -1;
+        rec->json_len = (uint32_t)((unsigned char)page->data[off] |
+                                    ((unsigned char)page->data[off + 1] << 8) |
+                                    ((unsigned char)page->data[off + 2] << 16) |
+                                    ((unsigned char)page->data[off + 3] << 24));
+        off += 4;
+        rec->key_offset = 0;
+        rec->json_offset = off;
+        if (rec->json_len > (uint32_t)(limit - off)) return -1;
+        off += rec->json_len;
+    } else {
+        /* Live record: key + json_len + json */
+        if (rec->key_len > (uint32_t)(limit - off)) return -1;
+        rec->key_offset = off;
+        off += rec->key_len;
+
+        if (off + 4 > limit) return -1;
+        rec->json_len = (uint32_t)((unsigned char)page->data[off] |
+                                    ((unsigned char)page->data[off + 1] << 8) |
+                                    ((unsigned char)page->data[off + 2] << 16) |
+                                    ((unsigned char)page->data[off + 3] << 24));
+        off += 4;
+        rec->json_offset = off;
+        if (rec->json_len > (uint32_t)(limit - off)) return -1;
+        off += rec->json_len;
+    }
+
+    rec->next_offset = off;
+    *offset = off;
+    return 0;
+}
+
+/* ================================================================
  * JSON helpers for dicts (the core json_encode doesn't handle VAL_DICT)
  * ================================================================ */
 
@@ -59,7 +123,21 @@ static void store_json_encode(Value *v, strbuf *out) {
                 if (!first) strbuf_append_char(out, ',');
                 first = 0;
                 strbuf_append_char(out, '"');
-                strbuf_append(out, key);
+                for (const char *c = key; *c; c++) {
+                    switch (*c) {
+                        case '"':  strbuf_append_n(out, "\\\"", 2); break;
+                        case '\\': strbuf_append_n(out, "\\\\", 2); break;
+                        case '\n': strbuf_append_n(out, "\\n", 2); break;
+                        case '\r': strbuf_append_n(out, "\\r", 2); break;
+                        case '\t': strbuf_append_n(out, "\\t", 2); break;
+                        default:
+                            if ((unsigned char)*c < 0x20)
+                                strbuf_append_fmt(out, "\\u%04x", (unsigned char)*c);
+                            else
+                                strbuf_append_char(out, *c);
+                            break;
+                    }
+                }
                 strbuf_append_char(out, '"');
                 strbuf_append_char(out, ':');
                 store_json_encode(v->data.dict.vals[i], out);
@@ -665,46 +743,21 @@ static Value* builtin_store_get(Value *arg) {
 
         int offset = 0;
         for (int i = 0; i < (int)page.count; i++) {
-            if (offset + 2 > STORE_PAGE_DATA_SIZE) break;
-            uint16_t kl = (uint16_t)((unsigned char)page.data[offset] |
-                                     ((unsigned char)page.data[offset + 1] << 8));
-            offset += 2;
+            StoreRecord rec;
+            if (store_record_next(&page, &offset, &rec) != 0) goto get_next_page;
+            if (rec.key_len == 0) continue;  /* deleted */
 
-            if (kl == 0) {
-                /* Deleted */
-                if (offset + 4 > STORE_PAGE_DATA_SIZE) goto next_page;
-                uint32_t jl = (uint32_t)((unsigned char)page.data[offset] |
-                                         ((unsigned char)page.data[offset + 1] << 8) |
-                                         ((unsigned char)page.data[offset + 2] << 16) |
-                                         ((unsigned char)page.data[offset + 3] << 24));
-                offset += 4 + jl;
-                continue;
-            }
-
-            if (kl == target_key_len && memcmp(page.data + offset, key_buf, kl) == 0) {
-                offset += kl;
-                if (offset + 4 > STORE_PAGE_DATA_SIZE) return make_null();
-                uint32_t jl = (uint32_t)((unsigned char)page.data[offset] |
-                                         ((unsigned char)page.data[offset + 1] << 8) |
-                                         ((unsigned char)page.data[offset + 2] << 16) |
-                                         ((unsigned char)page.data[offset + 3] << 24));
-                offset += 4;
-                char *json = xmalloc(jl + 1);
-                memcpy(json, page.data + offset, jl);
-                json[jl] = '\0';
+            if (rec.key_len == target_key_len &&
+                memcmp(page.data + rec.key_offset, key_buf, rec.key_len) == 0) {
+                char *json = xmalloc(rec.json_len + 1);
+                memcpy(json, page.data + rec.json_offset, rec.json_len);
+                json[rec.json_len] = '\0';
                 Value *result = store_json_decode(json);
                 free(json);
                 return result;
             }
-            offset += kl;
-            if (offset + 4 > STORE_PAGE_DATA_SIZE) break;
-            uint32_t jl = (uint32_t)((unsigned char)page.data[offset] |
-                                     ((unsigned char)page.data[offset + 1] << 8) |
-                                     ((unsigned char)page.data[offset + 2] << 16) |
-                                     ((unsigned char)page.data[offset + 3] << 24));
-            offset += 4 + jl;
         }
-        next_page:
+        get_next_page:
         pg = page.next_page;
     }
     return make_null();
@@ -746,37 +799,17 @@ static Value* builtin_store_delete(Value *arg) {
 
         int offset = 0;
         for (int i = 0; i < (int)page.count; i++) {
-            if (offset + 2 > STORE_PAGE_DATA_SIZE) break;
             int kl_offset = offset;
-            uint16_t kl = (uint16_t)((unsigned char)page.data[offset] |
-                                     ((unsigned char)page.data[offset + 1] << 8));
-            offset += 2;
+            StoreRecord rec;
+            if (store_record_next(&page, &offset, &rec) != 0) goto del_next;
+            if (rec.key_len == 0) continue;  /* deleted */
 
-            if (kl == 0) {
-                if (offset + 4 > STORE_PAGE_DATA_SIZE) goto del_next;
-                uint32_t jl = (uint32_t)((unsigned char)page.data[offset] |
-                                         ((unsigned char)page.data[offset + 1] << 8) |
-                                         ((unsigned char)page.data[offset + 2] << 16) |
-                                         ((unsigned char)page.data[offset + 3] << 24));
-                offset += 4 + jl;
-                continue;
-            }
-
-            /* Read json_len (past key data) to compute total record size */
-            int json_off = offset + kl;
-            if (json_off + 4 > STORE_PAGE_DATA_SIZE) break;
-            uint32_t jl = (uint32_t)((unsigned char)page.data[json_off] |
-                                     ((unsigned char)page.data[json_off + 1] << 8) |
-                                     ((unsigned char)page.data[json_off + 2] << 16) |
-                                     ((unsigned char)page.data[json_off + 3] << 24));
-
-            if (kl == target_key_len && memcmp(page.data + offset, key_buf, kl) == 0) {
+            if (rec.key_len == target_key_len &&
+                memcmp(page.data + rec.key_offset, key_buf, rec.key_len) == 0) {
                 /* Mark deleted: set key_len to 0, write skip_len at offset+2 */
-                /* skip_len = kl + jl  (everything after the 4-byte skip field) */
-                uint32_t skip = (uint32_t)kl + jl;
+                uint32_t skip = (uint32_t)rec.key_len + rec.json_len;
                 page.data[kl_offset] = 0;
                 page.data[kl_offset + 1] = 0;
-                /* Write skip_len at kl_offset+2 (overwriting start of key data) */
                 page.data[kl_offset + 2] = (char)(skip & 0xFF);
                 page.data[kl_offset + 3] = (char)((skip >> 8) & 0xFF);
                 page.data[kl_offset + 4] = (char)((skip >> 16) & 0xFF);
@@ -784,7 +817,6 @@ static Value* builtin_store_delete(Value *arg) {
                 store_write_page(store, pg, &page);
                 return make_num(1);
             }
-            offset += kl + 4 + jl;
         }
         del_next:
         pg = page.next_page;
@@ -818,35 +850,16 @@ static Value* builtin_store_query(Value *arg) {
 
         int offset = 0;
         for (int i = 0; i < (int)page.count; i++) {
-            if (offset + 2 > STORE_PAGE_DATA_SIZE) break;
-            uint16_t kl = (uint16_t)((unsigned char)page.data[offset] |
-                                     ((unsigned char)page.data[offset + 1] << 8));
-            offset += 2;
+            StoreRecord rec;
+            if (store_record_next(&page, &offset, &rec) != 0) goto query_next;
+            if (rec.key_len == 0) continue;  /* deleted */
 
-            if (kl == 0) {
-                if (offset + 4 > STORE_PAGE_DATA_SIZE) goto query_next;
-                uint32_t jl = (uint32_t)((unsigned char)page.data[offset] |
-                                         ((unsigned char)page.data[offset + 1] << 8) |
-                                         ((unsigned char)page.data[offset + 2] << 16) |
-                                         ((unsigned char)page.data[offset + 3] << 24));
-                offset += 4 + jl;
-                continue;
-            }
-
-            offset += kl;
-            if (offset + 4 > STORE_PAGE_DATA_SIZE) break;
-            uint32_t jl = (uint32_t)((unsigned char)page.data[offset] |
-                                     ((unsigned char)page.data[offset + 1] << 8) |
-                                     ((unsigned char)page.data[offset + 2] << 16) |
-                                     ((unsigned char)page.data[offset + 3] << 24));
-            offset += 4;
-            char *json = xmalloc(jl + 1);
-            memcpy(json, page.data + offset, jl);
-            json[jl] = '\0';
-            Value *rec = store_json_decode(json);
+            char *json = xmalloc(rec.json_len + 1);
+            memcpy(json, page.data + rec.json_offset, rec.json_len);
+            json[rec.json_len] = '\0';
+            Value *val = store_json_decode(json);
             free(json);
-            list_append(results, rec);
-            offset += jl;
+            list_append(results, val);
         }
         query_next:
         pg = page.next_page;
@@ -879,29 +892,10 @@ static Value* builtin_store_count(Value *arg) {
 
         int offset = 0;
         for (int i = 0; i < (int)page.count; i++) {
-            if (offset + 2 > STORE_PAGE_DATA_SIZE) break;
-            uint16_t kl = (uint16_t)((unsigned char)page.data[offset] |
-                                     ((unsigned char)page.data[offset + 1] << 8));
-            offset += 2;
-
-            if (kl == 0) {
-                if (offset + 4 > STORE_PAGE_DATA_SIZE) goto count_next;
-                uint32_t jl = (uint32_t)((unsigned char)page.data[offset] |
-                                         ((unsigned char)page.data[offset + 1] << 8) |
-                                         ((unsigned char)page.data[offset + 2] << 16) |
-                                         ((unsigned char)page.data[offset + 3] << 24));
-                offset += 4 + jl;
-                continue;
-            }
-
+            StoreRecord rec;
+            if (store_record_next(&page, &offset, &rec) != 0) goto count_next;
+            if (rec.key_len == 0) continue;  /* deleted */
             count++;
-            offset += kl;
-            if (offset + 4 > STORE_PAGE_DATA_SIZE) break;
-            uint32_t jl = (uint32_t)((unsigned char)page.data[offset] |
-                                     ((unsigned char)page.data[offset + 1] << 8) |
-                                     ((unsigned char)page.data[offset + 2] << 16) |
-                                     ((unsigned char)page.data[offset + 3] << 24));
-            offset += 4 + jl;
         }
         count_next:
         pg = page.next_page;

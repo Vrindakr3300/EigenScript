@@ -1,0 +1,251 @@
+# examples/stem/greenhouse_controller.eigs
+# Closed-loop growth chamber controller
+#
+# This is an integrated STEM application:
+# - chemistry builds the nutrient recipe
+# - biology models biomass growth and nitrate uptake
+# - engineering runs PID control and sensor smoothing
+# - physics accounts for heater energy and thermal mass
+# - experiment/observer tools judge stability and anomalies
+
+load_file of "lib/math.eigs"
+load_file of "lib/physics.eigs"
+load_file of "lib/chemistry.eigs"
+load_file of "lib/biology.eigs"
+load_file of "lib/engineering.eigs"
+load_file of "lib/experiment.eigs"
+load_file of "lib/stats.eigs"
+load_file of "lib/format.eigs"
+load_file of "lib/io.eigs"
+
+define make_recipe(kno3_grams, liters, target_ph) as:
+    molar_mass is molecular_weight of "KNO3"
+    moles is grams_to_moles of [kno3_grams, molar_mass]
+    molar is molarity of [moles, liters]
+    h_conc is ph_to_concentration of target_ph
+    return {
+        "formula": "KNO3",
+        "grams": kno3_grams,
+        "liters": liters,
+        "molar_mass": molar_mass,
+        "moles": moles,
+        "molarity_M": molar,
+        "nitrate_mM": molar * 1000,
+        "target_h_conc": h_conc,
+        "verified_ph": ph of h_conc
+    }
+
+define make_config() as:
+    heater_current is ohms_law_current of [24.0, 4.0]
+    heater_capacity_w is resistor_power of [heater_current, 4.0]
+    sensor_midpoint_v is voltage_divider of [5.0, 10000, 12000]
+    return {
+        "target_temp_c": 23.0,
+        "ambient_c": 18.0,
+        "target_ph": 6.2,
+        "initial_temp_c": 19.0,
+        "initial_biomass_g": 18.0,
+        "carrying_capacity_g": 210.0,
+        "minimum_harvest_g": 92.0,
+        "base_growth_per_day": 0.82,
+        "nitrate_km_mM": 6.0,
+        "max_nitrate_uptake_mM_per_g_day": 0.035,
+        "dt_hours": 0.5,
+        "steps": 192,
+        "sample_every": 16,
+        "pid_kp": 16.0,
+        "pid_ki": 0.14,
+        "pid_kd": 1.8,
+        "heater_capacity_w": heater_capacity_w,
+        "thermal_mass_kg": 24.0,
+        "specific_heat_j_kg_c": 3800.0,
+        "loss_j_per_c_hour": 22000.0,
+        "sensor_midpoint_v": sensor_midpoint_v
+    }
+
+define initial_state(config, recipe) as:
+    return {
+        "hour": 0.0,
+        "temp_c": config.initial_temp_c,
+        "biomass_g": config.initial_biomass_g,
+        "nitrate_mM": recipe.nitrate_mM,
+        "ph": config.target_ph + 0.15,
+        "pid_integral": 0.0,
+        "pid_prev_error": 0.0,
+        "heater_w": 0.0,
+        "energy_wh": 0.0,
+        "growth_rate": 0.0
+    }
+
+define step_chamber(state, config, recipe) as:
+    dt_hours is config.dt_hours
+    dt_days is dt_hours / 24.0
+
+    temp_error is config.target_temp_c - state.temp_c
+    pid is pid_step of [config.pid_kp, config.pid_ki, config.pid_kd, temp_error, state.pid_integral, state.pid_prev_error, dt_hours]
+    heater_w is clamp of [pid[0], 0.0, config.heater_capacity_w]
+
+    heat_capacity_j_per_c is heat_transfer of [config.thermal_mass_kg, config.specific_heat_j_kg_c, 1.0]
+    heater_j is heater_w * 3600.0 * dt_hours
+    loss_j is (state.temp_c - config.ambient_c) * config.loss_j_per_c_hour * dt_hours
+    dT is (heater_j - loss_j) / heat_capacity_j_per_c
+    next_temp is state.temp_c + dT
+    next_temp is clamp of [next_temp, config.ambient_c - 2.0, config.target_temp_c + 5.0]
+
+    temp_penalty is (abs of (next_temp - config.target_temp_c)) / 10.0
+    temp_factor is clamp of [1.0 - temp_penalty, 0.15, 1.0]
+    nitrate_factor is michaelis_menten of [1.0, config.nitrate_km_mM, state.nitrate_mM]
+    ph_penalty is (abs of (state.ph - config.target_ph)) / 2.5
+    ph_factor is clamp of [1.0 - ph_penalty, 0.25, 1.0]
+    growth_rate is config.base_growth_per_day * temp_factor * nitrate_factor * ph_factor
+
+    next_biomass is logistic_growth of [state.biomass_g, config.carrying_capacity_g, growth_rate, dt_days]
+    biomass_gain is next_biomass - state.biomass_g
+    uptake_rate is michaelis_menten of [config.max_nitrate_uptake_mM_per_g_day, config.nitrate_km_mM, state.nitrate_mM]
+    nitrate_used is uptake_rate * state.biomass_g * dt_days
+    next_nitrate is clamp of [state.nitrate_mM - nitrate_used, 0.0, recipe.nitrate_mM]
+
+    ph_drift is biomass_gain * 0.018
+    ph_control is (config.target_ph - state.ph) * 0.08
+    next_ph is clamp of [state.ph - ph_drift + ph_control, 4.8, 7.2]
+
+    return {
+        "hour": state.hour + dt_hours,
+        "temp_c": next_temp,
+        "biomass_g": next_biomass,
+        "nitrate_mM": next_nitrate,
+        "ph": next_ph,
+        "pid_integral": pid[1],
+        "pid_prev_error": pid[2],
+        "heater_w": heater_w,
+        "energy_wh": state.energy_wh + heater_w * dt_hours,
+        "growth_rate": growth_rate
+    }
+
+define sample_row(state) as:
+    return [
+        fmt_num of [state.hour, 1],
+        fmt_num of [state.temp_c, 2],
+        fmt_num of [state.biomass_g, 2],
+        fmt_num of [state.nitrate_mM, 2],
+        fmt_num of [state.ph, 2],
+        fmt_num of [state.heater_w, 1]
+    ]
+
+define recent_window(values, window) as:
+    start is (len of values) - window
+    if start < 0:
+        start is 0
+    result is []
+    for i in range of ((len of values) - start):
+        append of [result, values[start + i]]
+    return result
+
+define choose_decision(final_state, temp_window, temp_spikes, config) as:
+    temp_ok is (abs of (final_state.temp_c - config.target_temp_c)) <= 0.85
+    ph_ok is (abs of (final_state.ph - config.target_ph)) <= 0.45
+    nutrient_ok is final_state.nitrate_mM >= 8.0
+    biomass_ok is final_state.biomass_g >= config.minimum_harvest_g
+    stable_ok is is_measurement_stable of [temp_window, 5]
+    clean_signal is (len of temp_spikes) == 0
+
+    if temp_ok and ph_ok and nutrient_ok and biomass_ok and stable_ok and clean_signal:
+        return "APPROVE RUN"
+    if nutrient_ok == 0:
+        return "REFEED NUTRIENT"
+    if stable_ok == 0:
+        return "HOLD FOR THERMAL STABILITY"
+    if ph_ok == 0:
+        return "ADJUST PH"
+    if biomass_ok == 0:
+        return "CONTINUE GROW-OUT"
+    return "REVIEW SENSOR TRACE"
+
+define run_controller() as:
+    config is make_config of null
+    recipe is make_recipe of [14.0, 4.0, config.target_ph]
+    state is initial_state of [config, recipe]
+
+    temp_series is []
+    biomass_series is []
+    nitrate_series is []
+    table_rows is []
+    csv_rows is [["hour", "temp_c", "biomass_g", "nitrate_mM", "ph", "heater_w"]]
+
+    append of [table_rows, sample_row of state]
+    append of [csv_rows, sample_row of state]
+
+    for i in range of config.steps:
+        state is step_chamber of [state, config, recipe]
+        append of [temp_series, state.temp_c]
+        append of [biomass_series, state.biomass_g]
+        append of [nitrate_series, state.nitrate_mM]
+        if ((i + 1) % config.sample_every) == 0:
+            append of [table_rows, sample_row of state]
+            append of [csv_rows, sample_row of state]
+
+    smooth_temp is moving_average of [temp_series, 7]
+    temp_window is recent_window of [smooth_temp, 16]
+    raw_temp_spikes is detect_entropy_spikes of [temp_window, 0.08]
+    temp_spikes is []
+    for i in range of (len of raw_temp_spikes):
+        if raw_temp_spikes[i].index > 0:
+            append of [temp_spikes, raw_temp_spikes[i]]
+    temp_convergence is convergence_rate of temp_window
+    biomass_track is track_measurements of biomass_series
+    decision is choose_decision of [state, temp_window, temp_spikes, config]
+
+    csv_path is "/tmp/eigenscript_greenhouse_controller.csv"
+    write_csv of [csv_path, csv_rows]
+
+    return {
+        "config": config,
+        "recipe": recipe,
+        "final": state,
+        "table_rows": table_rows,
+        "csv_path": csv_path,
+        "temp_window": temp_window,
+        "temp_spikes": temp_spikes,
+        "temp_convergence": temp_convergence,
+        "biomass_track": biomass_track,
+        "decision": decision,
+        "temp_mean": mean of temp_window,
+        "temp_std": std_dev of temp_window
+    }
+
+run_summary is run_controller of null
+recipe is run_summary.recipe
+final is run_summary.final
+config is run_summary.config
+
+print of "=== Closed-Loop Greenhouse Controller ==="
+print of ""
+print of "Nutrient recipe"
+print of ("  Salt: " + recipe.formula + " at " + (fmt_num of [recipe.grams, 1]) + " g in " + (fmt_num of [recipe.liters, 1]) + " L")
+print of ("  Molar mass: " + (fmt_num of [recipe.molar_mass, 3]) + " g/mol")
+print of ("  Nitrate strength: " + (fmt_num of [recipe.nitrate_mM, 2]) + " mM")
+print of ("  Target pH: " + (fmt_num of [recipe.verified_ph, 2]) + " ([H+]=" + (str of recipe.target_h_conc) + " M)")
+print of ""
+print of "Electrical and thermal plant"
+print of ("  Heater capacity: " + (fmt_num of [config.heater_capacity_w, 1]) + " W from 24 V / 4 ohm cartridge")
+print of ("  Sensor midpoint: " + (fmt_num of [config.sensor_midpoint_v, 3]) + " V")
+print of ("  Thermal mass: " + (fmt_num of [config.thermal_mass_kg, 1]) + " kg")
+print of ""
+print of (fmt_table of [["hour", "temp C", "biomass g", "NO3 mM", "pH", "heater W"], run_summary.table_rows])
+print of ""
+print of "Observer readout"
+print of ("  Smoothed temp mean: " + (fmt_num of [run_summary.temp_mean, 2]) + " C")
+print of ("  Smoothed temp std dev: " + (fmt_num of [run_summary.temp_std, 3]) + " C")
+print of ("  Temperature convergence status: " + run_summary.temp_convergence.final_status)
+print of ("  Temperature entropy spikes: " + (str of (len of run_summary.temp_spikes)))
+print of ("  Final biomass status: " + run_summary.biomass_track[(len of run_summary.biomass_track) - 1].status)
+print of ""
+print of "Final state"
+print of ("  Temperature: " + (fmt_num of [final.temp_c, 2]) + " C")
+print of ("  Biomass: " + (fmt_num of [final.biomass_g, 2]) + " g")
+print of ("  Nitrate: " + (fmt_num of [final.nitrate_mM, 2]) + " mM")
+print of ("  pH: " + (fmt_num of [final.ph, 2]))
+print of ("  Heater energy: " + (fmt_num of [final.energy_wh, 1]) + " Wh")
+print of ("  CSV: " + run_summary.csv_path)
+print of ""
+print of ("Decision: " + run_summary.decision)

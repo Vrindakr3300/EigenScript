@@ -705,51 +705,63 @@ Value* builtin_coalesce(Value *arg) {
     return val;
 }
 
+/* Escape a string for safe embedding in JSON (keys and values) */
+static void json_escape_string(strbuf *out, const char *s) {
+    strbuf_append_char(out, '"');
+    for (const char *c = s; *c; c++) {
+        switch (*c) {
+            case '"':  strbuf_append_n(out, "\\\"", 2); break;
+            case '\\': strbuf_append_n(out, "\\\\", 2); break;
+            case '\n': strbuf_append_n(out, "\\n", 2); break;
+            case '\r': strbuf_append_n(out, "\\r", 2); break;
+            case '\t': strbuf_append_n(out, "\\t", 2); break;
+            default:
+                if ((unsigned char)*c < 0x20) {
+                    strbuf_append_fmt(out, "\\u%04x", (unsigned char)*c);
+                } else {
+                    strbuf_append_char(out, *c);
+                }
+                break;
+        }
+    }
+    strbuf_append_char(out, '"');
+}
+
 Value* builtin_json_build(Value *arg) {
     /* json_build of [key1, val1, key2, val2, ...] — properly escaped JSON object */
     if (!arg || arg->type != VAL_LIST) return make_str("{}");
     int count = arg->data.list.count;
-    int buf_size = count * 256 + 64;
-    if (buf_size < 1024) buf_size = 1024;
-    char *buf = xcalloc(buf_size, 1);
-    int pos = 0;
-    pos += snprintf(buf + pos, buf_size - pos, "{");
-    for (int i = 0; i + 1 < count && pos < buf_size - 64; i += 2) {
-        if (i > 0) pos += snprintf(buf + pos, buf_size - pos, ", ");
+    strbuf out;
+    strbuf_init(&out);
+    strbuf_append_char(&out, '{');
+    for (int i = 0; i + 1 < count; i += 2) {
+        if (i > 0) strbuf_append_n(&out, ", ", 2);
         char *key = value_to_string(arg->data.list.items[i]);
-        Value *val = arg->data.list.items[i + 1];
-        pos += snprintf(buf + pos, buf_size - pos, "\"%s\": ", key);
+        json_escape_string(&out, key);
         free(key);
-        if (val->type == VAL_STR) {
-            char *vs = val->data.str;
-            buf[pos++] = '"';
-            for (int j = 0; vs[j] && pos < buf_size - 10; j++) {
-                if (vs[j] == '"') { buf[pos++] = '\\'; buf[pos++] = '"'; }
-                else if (vs[j] == '\\') { buf[pos++] = '\\'; buf[pos++] = '\\'; }
-                else if (vs[j] == '\n') { buf[pos++] = '\\'; buf[pos++] = 'n'; }
-                else if (vs[j] == '\t') { buf[pos++] = '\\'; buf[pos++] = 't'; }
-                else buf[pos++] = vs[j];
-            }
-            buf[pos++] = '"';
-        } else if (val->type == VAL_NUM) {
+        strbuf_append_n(&out, ": ", 2);
+        Value *val = arg->data.list.items[i + 1];
+        if (val->type == VAL_NUM) {
             double d = val->data.num;
             if (d == (double)(int)d && d >= -1e9 && d <= 1e9)
-                pos += snprintf(buf + pos, buf_size - pos, "%d", (int)d);
+                strbuf_append_fmt(&out, "%d", (int)d);
             else
-                pos += snprintf(buf + pos, buf_size - pos, "%.6f", d);
+                strbuf_append_fmt(&out, "%.6f", d);
         } else if (val->type == VAL_NULL) {
-            pos += snprintf(buf + pos, buf_size - pos, "null");
+            strbuf_append(&out, "null");
         } else if (val->type == VAL_JSON_RAW) {
-            pos += snprintf(buf + pos, buf_size - pos, "%s", val->data.str);
+            strbuf_append(&out, val->data.str);
+        } else if (val->type == VAL_STR) {
+            json_escape_string(&out, val->data.str);
         } else {
             char *vs = value_to_string(val);
-            pos += snprintf(buf + pos, buf_size - pos, "\"%s\"", vs);
+            json_escape_string(&out, vs);
             free(vs);
         }
     }
-    pos += snprintf(buf + pos, buf_size - pos, "}");
-    Value *result = make_str(buf);
-    free(buf);
+    strbuf_append_char(&out, '}');
+    Value *result = make_str(out.data);
+    strbuf_free(&out);
     return result;
 }
 

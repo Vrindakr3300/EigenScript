@@ -421,6 +421,182 @@ static void native_forward_with_cache(int *token_ids, int seq_len, TransformerMo
     free(x);
 }
 
+/* ---- Observer-driven learning rate scaling ----
+ * Reads the observer buffer to classify each weight matrix and returns
+ * a per-matrix scale factor for the gradient update.
+ *
+ * Same logic as the trigram path's block scheduling:
+ *   converged  → scale 0.0 (skip update entirely)
+ *   stable     → scale 0.5 (maintenance updates)
+ *   improving  → scale 1.0 (keep going)
+ *   oscillating → scale 0.3 (dampen to stop sign-flipping)
+ *   diverging  → scale 0.1 (nearly halt, something is wrong)
+ *   cold/new   → scale 1.0 (no history, full rate)
+ *
+ * Classification uses per-matrix aggregates of the 5 observer fields:
+ *   mean |dH|, mean entropy, mean obs_age, oscillation fraction
+ */
+
+/* Thresholds (same defaults as eval.c observer predicates) */
+#define OBS_DH_ZERO  0.001
+#define OBS_DH_SMALL 0.01
+#define OBS_H_LOW    0.1
+
+static float observer_matrix_scale(double *obs, int start, int count) {
+    if (!obs || count <= 0) return 1.0f;  /* no observer data → full rate */
+
+    double sum_abs_dH = 0.0, sum_entropy = 0.0, sum_age = 0.0;
+    int osc_count = 0;
+
+    for (int i = 0; i < count; i++) {
+        double *o = obs + (start + i) * 5;
+        double entropy = o[0];
+        double dH = o[1];
+        double prev_dH = o[4];
+        double age = o[3];
+
+        sum_entropy += entropy;
+        sum_abs_dH += fabs(dH);
+        sum_age += age;
+
+        /* Oscillation: sign flip with significant magnitude */
+        if (prev_dH * dH < 0.0 && fabs(dH) > OBS_DH_ZERO) osc_count++;
+    }
+
+    double mean_abs_dH = sum_abs_dH / count;
+    double mean_entropy = sum_entropy / count;
+    double mean_age = sum_age / count;
+    double osc_frac = (double)osc_count / count;
+
+    /* Cold start — not enough history */
+    if (mean_age < 2.0) return 1.0f;
+
+    /* Converged: low entropy, barely changing */
+    if (mean_abs_dH < OBS_DH_ZERO && mean_entropy < OBS_H_LOW)
+        return 0.0f;
+
+    /* Oscillating: more than 30% of elements flipping sign */
+    if (osc_frac > 0.3)
+        return 0.3f;
+
+    /* Diverging: entropy increasing significantly */
+    if (mean_abs_dH > OBS_DH_SMALL && mean_entropy > OBS_H_LOW) {
+        /* Check if dH is positive on average (increasing entropy) */
+        double sum_dH = 0.0;
+        for (int i = 0; i < count; i++) sum_dH += obs[(start + i) * 5 + 1];
+        if (sum_dH / count > OBS_DH_SMALL)
+            return 0.1f;
+    }
+
+    /* Stable: small changes, moderate entropy */
+    if (mean_abs_dH < OBS_DH_SMALL)
+        return 0.5f;
+
+    /* Improving: still changing, not oscillating — full rate */
+    return 1.0f;
+}
+
+/* Compute per-matrix observer scales for the whole model.
+ * Returns array of scale factors: [token_emb, output_proj, L0_wq, L0_wk, ..., LN_ln2b]
+ * Caller frees. Returns NULL if no observer data. */
+static float* compute_observer_scales(TransformerModel *model) {
+    if (!model->observer.data || model->observer.total_elements <= 0)
+        return NULL;
+
+    int vs = model->config.vocab_size;
+    int dm = model->config.d_model;
+    int df = model->config.d_ff;
+    int nl = model->config.n_layers;
+    double *obs = model->observer.data;
+
+    /* 2 global matrices + 10 per layer (w_q,w_k,w_v,w_o,w_ff1,w_ff2,ln1g,ln1b,ln2g,ln2b) */
+    int n_matrices = 2 + nl * 10;
+    float *scales = xcalloc(n_matrices, sizeof(float));
+    int idx = 0;
+    int obs_offset = 0;
+
+    /* Token embeddings */
+    scales[idx++] = observer_matrix_scale(obs, obs_offset, vs * dm);
+    obs_offset += vs * dm;
+
+    /* Output projection */
+    scales[idx++] = observer_matrix_scale(obs, obs_offset, dm * vs);
+    obs_offset += dm * vs;
+
+    /* Per-layer */
+    for (int l = 0; l < nl; l++) {
+        int sizes[10] = { dm*dm, dm*dm, dm*dm, dm*dm, dm*df, df*dm, dm, dm, dm, dm };
+        for (int m = 0; m < 10; m++) {
+            scales[idx++] = observer_matrix_scale(obs, obs_offset, sizes[m]);
+            obs_offset += sizes[m];
+        }
+    }
+
+    return scales;
+}
+
+/* ---- Observer tracking for .eigen checkpoint persistence ----
+ * After each training step, update the observer buffer with per-element
+ * entropy deltas computed from the weight changes. This makes the observer
+ * state available for .eigen save. */
+static void update_model_observer(TransformerModel *model, float *old_token_emb, float *old_output_proj,
+                                   float **old_wq, float **old_wk, float **old_wv, float **old_wo,
+                                   float **old_ff1, float **old_ff2) {
+    int total = model_total_weight_count(model);
+    if (!model->observer.data || model->observer.total_elements != total) {
+        observer_buffer_free(&model->observer);
+        observer_buffer_init(&model->observer, total);
+    }
+
+    double *obs = model->observer.data;
+    int idx = 0;
+    int vs = model->config.vocab_size;
+    int dm = model->config.d_model;
+    int df = model->config.d_ff;
+    int nl = model->config.n_layers;
+
+    /* Token embeddings */
+    for (int i = 0; i < vs * dm; i++, idx++) {
+        double *o = obs + idx * 5;
+        double delta = fabs((double)(model->token_embeddings[i] - old_token_emb[i]));
+        double new_ent = (delta > 1e-15) ? -delta * log(delta) : 0.0;
+        o[4] = o[1];                 /* prev_dH */
+        o[1] = new_ent - o[2];      /* dH = new_entropy - last_entropy */
+        o[2] = o[0];                 /* last_entropy = old entropy */
+        o[0] = new_ent;              /* entropy */
+        o[3] += 1.0;                 /* obs_age++ */
+    }
+
+    /* Output projection */
+    for (int i = 0; i < dm * vs; i++, idx++) {
+        double *o = obs + idx * 5;
+        double delta = fabs((double)(model->output_proj[i] - old_output_proj[i]));
+        double new_ent = (delta > 1e-15) ? -delta * log(delta) : 0.0;
+        o[4] = o[1]; o[1] = new_ent - o[2]; o[2] = o[0]; o[0] = new_ent; o[3] += 1.0;
+    }
+
+    /* Per-layer weights */
+    for (int l = 0; l < nl; l++) {
+        TransformerLayer *layer = &model->layers[l];
+        float *olds[6] = { old_wq[l], old_wk[l], old_wv[l], old_wo[l], old_ff1[l], old_ff2[l] };
+        float *news[6] = { layer->w_q, layer->w_k, layer->w_v, layer->w_o, layer->w_ff1, layer->w_ff2 };
+        int sizes[6] = { dm*dm, dm*dm, dm*dm, dm*dm, dm*df, df*dm };
+        for (int m = 0; m < 6; m++) {
+            for (int i = 0; i < sizes[m]; i++, idx++) {
+                double *o = obs + idx * 5;
+                double delta = fabs((double)(news[m][i] - olds[m][i]));
+                double new_ent = (delta > 1e-15) ? -delta * log(delta) : 0.0;
+                o[4] = o[1]; o[1] = new_ent - o[2]; o[2] = o[0]; o[0] = new_ent; o[3] += 1.0;
+            }
+        }
+        /* LayerNorm — just increment obs_age so they stay in sync */
+        for (int i = 0; i < 4 * dm; i++, idx++) {
+            double *o = obs + idx * 5;
+            o[3] += 1.0;
+        }
+    }
+}
+
 static int native_train_step(int *input_ids, int input_len, int *output_ids, int output_len, float learning_rate, float *loss_out, int *tokens_trained_out) {
     if (!g_model.loaded) return -1;
 
@@ -671,29 +847,88 @@ static int native_train_step(int *input_ids, int input_len, int *output_ids, int
         return -1;
     }
 
+    /* Snapshot weights before update for observer tracking */
+    float *old_token_emb = xmalloc_array(safe_size_mul(vocab_size, d_model), sizeof(float));
+    float *old_output_proj = xmalloc_array(safe_size_mul(d_model, vocab_size), sizeof(float));
+    memcpy(old_token_emb, g_model.token_embeddings, vocab_size * d_model * sizeof(float));
+    memcpy(old_output_proj, g_model.output_proj, d_model * vocab_size * sizeof(float));
+
+    float **old_wq = xcalloc(n_layers, sizeof(float*));
+    float **old_wk = xcalloc(n_layers, sizeof(float*));
+    float **old_wv = xcalloc(n_layers, sizeof(float*));
+    float **old_wo = xcalloc(n_layers, sizeof(float*));
+    float **old_ff1 = xcalloc(n_layers, sizeof(float*));
+    float **old_ff2 = xcalloc(n_layers, sizeof(float*));
+    for (int l = 0; l < n_layers; l++) {
+        TransformerLayer *layer = &g_model.layers[l];
+        old_wq[l] = xmalloc_array(safe_size_mul(d_model, d_model), sizeof(float));
+        old_wk[l] = xmalloc_array(safe_size_mul(d_model, d_model), sizeof(float));
+        old_wv[l] = xmalloc_array(safe_size_mul(d_model, d_model), sizeof(float));
+        old_wo[l] = xmalloc_array(safe_size_mul(d_model, d_model), sizeof(float));
+        old_ff1[l] = xmalloc_array(safe_size_mul(d_model, d_ff), sizeof(float));
+        old_ff2[l] = xmalloc_array(safe_size_mul(d_ff, d_model), sizeof(float));
+        memcpy(old_wq[l], layer->w_q, d_model * d_model * sizeof(float));
+        memcpy(old_wk[l], layer->w_k, d_model * d_model * sizeof(float));
+        memcpy(old_wv[l], layer->w_v, d_model * d_model * sizeof(float));
+        memcpy(old_wo[l], layer->w_o, d_model * d_model * sizeof(float));
+        memcpy(old_ff1[l], layer->w_ff1, d_model * d_ff * sizeof(float));
+        memcpy(old_ff2[l], layer->w_ff2, d_ff * d_model * sizeof(float));
+    }
+
+    /* Consult observer state for per-matrix learning rate scaling */
+    float *obs_scales = compute_observer_scales(&g_model);
+    float emb_scale = obs_scales ? obs_scales[0] : 1.0f;
+    float proj_scale = obs_scales ? obs_scales[1] : 1.0f;
+
     for (int i = 0; i < d_model * vocab_size; i++)
-        g_model.output_proj[i] -= effective_lr * grad_output_proj[i];
+        g_model.output_proj[i] -= effective_lr * proj_scale * grad_output_proj[i];
     for (int i = 0; i < vocab_size * d_model; i++)
-        g_model.token_embeddings[i] -= effective_lr * grad_token_emb[i];
+        g_model.token_embeddings[i] -= effective_lr * emb_scale * grad_token_emb[i];
 
     float scale = effective_lr * 0.1f;
     for (int l = 0; l < n_layers; l++) {
         TransformerLayer *layer = &g_model.layers[l];
+        /* Observer scales: index 2 + l*10 + {0=wq,1=wk,2=wv,3=wo,4=ff1,5=ff2,6=ln1g,7=ln1b,8=ln2g,9=ln2b} */
+        int si = 2 + l * 10;
+        float sq = obs_scales ? obs_scales[si + 0] : 1.0f;
+        float sk = obs_scales ? obs_scales[si + 1] : 1.0f;
+        float sv = obs_scales ? obs_scales[si + 2] : 1.0f;
+        float so = obs_scales ? obs_scales[si + 3] : 1.0f;
+        float sf1 = obs_scales ? obs_scales[si + 4] : 1.0f;
+        float sf2 = obs_scales ? obs_scales[si + 5] : 1.0f;
+        float sln1g = obs_scales ? obs_scales[si + 6] : 1.0f;
+        float sln1b = obs_scales ? obs_scales[si + 7] : 1.0f;
+        float sln2g = obs_scales ? obs_scales[si + 8] : 1.0f;
+        float sln2b = obs_scales ? obs_scales[si + 9] : 1.0f;
+
         for (int i = 0; i < d_model * d_model; i++) {
-            layer->w_q[i] -= scale * lg_wq[l][i];
-            layer->w_k[i] -= scale * lg_wk[l][i];
-            layer->w_v[i] -= scale * lg_wv[l][i];
-            layer->w_o[i] -= scale * lg_wo[l][i];
+            layer->w_q[i] -= scale * sq * lg_wq[l][i];
+            layer->w_k[i] -= scale * sk * lg_wk[l][i];
+            layer->w_v[i] -= scale * sv * lg_wv[l][i];
+            layer->w_o[i] -= scale * so * lg_wo[l][i];
         }
-        for (int i = 0; i < d_model * d_ff; i++) layer->w_ff1[i] -= scale * lg_ff1[l][i];
-        for (int i = 0; i < d_ff * d_model; i++) layer->w_ff2[i] -= scale * lg_ff2[l][i];
+        for (int i = 0; i < d_model * d_ff; i++) layer->w_ff1[i] -= scale * sf1 * lg_ff1[l][i];
+        for (int i = 0; i < d_ff * d_model; i++) layer->w_ff2[i] -= scale * sf2 * lg_ff2[l][i];
         for (int i = 0; i < d_model; i++) {
-            layer->ln1_gamma[i] -= scale * lg_ln1g[l][i];
-            layer->ln1_beta[i] -= scale * lg_ln1b[l][i];
-            layer->ln2_gamma[i] -= scale * lg_ln2g[l][i];
-            layer->ln2_beta[i] -= scale * lg_ln2b[l][i];
+            layer->ln1_gamma[i] -= scale * sln1g * lg_ln1g[l][i];
+            layer->ln1_beta[i] -= scale * sln1b * lg_ln1b[l][i];
+            layer->ln2_gamma[i] -= scale * sln2g * lg_ln2g[l][i];
+            layer->ln2_beta[i] -= scale * sln2b * lg_ln2b[l][i];
         }
     }
+    free(obs_scales);
+
+    /* Update observer state from weight deltas */
+    update_model_observer(&g_model, old_token_emb, old_output_proj,
+                          old_wq, old_wk, old_wv, old_wo, old_ff1, old_ff2);
+
+    /* Free snapshots */
+    free(old_token_emb); free(old_output_proj);
+    for (int l = 0; l < n_layers; l++) {
+        free(old_wq[l]); free(old_wk[l]); free(old_wv[l]);
+        free(old_wo[l]); free(old_ff1[l]); free(old_ff2[l]);
+    }
+    free(old_wq); free(old_wk); free(old_wv); free(old_wo); free(old_ff1); free(old_ff2);
 
     /* Re-quantize master weights → ternary copies for next forward pass (if ternary format) */
     if (g_model.weight_format == WEIGHT_FORMAT_TERNARY) {
@@ -786,4 +1021,6 @@ void register_model_builtins(Env *env) {
     env_set_local(env, "model_save_weights", make_builtin(builtin_model_save_weights));
     env_set_local(env, "eigen_model_load", make_builtin(builtin_eigen_model_load));
     env_set_local(env, "model_load_weights", make_builtin(builtin_eigen_model_load));
+    env_set_local(env, "eigen_model_save_binary", make_builtin(builtin_eigen_model_save_binary));
+    env_set_local(env, "eigen_checkpoint_info", make_builtin(builtin_eigen_checkpoint_info));
 }

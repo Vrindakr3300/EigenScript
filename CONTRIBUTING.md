@@ -39,6 +39,16 @@ Requires only `gcc` — no external dependencies.
 
 Use the [bug report template](https://github.com/InauguralSystems/EigenScript/issues/new?template=bug_report.md) and include a minimal `.eigs` reproducer.
 
+For private or non-issue contact, email contact@inauguralsystems.com with one
+of these subject prefixes:
+
+- `[SECURITY]` Vulnerabilities or suspected security issues. Do not file public
+  GitHub issues for suspected vulnerabilities.
+- `[BUG]` Reproducible bugs that are not appropriate for a public issue.
+- `[SUPPORT]` Installation, usage, or release questions.
+- `[PRESS]` Media, interviews, or public inquiries.
+- `[LEGAL]` Licensing or trademark questions.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the MIT License.

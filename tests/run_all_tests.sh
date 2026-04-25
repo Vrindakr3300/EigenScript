@@ -1021,7 +1021,7 @@ MODEL_PROBE_OUT=$(./eigenscript "$MODEL_PROBE_FILE" 2>&1)
 rm -f "$MODEL_PROBE_FILE"
 
 if ! echo "$MODEL_PROBE_OUT" | grep -q "undefined variable"; then
-    echo "[47/47] Model Save/Load Roundtrip (9 checks)"
+    echo "[47/47] Model Save/Load Roundtrip (14 checks)"
     MRT_OUTPUT=$(bash "$TESTS_DIR/test_model_roundtrip.sh" 2>&1)
     MRT_PASS=$(echo "$MRT_OUTPUT" | grep -c "PASS:" || true)
     MRT_FAIL=$(echo "$MRT_OUTPUT" | grep -c "FAIL:" || true)
@@ -1036,7 +1036,7 @@ if ! echo "$MODEL_PROBE_OUT" | grep -q "undefined variable"; then
     fi
     echo ""
 
-    echo "[47b/47] Model Overflow Regression (1 check)"
+    echo "[47b/47] Model Overflow Regression (2 checks)"
     MO_OUTPUT=$(bash "$TESTS_DIR/test_model_overflow.sh" 2>&1)
     MO_PASS=$(echo "$MO_OUTPUT" | grep -c "PASS:" || true)
     MO_FAIL=$(echo "$MO_OUTPUT" | grep -c "FAIL:" || true)
@@ -1047,7 +1047,7 @@ if ! echo "$MODEL_PROBE_OUT" | grep -q "undefined variable"; then
         echo "  FAIL: $MO_FAIL model overflow check(s) failed"
         echo "$MO_OUTPUT" | grep "FAIL:" | head -3
     else
-        echo "  PASS: malicious oversized-dim checkpoint rejected"
+        echo "  PASS: malicious model checkpoints rejected"
     fi
     echo ""
 else

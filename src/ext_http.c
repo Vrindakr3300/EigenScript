@@ -320,17 +320,29 @@ static const char* get_content_type(const char *path) {
 static void send_response(int fd, int status, const char *status_text,
                           const char *content_type, const char *body, long body_len) {
     char header[8192];
-    int hlen = snprintf(header, sizeof(header),
-        "HTTP/1.1 %d %s\r\n"
-        "Content-Type: %s\r\n"
-        "Content-Length: %ld\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-        "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
-        "Connection: close\r\n"
-        "\r\n",
-        status, status_text, content_type, body_len);
+    int hlen;
+    if (g_server.cors_origin) {
+        hlen = snprintf(header, sizeof(header),
+            "HTTP/1.1 %d %s\r\n"
+            "Content-Type: %s\r\n"
+            "Content-Length: %ld\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Access-Control-Allow-Origin: %s\r\n"
+            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+            "Access-Control-Allow-Headers: Content-Type\r\n"
+            "Connection: close\r\n"
+            "\r\n",
+            status, status_text, content_type, body_len, g_server.cors_origin);
+    } else {
+        hlen = snprintf(header, sizeof(header),
+            "HTTP/1.1 %d %s\r\n"
+            "Content-Type: %s\r\n"
+            "Content-Length: %ld\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n"
+            "\r\n",
+            status, status_text, content_type, body_len);
+    }
 
     if (write(fd, header, hlen) <= 0) return;
     if (body && body_len > 0) {
@@ -352,7 +364,21 @@ static void send_404(int fd, const char *path) {
     send_response(fd, 404, "Not Found", "application/json", body, (long)strlen(body));
 }
 
+#define HTTP_MAX_STATIC_SIZE (64 * 1024 * 1024)  /* 64 MB cap for static files */
+
 static void send_file(int fd, const char *filepath) {
+    /* Check file size before reading to prevent memory exhaustion */
+    FILE *sf = fopen(filepath, "rb");
+    if (sf) {
+        fseek(sf, 0, SEEK_END);
+        long fsize = ftell(sf);
+        fclose(sf);
+        if (fsize > HTTP_MAX_STATIC_SIZE) {
+            send_response(fd, 413, "Payload Too Large", "text/plain", "File too large", 14);
+            return;
+        }
+    }
+
     long size = 0;
     char *data = read_file_util(filepath, &size);
     if (!data) {
@@ -375,7 +401,14 @@ static void generate_session_id(char *buf, int len) {
     snprintf(buf, len, "sess_%lx_%d", (unsigned long)time(NULL), counter++);
 }
 
+/* Per-connection read deadline: 30 seconds total for header + body */
+#define HTTP_REQUEST_TIMEOUT_SEC 30
+
 static void handle_request(int fd) {
+    /* Set socket read timeout to prevent slow-client stalls */
+    struct timeval tv = { .tv_sec = HTTP_REQUEST_TIMEOUT_SEC, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     long max_body = http_max_body();
     size_t cap = 8192;
     char *reqbuf = xmalloc(cap);
@@ -445,7 +478,11 @@ static void handle_request(int fd) {
     g_server.request_body = body ? body : "";
     g_server.request_headers = reqbuf;
 
-    if (g_server.static_prefix && strncmp(path, g_server.static_prefix, strlen(g_server.static_prefix)) == 0) {
+    if (g_server.static_prefix) {
+        size_t pfx_len = strlen(g_server.static_prefix);
+        /* Match prefix only at a path-segment boundary (followed by '/' or end of string) */
+        if (strncmp(path, g_server.static_prefix, pfx_len) == 0 &&
+            (path[pfx_len] == '/' || path[pfx_len] == '\0')) {
         char filepath[4096];
         const char *rel = path + strlen(g_server.static_prefix);
         if (rel[0] == '/') rel++;
@@ -475,7 +512,7 @@ static void handle_request(int fd) {
         }
         send_file(fd, filepath);
         goto done;
-    }
+    }}
 
     for (int i = 0; i < g_server.route_count; i++) {
         Route *r = &g_server.routes[i];
@@ -614,6 +651,19 @@ void http_serve_blocking(int port) {
  * HTTP BUILTIN REGISTRATION
  * ================================================================ */
 
+/* http_cors of origin — configure CORS. Pass "*" for wildcard, null to disable. */
+static Value* builtin_http_cors(Value *arg) {
+    if (!arg || arg->type == VAL_NULL) {
+        free(g_server.cors_origin);
+        g_server.cors_origin = NULL;
+        return make_str("cors disabled");
+    }
+    if (arg->type != VAL_STR) return make_null();
+    free(g_server.cors_origin);
+    g_server.cors_origin = xstrdup(arg->data.str);
+    return make_str(arg->data.str);
+}
+
 void register_http_builtins(Env *env) {
     env_set_local(env, "http_route", make_builtin(builtin_http_route));
     env_set_local(env, "http_route_authed", make_builtin(builtin_http_route_authed));
@@ -624,4 +674,5 @@ void register_http_builtins(Env *env) {
     env_set_local(env, "http_session_id", make_builtin(builtin_http_session_id));
     env_set_local(env, "http_post", make_builtin(builtin_http_post));
     env_set_local(env, "http_request_headers", make_builtin(builtin_http_request_headers));
+    env_set_local(env, "http_cors", make_builtin(builtin_http_cors));
 }

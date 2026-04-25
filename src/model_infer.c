@@ -553,8 +553,22 @@ Value* builtin_eigen_generate(Value *arg) {
 
     if (!g_model.loaded) return make_list(0);
 
+    /* Validate prompt and token count */
     int prompt_len = prompt_list->data.list.count;
-    int *prompt_ids = xcalloc(prompt_len > 0 ? prompt_len : 1, sizeof(int));
+    if (prompt_len <= 0) {
+        fprintf(stderr, "eigen_generate: prompt must be non-empty\n");
+        return make_list(0);
+    }
+    #define EIGS_MAX_GENERATE_TOKENS 4096
+    if (max_tokens <= 0 || max_tokens > EIGS_MAX_GENERATE_TOKENS) {
+        if (max_tokens <= 0) {
+            fprintf(stderr, "eigen_generate: max_tokens must be positive\n");
+            return make_list(0);
+        }
+        max_tokens = EIGS_MAX_GENERATE_TOKENS;
+    }
+
+    int *prompt_ids = xcalloc(prompt_len, sizeof(int));
     for (int i = 0; i < prompt_len; i++) {
         Value *v = prompt_list->data.list.items[i];
         prompt_ids[i] = (v->type == VAL_NUM) ? (int)v->data.num : 0;

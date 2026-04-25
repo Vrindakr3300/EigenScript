@@ -948,7 +948,7 @@ Value* builtin_tensor_load(Value *arg) {
         has_observer = 0;
     }
 
-    if (rows <= 0 || cols <= 0 || rows > 100000 || cols > 100000) { fclose(f); return make_null(); }
+    if (rows <= 0 || cols <= 0 || rows > 1000000 || cols > 1000000) { fclose(f); return make_null(); }
 
     /* Guard against int overflow: rows*cols may exceed INT_MAX under the 100k cap. */
     if ((size_t)rows * (size_t)cols > (size_t)INT_MAX) { fclose(f); return make_null(); }

@@ -69,6 +69,42 @@ else
     FAIL=$((FAIL + 1))
 fi
 
+BAD_EIGEN=$(mktemp /tmp/eigs_bad_XXXXXX.eigen)
+python3 - "$BAD_EIGEN" <<'PY'
+import struct
+import sys
+
+path = sys.argv[1]
+with open(path, "wb") as f:
+    # Valid magic/version, maliciously large section_count, no TOC payload.
+    f.write(struct.pack("<6sHIIIII36s", b"EIGEN\n", 1, 100000, 0, 0, 0, 0, b"\0" * 36))
+PY
+
+SCRIPT2=$(mktemp /tmp/eigs_mo_run_eigen_XXXXXX.eigs)
+cat > "$SCRIPT2" <<E
+r is eigen_model_load of "$BAD_EIGEN"
+if contains of [r, "error"]:
+    print of "rejected"
+else:
+    print of "accepted"
+E
+
+OUT2=$(timeout 5 "$BIN" "$SCRIPT2" 2>&1)
+RC2=$?
+rm -f "$BAD_EIGEN" "$SCRIPT2"
+
+if [ $RC2 -ne 0 ] && [ $RC2 -ne 1 ]; then
+    echo "  FAIL: MO2 malformed .eigen checkpoint caused non-zero exit $RC2 (crash?)"
+    FAIL=$((FAIL + 1))
+elif echo "$OUT2" | grep -q "rejected"; then
+    echo "  PASS: MO2 malformed .eigen checkpoint rejected"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: MO2 malformed .eigen checkpoint unexpectedly accepted"
+    echo "$OUT2" | tail -5
+    FAIL=$((FAIL + 1))
+fi
+
 echo ""
 if [ $FAIL -gt 0 ]; then
     exit 1
