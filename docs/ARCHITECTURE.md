@@ -50,7 +50,7 @@ Source code (.eigs)
 
 ### Lexer
 
-The lexer (`tokenize()` in `eigenscript.c`) converts source text into a flat
+The lexer (`tokenize()` in `lexer.c`) converts source text into a flat
 array of tokens. EigenScript uses indentation-significant syntax — the lexer
 tracks indent depth and emits INDENT/DEDENT tokens.
 
@@ -62,9 +62,9 @@ child expressions. Expressions use a Pratt-style precedence parser.
 
 ### Evaluator
 
-The tree-walking evaluator (`eval_stmt()`, `eval_expr()`) executes the AST
-directly. There is no bytecode compilation step. Values are tagged unions
-(`EigenValue`) that can be numbers, strings, lists, dictionaries, functions, or builtins.
+The tree-walking evaluator (`eval_node()`) executes the AST directly. There is
+no bytecode compilation step. Values are tagged unions (`Value`) that can be
+numbers, strings, lists, dictionaries, functions, or builtins.
 
 ### Observer
 

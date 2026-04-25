@@ -4,6 +4,30 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+## [0.9.3.1] — 2026-04-24
+
+### Security
+- **Handle table**: Store, Thread, and Channel handles now use a validated
+  handle table instead of storing raw C pointers as doubles. Forged or stale
+  handle IDs return null instead of dereferencing arbitrary memory.
+- **copy_into**: reject negative offset (was heap corruption via OOB write).
+- **tensor_to_flat**: prevent integer overflow on large tensor dimensions via
+  `safe_size_mul` and 10M element cap.
+- **ext_db**: fix JSON injection in `db_connect` error path and
+  `db_query_json` column names — replaced manual string interpolation with
+  `eigs_json_escape_string`.
+- **ext_http**: generate session IDs from `/dev/urandom` instead of
+  predictable `time()+counter`; use stack-local buffer instead of static.
+- **ext_http**: route code handlers now execute in an isolated child
+  environment so side-effects don't leak across requests.
+
+### Hardening
+- Makefile: enable `_FORTIFY_SOURCE=2`, PIE, and full RELRO.
+
+### Docs
+- ARCHITECTURE.md: fix stale function names (`eval_stmt`→`eval_node`,
+  `EigenValue`→`Value`, lexer location `eigenscript.c`→`lexer.c`).
+
 ## [0.9.3] — 2026-04-22
 
 ### New Libraries
