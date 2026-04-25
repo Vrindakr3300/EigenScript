@@ -422,7 +422,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             if (g_breaking) { g_breaking = 0; break; }
             if (g_continuing) { g_continuing = 0; }
             Value *obs = env_get(env, "__observer__");
-            if (obs && fabs(obs->dH) < 0.001 && obs->entropy >= 0.1) {
+            if (obs && fabs(obs->dH) < g_obs_dh_zero && obs->entropy >= g_obs_h_low) {
                 stall_count++;
                 if (stall_count >= 100) {
                     exit_reason = "stalled";
