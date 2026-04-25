@@ -4,6 +4,16 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+## [0.9.3.3] — 2026-04-25
+
+### Security
+- **`screen_render` overflow**: validate screen dimensions (max 10000x10000),
+  use `size_t` for buffer size and `xcalloc_array` for allocation.
+- **`builtin_join` overflow**: use `size_t` for length accumulation and
+  `xmalloc`/`xmalloc_array` for allocations instead of raw `malloc`.
+- **Test runner injection**: pass values to Python via `sys.argv` instead of
+  shell-interpolated string in `check_range`.
+
 ## [0.9.3.2] — 2026-04-25
 
 ### Security

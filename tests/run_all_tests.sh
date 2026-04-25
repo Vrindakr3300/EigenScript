@@ -33,7 +33,7 @@ check_numeric() {
         return
     fi
     local in_range
-    in_range=$(python3 -c "v=float('$actual'); print(1 if $min <= v <= $max else 0)" 2>/dev/null || echo "0")
+    in_range=$(python3 -c "import sys; v=float(sys.argv[1]); lo=float(sys.argv[2]); hi=float(sys.argv[3]); print(1 if lo <= v <= hi else 0)" "$actual" "$min" "$max" 2>/dev/null || echo "0")
     if [ "$in_range" = "1" ]; then
         echo "  PASS: $test_name ($actual in [$min, $max])"
         PASS=$((PASS + 1))

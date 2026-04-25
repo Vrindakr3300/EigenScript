@@ -149,6 +149,7 @@ Value* builtin_screen_render(Value *arg) {
     double wh = arg->data.list.items[6]->data.num;
 
     if (!entities || entities->type != VAL_LIST) return make_null();
+    if (sw <= 0 || sh <= 0 || sw > 10000 || sh > 10000) return make_null();
 
     double vw = sw * 0.5;
     double vh = sh * 0.5;
@@ -156,9 +157,9 @@ Value* builtin_screen_render(Value *arg) {
     double hvh = vh / 2.0;
 
     /* Allocate screen buffer */
-    int buf_size = sw * sh;
-    char *chars = calloc(buf_size, 1);
-    int *cols = calloc(buf_size, sizeof(int));
+    size_t buf_size = (size_t)sw * (size_t)sh;
+    char *chars = xcalloc_array(buf_size, 1);
+    int *cols = xcalloc_array(buf_size, sizeof(int));
     memset(chars, ' ', buf_size);
 
     /* Project entities */
@@ -221,15 +222,15 @@ Value* builtin_join(Value *arg) {
     Value *sep_val = arg->data.list.items[1];
     if (!list || list->type != VAL_LIST) return make_str("");
     const char *sep = (sep_val && sep_val->type == VAL_STR) ? sep_val->data.str : "";
-    int sep_len = strlen(sep);
+    size_t sep_len = strlen(sep);
 
     /* First pass: compute total length */
     int count = list->data.list.count;
     if (count == 0) return make_str("");
 
-    char **parts = malloc(count * sizeof(char*));
-    int *lengths = malloc(count * sizeof(int));
-    int total = 0;
+    char **parts = xmalloc_array(count, sizeof(char*));
+    size_t *lengths = xmalloc_array(count, sizeof(size_t));
+    size_t total = 0;
     for (int i = 0; i < count; i++) {
         parts[i] = value_to_string(list->data.list.items[i]);
         lengths[i] = strlen(parts[i]);
@@ -238,7 +239,7 @@ Value* builtin_join(Value *arg) {
     }
 
     /* Single allocation */
-    char *result = malloc(total + 1);
+    char *result = xmalloc(total + 1);
     int pos = 0;
     for (int i = 0; i < count; i++) {
         if (i > 0 && sep_len > 0) {
