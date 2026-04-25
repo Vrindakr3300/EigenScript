@@ -1795,7 +1795,8 @@ Value* builtin_load_file(Value *arg) {
     fprintf(stderr, "[load_file] Loading %s (%ld bytes)\n", path, size);
     TokenList tl = tokenize(source);
     ASTNode *ast = parse(&tl);
-    Value *result = eval_node(ast, g_global_env);
+    Env *target = g_load_env ? g_load_env : g_global_env;
+    Value *result = eval_node(ast, target);
     free(source);
     free_tokenlist(&tl);
     return result ? result : make_null();

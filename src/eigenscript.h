@@ -49,7 +49,8 @@
 
 #define MAX_TOKENS      65536
 #define MAX_INDENT      64
-#define MAX_VARS        512
+#define MAX_VARS        512   /* lint-only; Env uses dynamic arrays */
+#define ENV_INIT_CAP    16
 #define MAX_STMTS       4096
 #define MAX_LIST        1024
 
@@ -152,9 +153,10 @@ typedef Value* (*BuiltinFn)(Value* arg);
 typedef struct Env Env;
 
 struct Env {
-    char *names[MAX_VARS];
-    Value *values[MAX_VARS];
+    char **names;
+    Value **values;
     int count;
+    int capacity;
     Env *parent;
     int heap_allocated;
     int captured;
@@ -292,6 +294,7 @@ void register_builtins(Env *env);
 void register_hash_builtins(Env *env);
 void eigenscript_set_args(int argc, char **argv);
 extern Env *g_global_env;
+extern __thread Env *g_load_env;  /* scope for load_file; NULL = g_global_env */
 
 /* ---- Utilities used across modules ---- */
 

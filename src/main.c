@@ -11,6 +11,7 @@ void register_gfx_builtins(Env *env);
 #endif
 
 Env *g_global_env = NULL;
+__thread Env *g_load_env = NULL;
 char g_script_dir[4096] = ".";
 
 #ifndef EIGENSCRIPT_VERSION

@@ -17,7 +17,7 @@ LSP_SOURCES := $(SRC_DIR)/eigenlsp.c $(SRC_DIR)/eigenscript.c $(SRC_DIR)/lexer.c
                $(SRC_DIR)/hash.c $(SRC_DIR)/arena.c $(SRC_DIR)/strbuf.c $(SRC_DIR)/ext_store.c
 LSP_BINARY  := $(SRC_DIR)/eigenlsp
 
-.PHONY: all build full http test install clean coverage coverage-clean fuzz fuzz-run lsp
+.PHONY: all build full http gfx test install install-gfx clean coverage coverage-clean fuzz fuzz-run lsp
 
 all: build
 
@@ -62,6 +62,17 @@ gfx:
 
 test: build
 	cd tests && bash run_all_tests.sh
+
+install-gfx: gfx lsp
+	mkdir -p $(PREFIX)/bin
+	mkdir -p $(PREFIX)/lib/eigenscript
+	cp $(BINARY) $(PREFIX)/bin/eigenscript
+	cp $(LSP_BINARY) $(PREFIX)/bin/eigenlsp
+	chmod +x $(PREFIX)/bin/eigenscript $(PREFIX)/bin/eigenlsp
+	cp lib/*.eigs $(PREFIX)/lib/eigenscript/
+	@echo "Installed: $(PREFIX)/bin/eigenscript (v$(VERSION), gfx)"
+	@echo "Installed: $(PREFIX)/bin/eigenlsp (v$(VERSION))"
+	@echo "Stdlib:    $(PREFIX)/lib/eigenscript/"
 
 install: build lsp
 	mkdir -p $(PREFIX)/bin

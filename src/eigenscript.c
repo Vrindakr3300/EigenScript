@@ -423,8 +423,18 @@ Env* env_new(Env *parent) {
     Env *e = g_arena.active ? arena_alloc(sizeof(Env)) : xcalloc(1, sizeof(Env));
     e->parent = parent;
     e->count = 0;
+    e->capacity = ENV_INIT_CAP;
     e->heap_allocated = !g_arena.active;
     e->captured = 0;
+    size_t nsz = ENV_INIT_CAP * sizeof(char *);
+    size_t vsz = ENV_INIT_CAP * sizeof(Value *);
+    if (g_arena.active) {
+        e->names  = arena_alloc(nsz);
+        e->values = arena_alloc(vsz);
+    } else {
+        e->names  = xcalloc(ENV_INIT_CAP, sizeof(char *));
+        e->values = xcalloc(ENV_INIT_CAP, sizeof(Value *));
+    }
     return e;
 }
 
@@ -453,19 +463,33 @@ void env_set_local(Env *env, const char *name, Value *val) {
             return;
         }
     }
-    if (env->count < MAX_VARS) {
-        char *name_copy = xstrdup(name);
-        /* Only arena-track the string if the env is arena-allocated.
-         * Heap env strings must survive arena_reset — they are freed
-         * by env_free when the env's scope ends. */
-        if (g_arena.active && !env->heap_allocated) arena_track_string(name_copy);
-        env->names[env->count] = name_copy;
-        env->values[env->count] = val;
-        val_incref(val);
-        env->count++;
-    } else {
-        fprintf(stderr, "Error: too many variables in scope (max %d)\n", MAX_VARS);
+    if (env->count >= env->capacity) {
+        int new_cap = env->capacity * 2;
+        size_t nsz = new_cap * sizeof(char *);
+        size_t vsz = new_cap * sizeof(Value *);
+        if (g_arena.active && !env->heap_allocated) {
+            char **nn  = arena_alloc(nsz);
+            Value **nv = arena_alloc(vsz);
+            memcpy(nn, env->names, env->count * sizeof(char *));
+            memcpy(nv, env->values, env->count * sizeof(Value *));
+            env->names  = nn;
+            env->values = nv;
+        } else {
+            env->names  = realloc(env->names, nsz);
+            env->values = realloc(env->values, vsz);
+            if (!env->names || !env->values) {
+                fprintf(stderr, "Out of memory growing env\n");
+                exit(1);
+            }
+        }
+        env->capacity = new_cap;
     }
+    char *name_copy = xstrdup(name);
+    if (g_arena.active && !env->heap_allocated) arena_track_string(name_copy);
+    env->names[env->count] = name_copy;
+    env->values[env->count] = val;
+    val_incref(val);
+    env->count++;
 }
 
 void env_free(Env *env) {
@@ -476,6 +500,8 @@ void env_free(Env *env) {
         if (env->values[i] && !env->values[i]->arena)
             val_decref(env->values[i]);
     }
+    free(env->names);
+    free(env->values);
     free(env);
 }
 

@@ -589,7 +589,10 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             return make_null();
         }
         g_parse_errors = saved_errors;
+        Env *saved_load_env = g_load_env;
+        g_load_env = mod_env;
         eval_node(ast, mod_env);
+        g_load_env = saved_load_env;
         free_tokenlist(&tl);
         free(source);
 
