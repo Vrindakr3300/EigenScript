@@ -1294,6 +1294,21 @@ else
 fi
 echo ""
 
+# [63] UI toolkit unit tests (headless, stubs gfx)
+echo "[63] UI Toolkit (81 checks)"
+UI_OUTPUT=$(./eigenscript ../tests/test_ui.eigs 2>&1)
+if echo "$UI_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 81))
+    PASS=$((PASS + 81))
+    echo "  PASS: all 81 UI toolkit checks"
+else
+    TOTAL=$((TOTAL + 81))
+    FAIL=$((FAIL + 81))
+    echo "  FAIL: UI toolkit tests"
+    echo "$UI_OUTPUT" | grep -iE "assert|error|FAIL" | head -5
+fi
+echo ""
+
 # [62] Audio synthesis builtins (probe-gated — needs gfx build)
 AUDIO_PROBE_FILE=$(mktemp /tmp/eigs_audio_probe_XXXXXX.eigs)
 cat > "$AUDIO_PROBE_FILE" <<'PROBE'

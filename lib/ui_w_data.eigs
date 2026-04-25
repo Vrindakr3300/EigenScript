@@ -1,0 +1,478 @@
+# ============================================================
+# UI Widgets — Data: table, tree, item_list, grid
+# ============================================================
+
+define table(id, x, y, w, h, columns, on_select) as:
+    return {
+        "type": "table",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "columns": columns,
+        "rows": [],
+        "selected": -1,
+        "scroll_y": 0,
+        "sort_col": -1,
+        "sort_asc": 1,
+        "on_select": on_select,
+        "on_sort": null,
+        "hover_row": -1,
+        "hover_col_header": -1,
+        "header_h": 24,
+        "row_h": 22,
+        "visible": 1,
+        "enabled": 1
+    }
+
+define tree(id, x, y, w, h, nodes, on_select) as:
+    return {
+        "type": "tree",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "nodes": nodes,
+        "on_select": on_select,
+        "selected_id": null,
+        "scroll_y": 0,
+        "hover_index": -1,
+        "item_h": 22,
+        "visible": 1
+    }
+
+define item_list(id, x, y, w, h, items, on_select) as:
+    return {
+        "type": "item_list",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "items": items,
+        "selected": -1,
+        "scroll_y": 0,
+        "on_select": on_select,
+        "on_drop": null,
+        "on_reorder": null,
+        "reorder_insert": -1,
+        "draggable": 0,
+        "hover_index": -1,
+        "item_h": 22,
+        "visible": 1
+    }
+
+define grid(id, x, y, cols, rows, cell_w, cell_h, on_cell) as:
+    # Initialize cells to all zeros
+    cells is []
+    for r in range of rows:
+        row is []
+        for c in range of cols:
+            append of [row, 0]
+        append of [cells, row]
+    return {
+        "type": "grid",
+        "id": id,
+        "x": x, "y": y,
+        "w": cols * cell_w, "h": rows * cell_h,
+        "cols": cols, "rows": rows,
+        "cell_w": cell_w, "cell_h": cell_h,
+        "cells": cells,
+        "on_cell": on_cell,
+        "row_labels": null,
+        "col_highlight": -1,
+        "hover_col": -1, "hover_row": -1,
+        "color_on": _theme.accent,
+        "color_off": [40, 40, 55],
+        "color_beat": [45, 45, 60],
+        "color_hover": [55, 55, 75],
+        "visible": 1
+    }
+
+# ---- Tree helper ----
+
+define _flatten_tree(nodes, depth, out) as:
+    for i in range of (len of nodes):
+        nd is nodes[i]
+        expanded is 0
+        if nd.expanded != null:
+            expanded is nd.expanded
+        has_children is 0
+        if nd.children != null and (len of nd.children) > 0:
+            has_children is 1
+        append of [out, {"node": nd, "depth": depth, "has_children": has_children, "expanded": expanded}]
+        if expanded == 1 and has_children == 1:
+            _flatten_tree of [nd.children, depth + 1, out]
+
+# ---- Render functions ----
+
+define _render_table(widget, ax, ay) as:
+    # Background
+    _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius_sm, _theme.panel_bg, _theme.panel_border]
+    # Column headers
+    hx is ax
+    for ci in range of (len of widget.columns):
+        col is widget.columns[ci]
+        hbg is _theme.tab_bg
+        if ci == widget.hover_col_header:
+            hbg is _theme.tab_hover
+        gfx_rect of [hx, ay, col.width, widget.header_h, hbg[0], hbg[1], hbg[2]]
+        _draw_text_clipped of [hx + 6, ay + 5, col.width - 12, col.name, _theme.tab_text_active, _theme.font_scale]
+        # Sort indicator
+        if ci == widget.sort_col:
+            if widget.sort_asc == 1:
+                gfx_text of [hx + col.width - 14, ay + 5, "^", _theme.accent[0], _theme.accent[1], _theme.accent[2], 1]
+            else:
+                gfx_text of [hx + col.width - 14, ay + 5, "v", _theme.accent[0], _theme.accent[1], _theme.accent[2], 1]
+        # Column separator
+        gfx_line of [hx + col.width - 1, ay, hx + col.width - 1, ay + widget.header_h, _theme.panel_border[0], _theme.panel_border[1], _theme.panel_border[2]]
+        hx is hx + col.width
+    # Header bottom border
+    gfx_line of [ax, ay + widget.header_h, ax + widget.w, ay + widget.header_h, _theme.panel_border[0], _theme.panel_border[1], _theme.panel_border[2]]
+    # Rows
+    body_y is ay + widget.header_h
+    body_h is widget.h - widget.header_h
+    gfx_clip of [ax + 1, body_y, widget.w - 2, body_h]
+    for ri in range of (len of widget.rows):
+        ry is body_y - widget.scroll_y + ri * widget.row_h
+        if ry + widget.row_h > body_y and ry < body_y + body_h:
+            if ri == widget.selected:
+                gfx_rrect of [ax + 1, ry, widget.w - 2, widget.row_h, 0, _theme.accent[0], _theme.accent[1], _theme.accent[2]]
+                row_tc is [255, 255, 255]
+            elif ri == widget.hover_row:
+                gfx_rrect of [ax + 1, ry, widget.w - 2, widget.row_h, 0, _theme.btn_hover[0], _theme.btn_hover[1], _theme.btn_hover[2]]
+                row_tc is _theme.text_color
+            else:
+                # Alternating row tint
+                if (ri / 2) != floor of (ri / 2):
+                    gfx_rrect of [ax + 1, ry, widget.w - 2, widget.row_h, 0, _theme.dropdown_bg[0], _theme.dropdown_bg[1], _theme.dropdown_bg[2]]
+                row_tc is _theme.text_color
+            # Cell values
+            cx is ax
+            row is widget.rows[ri]
+            for ci in range of (len of widget.columns):
+                col is widget.columns[ci]
+                cell_text is ""
+                if ci < (len of row):
+                    cell_text is f"{row[ci]}"
+                _draw_text_clipped of [cx + 6, ry + 4, col.width - 12, cell_text, row_tc, _theme.font_scale]
+                cx is cx + col.width
+    gfx_clip of null
+    # Scrollbar
+    total_h is (len of widget.rows) * widget.row_h
+    if total_h > body_h:
+        sb_h is floor of (body_h * body_h / total_h)
+        if sb_h < 16:
+            sb_h is 16
+        sb_y is body_y + floor of (widget.scroll_y * (body_h - sb_h) / (total_h - body_h))
+        gfx_rrect of [ax + widget.w - 6, sb_y, 4, sb_h, 2, 80, 80, 100]
+
+define _render_tree(widget, ax, ay) as:
+    # Background
+    _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius_sm, _theme.panel_bg, _theme.panel_border]
+    gfx_clip of [ax + 1, ay + 1, widget.w - 2, widget.h - 2]
+    flat is []
+    _flatten_tree of [widget.nodes, 0, flat]
+    for fi in range of (len of flat):
+        fe is flat[fi]
+        iy is ay - widget.scroll_y + fi * widget.item_h
+        if iy + widget.item_h > ay and iy < ay + widget.h:
+            indent is 16 * fe.depth + 8
+            # Selection highlight
+            if fe.node.id != null and fe.node.id == widget.selected_id:
+                gfx_rrect of [ax + 2, iy + 1, widget.w - 4, widget.item_h - 2, 2, _theme.accent[0], _theme.accent[1], _theme.accent[2]]
+                ntc is [255, 255, 255]
+            elif fi == widget.hover_index:
+                gfx_rrect of [ax + 2, iy + 1, widget.w - 4, widget.item_h - 2, 2, _theme.btn_hover[0], _theme.btn_hover[1], _theme.btn_hover[2]]
+                ntc is _theme.text_color
+            else:
+                ntc is _theme.text_color
+            # Expand arrow
+            if fe.has_children == 1:
+                if fe.expanded == 1:
+                    gfx_text of [ax + indent - 12, iy + 4, "v", _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], _theme.font_scale]
+                else:
+                    gfx_text of [ax + indent - 12, iy + 4, ">", _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], _theme.font_scale]
+            # Node text
+            _draw_text_clipped of [ax + indent, iy + 4, widget.w - indent - 8, fe.node.text, ntc, _theme.font_scale]
+    gfx_clip of null
+    # Scrollbar
+    total_h is (len of flat) * widget.item_h
+    if total_h > widget.h:
+        sb_h is floor of (widget.h * widget.h / total_h)
+        if sb_h < 16:
+            sb_h is 16
+        sb_y is ay + floor of (widget.scroll_y * (widget.h - sb_h) / (total_h - widget.h))
+        gfx_rrect of [ax + widget.w - 6, sb_y, 4, sb_h, 2, 80, 80, 100]
+
+define _render_item_list(widget, ax, ay) as:
+    # Background
+    _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius_sm, _theme.panel_bg, _theme.panel_border]
+    gfx_clip of [ax + 1, ay + 1, widget.w - 2, widget.h - 2]
+    for i in range of (len of widget.items):
+        iy is ay - widget.scroll_y + i * widget.item_h
+        if iy + widget.item_h > ay and iy < ay + widget.h:
+            if i == widget.selected:
+                gfx_rrect of [ax + 2, iy + 1, widget.w - 4, widget.item_h - 2, 2, _theme.accent[0], _theme.accent[1], _theme.accent[2]]
+                _draw_text_clipped of [ax + 8, iy + 4, widget.w - 16, widget.items[i], [255, 255, 255], _theme.font_scale]
+            elif i == widget.hover_index:
+                gfx_rrect of [ax + 2, iy + 1, widget.w - 4, widget.item_h - 2, 2, _theme.btn_hover[0], _theme.btn_hover[1], _theme.btn_hover[2]]
+                _draw_text_clipped of [ax + 8, iy + 4, widget.w - 16, widget.items[i], _theme.text_color, _theme.font_scale]
+            else:
+                _draw_text_clipped of [ax + 8, iy + 4, widget.w - 16, widget.items[i], _theme.text_color, _theme.font_scale]
+    # Reorder insertion indicator
+    if widget.reorder_insert >= 0:
+        ri_y is ay - widget.scroll_y + widget.reorder_insert * widget.item_h
+        gfx_rect of [ax + 2, ri_y - 1, widget.w - 4, 2, _theme.accent[0], _theme.accent[1], _theme.accent[2]]
+    gfx_clip of null
+    # Scrollbar
+    total_h is (len of widget.items) * widget.item_h
+    if total_h > widget.h:
+        sb_h is floor of (widget.h * widget.h / total_h)
+        if sb_h < 16:
+            sb_h is 16
+        sb_y is ay + floor of (widget.scroll_y * (widget.h - sb_h) / (total_h - widget.h))
+        gfx_rrect of [ax + widget.w - 6, sb_y, 4, sb_h, 2, 80, 80, 100]
+
+define _render_grid(widget, ax, ay) as:
+    for r in range of widget.rows:
+        for c in range of widget.cols:
+            cx is ax + c * widget.cell_w
+            cy is ay + r * widget.cell_h
+            # Cell color
+            cell_val is widget.cells[r][c]
+            if cell_val > 0:
+                gc is widget.color_on
+            elif c == widget.col_highlight:
+                gc is widget.color_beat
+            elif r == widget.hover_row and c == widget.hover_col:
+                gc is widget.color_hover
+            else:
+                gc is widget.color_off
+                # Alternate beat shading (every 4 cols)
+                beat is floor of (c / 4)
+                if beat == floor of (beat / 2) * 2:
+                    gc is widget.color_off
+                else:
+                    gc is [35, 35, 48]
+            gfx_rrect of [cx + 1, cy + 1, widget.cell_w - 2, widget.cell_h - 2, 2, gc[0], gc[1], gc[2]]
+    # Row labels
+    if widget.row_labels != null:
+        for r in range of widget.rows:
+            if r < (len of widget.row_labels):
+                ly is ay + r * widget.cell_h + floor of ((widget.cell_h - 7) / 2)
+                gfx_text of [ax - 60, ly, widget.row_labels[r], _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], 1]
+
+# ---- Mousemove functions ----
+
+define _mousemove_table(hit, root, mx, my) as:
+    abs_x is hit._ax
+    abs_y is hit._ay
+    rel_y is my - abs_y
+    if rel_y < hit.header_h:
+        # Column header hover
+        rx is 0
+        for ci in range of (len of hit.columns):
+            col is hit.columns[ci]
+            if (mx - abs_x) >= rx and (mx - abs_x) < rx + col.width:
+                hit.hover_col_header is ci
+            rx is rx + col.width
+    else:
+        hit.hover_row is floor of ((rel_y - hit.header_h + hit.scroll_y) / hit.row_h)
+
+define _mousemove_tree(hit, root, mx, my) as:
+    abs_y is hit._ay
+    hit.hover_index is floor of ((my - abs_y + hit.scroll_y) / hit.item_h)
+
+define _mousemove_item_list(hit, root, mx, my) as:
+    abs_y is hit._ay
+    hit.hover_index is floor of ((my - abs_y + hit.scroll_y) / hit.item_h)
+
+define _mousemove_grid(hit, root, mx, my) as:
+    abs_x is hit._ax
+    abs_y is hit._ay
+    hit.hover_col is floor of ((mx - abs_x) / hit.cell_w)
+    hit.hover_row is floor of ((my - abs_y) / hit.cell_h)
+
+# ---- Mousedown functions ----
+
+define _mousedown_table(hit, root, mx, my, ev) as:
+    if hit.enabled == 1:
+        abs_x is hit._ax
+        abs_y is hit._ay
+        rel_y is my - abs_y
+        if rel_y < hit.header_h:
+            # Header click — sort
+            rx is 0
+            for ci in range of (len of hit.columns):
+                col is hit.columns[ci]
+                if (mx - abs_x) >= rx and (mx - abs_x) < rx + col.width:
+                    if hit.sort_col == ci:
+                        if hit.sort_asc == 1:
+                            hit.sort_asc is 0
+                        else:
+                            hit.sort_asc is 1
+                    else:
+                        hit.sort_col is ci
+                        hit.sort_asc is 1
+                    if hit.on_sort != null:
+                        hit.on_sort of hit
+                rx is rx + col.width
+        else:
+            # Row click — select
+            ri is floor of ((rel_y - hit.header_h + hit.scroll_y) / hit.row_h)
+            if ri >= 0 and ri < (len of hit.rows):
+                hit.selected is ri
+                if hit.on_select != null:
+                    hit.on_select of hit
+
+define _mousedown_tree(hit, root, mx, my, ev) as:
+    abs_y is hit._ay
+    flat is []
+    _flatten_tree of [hit.nodes, 0, flat]
+    fi is floor of ((my - abs_y + hit.scroll_y) / hit.item_h)
+    if fi >= 0 and fi < (len of flat):
+        fe is flat[fi]
+        abs_x is hit._ax
+        indent is 16 * fe.depth + 8
+        rel_x is mx - abs_x
+        if fe.has_children == 1 and rel_x < indent:
+            # Toggle expand
+            if fe.expanded == 1:
+                fe.node.expanded is 0
+            else:
+                fe.node.expanded is 1
+        else:
+            # Select node
+            hit.selected_id is fe.node.id
+            if hit.on_select != null:
+                hit.on_select of [hit, fe.node]
+
+define _mousedown_item_list(hit, root, mx, my, ev) as:
+    abs_y is hit._ay
+    idx is floor of ((my - abs_y + hit.scroll_y) / hit.item_h)
+    if idx >= 0 and idx < (len of hit.items):
+        if hit.draggable == 1:
+            # Start DnD
+            _dnd_state.active is 1
+            _dnd_state.source is hit
+            _dnd_state.source_index is idx
+            _dnd_state.data is hit.items[idx]
+            _dnd_state.mx is mx
+            _dnd_state.my is my
+            _dnd_state.text is f"{hit.items[idx]}"
+            hit.selected is idx
+        else:
+            hit.selected is idx
+            if hit.on_select != null:
+                hit.on_select of hit
+
+define _mousedown_grid(hit, root, mx, my, ev) as:
+    abs_x is hit._ax
+    abs_y is hit._ay
+    gc is floor of ((mx - abs_x) / hit.cell_w)
+    gr is floor of ((my - abs_y) / hit.cell_h)
+    if gc >= 0 and gc < hit.cols and gr >= 0 and gr < hit.rows:
+        # Toggle cell
+        if hit.cells[gr][gc] > 0:
+            hit.cells[gr][gc] is 0
+        else:
+            hit.cells[gr][gc] is 1
+        if hit.on_cell != null:
+            hit.on_cell of [hit, gr, gc]
+
+# ---- Clear hover functions ----
+
+define _clear_hover_table(widget) as:
+    widget.hover_row is -1
+    widget.hover_col_header is -1
+
+define _clear_hover_tree(widget) as:
+    widget.hover_index is -1
+
+define _clear_hover_item_list(widget) as:
+    widget.hover_index is -1
+
+define _clear_hover_grid(widget) as:
+    widget.hover_col is -1
+    widget.hover_row is -1
+
+# ---- Scroll functions ----
+
+define _scroll_table(widget, dx, dy) as:
+    body_h is widget.h - widget.header_h
+    total_h is (len of widget.rows) * widget.row_h
+    widget.scroll_y is widget.scroll_y + dy
+    if widget.scroll_y < 0:
+        widget.scroll_y is 0
+    max_sy is total_h - body_h
+    if max_sy < 0:
+        max_sy is 0
+    if widget.scroll_y > max_sy:
+        widget.scroll_y is max_sy
+
+define _scroll_tree(widget, dx, dy) as:
+    widget.scroll_y is widget.scroll_y + dy
+    if widget.scroll_y < 0:
+        widget.scroll_y is 0
+    # Flatten to count items
+    flat is []
+    _flatten_tree of [widget.nodes, 0, flat]
+    max_sy is (len of flat) * widget.item_h - widget.h
+    if max_sy < 0:
+        max_sy is 0
+    if widget.scroll_y > max_sy:
+        widget.scroll_y is max_sy
+
+define _scroll_item_list(widget, dx, dy) as:
+    widget.scroll_y is widget.scroll_y + dy
+    if widget.scroll_y < 0:
+        widget.scroll_y is 0
+    max_sy is (len of widget.items) * widget.item_h - widget.h
+    if max_sy < 0:
+        max_sy is 0
+    if widget.scroll_y > max_sy:
+        widget.scroll_y is max_sy
+
+# ---- Registration ----
+
+_register_widget of ["table", {
+    "render": _render_table,
+    "hit_test": null,
+    "on_mousedown": _mousedown_table,
+    "on_mousemove": _mousemove_table,
+    "clear_hover": _clear_hover_table,
+    "clear_pressed": null,
+    "scroll": _scroll_table,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["tree", {
+    "render": _render_tree,
+    "hit_test": null,
+    "on_mousedown": _mousedown_tree,
+    "on_mousemove": _mousemove_tree,
+    "clear_hover": _clear_hover_tree,
+    "clear_pressed": null,
+    "scroll": _scroll_tree,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["item_list", {
+    "render": _render_item_list,
+    "hit_test": null,
+    "on_mousedown": _mousedown_item_list,
+    "on_mousemove": _mousemove_item_list,
+    "clear_hover": _clear_hover_item_list,
+    "clear_pressed": null,
+    "scroll": _scroll_item_list,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["grid", {
+    "render": _render_grid,
+    "hit_test": null,
+    "on_mousedown": _mousedown_grid,
+    "on_mousemove": _mousemove_grid,
+    "clear_hover": _clear_hover_grid,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]

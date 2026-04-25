@@ -1,0 +1,532 @@
+# UI Widgets — Viz: chart, bar_chart, gauge, meter, canvas, waveform_view, code_view
+
+define chart(id, x, y, w, h) as:
+    return {
+        "type": "chart",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "series": [],
+        "x_label": "",
+        "y_label": "",
+        "auto_scale": 1,
+        "y_min": 0,
+        "y_max": 1,
+        "grid": 1,
+        "hover_index": -1,
+        "visible": 1
+    }
+
+define bar_chart(id, x, y, w, h, labels, values, on_click) as:
+    return {
+        "type": "bar_chart",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "labels": labels,
+        "values": values,
+        "on_click": on_click,
+        "color": _theme.accent,
+        "colors": null,
+        "hover_index": -1,
+        "bar_gap": 4,
+        "visible": 1
+    }
+
+define gauge(id, x, y, size, min_val, max_val, value, label) as:
+    return {
+        "type": "gauge",
+        "id": id,
+        "x": x, "y": y, "w": size, "h": size,
+        "min_val": min_val, "max_val": max_val,
+        "value": value,
+        "label": label,
+        "color": _theme.accent,
+        "visible": 1
+    }
+
+define meter(id, x, y, w, h) as:
+    return {
+        "type": "meter",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "value": 0,
+        "peak": 0,
+        "peak_hold": 0,
+        "visible": 1
+    }
+
+define canvas(id, x, y, w, h, on_paint, on_mouse) as:
+    return {
+        "type": "canvas",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "on_paint": on_paint,
+        "on_mouse": on_mouse,
+        "hover": 0,
+        "visible": 1
+    }
+
+define waveform_view(id, x, y, w, h) as:
+    return {
+        "type": "waveform_view",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "samples": [],
+        "zoom": 1.0,
+        "offset": 0,
+        "sel_start": -1,
+        "sel_end": -1,
+        "playhead": -1,
+        "color": [80, 160, 220],
+        "visible": 1
+    }
+
+define code_view(id, x, y, w, h, text) as:
+    return {
+        "type": "code_view",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "text": text,
+        "scroll_y": 0,
+        "line_numbers": 1,
+        "visible": 1
+    }
+
+define _render_chart(widget, ax, ay) as:
+    # Background
+    gfx_rect of [ax, ay, widget.w, widget.h, 25, 25, 35]
+    gfx_rrect of [ax, ay, widget.w, 1, 0, 40, 40, 55]
+    gfx_rrect of [ax, ay + widget.h - 1, widget.w, 1, 0, 40, 40, 55]
+    # Compute y range
+    chart_min is widget.y_min
+    chart_max is widget.y_max
+    if widget.auto_scale == 1 and (len of widget.series) > 0:
+        chart_min is 999999
+        chart_max is -999999
+        for si in range of (len of widget.series):
+            sd is widget.series[si].data
+            for di in range of (len of sd):
+                if sd[di] < chart_min:
+                    chart_min is sd[di]
+                if sd[di] > chart_max:
+                    chart_max is sd[di]
+        if chart_min == chart_max:
+            chart_min is chart_min - 1
+            chart_max is chart_max + 1
+        pad is (chart_max - chart_min) * 0.1
+        chart_min is chart_min - pad
+        chart_max is chart_max + pad
+    y_range is chart_max - chart_min
+    if y_range == 0:
+        y_range is 1
+    plot_x is ax + 40
+    plot_y is ay + 4
+    plot_w is widget.w - 56
+    plot_h is widget.h - 24
+    # Grid lines
+    if widget.grid == 1:
+        for gi in range of 5:
+            gy is plot_y + floor of (gi * plot_h / 4)
+            gfx_line of [plot_x, gy, plot_x + plot_w, gy, 40, 40, 55]
+            # Y label
+            gval is chart_max - gi * y_range / 4
+            gfx_text of [ax + 2, gy - 3, f"{floor of gval}", _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], 1]
+    # Axis labels
+    if (len of widget.x_label) > 0:
+        gfx_text of [plot_x + floor of (plot_w / 2) - floor of ((text_width of [widget.x_label, 1]) / 2), ay + widget.h - 10, widget.x_label, _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], 1]
+    # Series polylines
+    for si in range of (len of widget.series):
+        s is widget.series[si]
+        c is s.color
+        n is len of s.data
+        if n > 1:
+            prev_x is plot_x
+            prev_sy is plot_y + plot_h - floor of ((s.data[0] - chart_min) / y_range * plot_h)
+            for di in range of n:
+                frac_x is di / (n - 1)
+                sx is plot_x + floor of (frac_x * plot_w)
+                frac_y is (s.data[di] - chart_min) / y_range
+                sy is plot_y + plot_h - floor of (frac_y * plot_h)
+                if di > 0:
+                    gfx_line of [prev_x, prev_sy, sx, sy, c[0], c[1], c[2]]
+                prev_x is sx
+                prev_sy is sy
+    # Legend
+    lx is plot_x + 4
+    for si in range of (len of widget.series):
+        s is widget.series[si]
+        c is s.color
+        gfx_rrect of [lx, plot_y + 2, 8, 8, 2, c[0], c[1], c[2]]
+        gfx_text of [lx + 12, plot_y + 2, s.label, _theme.text_color[0], _theme.text_color[1], _theme.text_color[2], 1]
+        lx is lx + (text_width of [s.label, 1]) + 20
+    # Hover tooltip
+    if widget.hover_index >= 0:
+        for si in range of (len of widget.series):
+            s is widget.series[si]
+            if widget.hover_index < (len of s.data):
+                val is s.data[widget.hover_index]
+                n is len of s.data
+                if n > 1:
+                    hx is plot_x + floor of (widget.hover_index / (n - 1) * plot_w)
+                else:
+                    hx is plot_x
+                hy is plot_y + plot_h - floor of ((val - chart_min) / y_range * plot_h)
+                gfx_circle of [hx, hy, 3, s.color[0], s.color[1], s.color[2]]
+                gfx_text of [hx + 6, hy - 8, f"{floor of (val * 100) / 100}", _theme.text_color[0], _theme.text_color[1], _theme.text_color[2], 1]
+
+define _render_bar_chart(widget, ax, ay) as:
+    # Background
+    gfx_rect of [ax, ay, widget.w, widget.h, 25, 25, 35]
+    n is len of widget.values
+    if n > 0:
+        bar_area_h is widget.h - 30
+        bar_w is floor of ((widget.w - 16) / n) - widget.bar_gap
+        if bar_w < 4:
+            bar_w is 4
+        # Find max value
+        v_max is 0
+        for vi in range of n:
+            if widget.values[vi] > v_max:
+                v_max is widget.values[vi]
+        if v_max == 0:
+            v_max is 1
+        for bi in range of n:
+            bx is ax + 8 + bi * (bar_w + widget.bar_gap)
+            bh is floor of (widget.values[bi] / v_max * bar_area_h)
+            if bh < 1:
+                bh is 1
+            by is ay + widget.h - 20 - bh
+            # Bar color
+            if widget.colors != null and bi < (len of widget.colors):
+                bc is widget.colors[bi]
+            else:
+                bc is widget.color
+            if bi == widget.hover_index:
+                # Lighten on hover
+                bc is [bc[0] + 30, bc[1] + 30, bc[2] + 30]
+            gfx_rrect of [bx, by, bar_w, bh, 2, bc[0], bc[1], bc[2]]
+            # Value above bar
+            vt is f"{widget.values[bi]}"
+            vw is text_width of [vt, 1]
+            gfx_text of [bx + floor of ((bar_w - vw) / 2), by - 10, vt, _theme.text_color[0], _theme.text_color[1], _theme.text_color[2], 1]
+            # Label below bar
+            if bi < (len of widget.labels):
+                lt is widget.labels[bi]
+                lw is text_width of [lt, 1]
+                gfx_text of [bx + floor of ((bar_w - lw) / 2), ay + widget.h - 12, lt, _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], 1]
+    # Border
+    gfx_rrect of [ax, ay, widget.w, 1, 0, 40, 40, 55]
+    gfx_rrect of [ax, ay + widget.h - 1, widget.w, 1, 0, 40, 40, 55]
+
+define _render_gauge(widget, ax, ay) as:
+    cx is ax + floor of (widget.w / 2)
+    cy is ay + floor of (widget.h / 2) - 6
+    r is floor of (widget.w / 2) - 4
+    # Compute fraction
+    g_range is widget.max_val - widget.min_val
+    if g_range > 0:
+        frac is (widget.value - widget.min_val) / g_range
+    else:
+        frac is 0
+    if frac < 0:
+        frac is 0
+    if frac > 1:
+        frac is 1
+    # Arc angles: 225deg (3.927 rad) to -45deg (-0.785 rad) = 270deg sweep
+    start_a is 3.927
+    end_a is -0.785
+    sweep is start_a - end_a
+    # Unfilled arc (full sweep, dim)
+    _draw_arc of [cx, cy, r, end_a, start_a, 3, _theme.text_dim]
+    # Filled arc (from start to current value)
+    fill_end is start_a - frac * sweep
+    _draw_arc of [cx, cy, r, fill_end, start_a, 3, widget.color]
+    # Center text: value
+    vt is f"{floor of widget.value}"
+    vw is text_width of [vt, _theme.font_scale]
+    gfx_text of [cx - floor of (vw / 2), cy - floor of (_theme.char_h / 2), vt, _theme.text_color[0], _theme.text_color[1], _theme.text_color[2], _theme.font_scale]
+    # Label below
+    if (len of widget.label) > 0:
+        lw is text_width of [widget.label, 1]
+        gfx_text of [cx - floor of (lw / 2), ay + widget.h - 10, widget.label, _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], 1]
+
+define _render_meter(widget, ax, ay) as:
+    # Background
+    gfx_rrect of [ax, ay, widget.w, widget.h, 2, 20, 20, 25]
+    # Filled bar from bottom — green/yellow/red gradient
+    bar_h is floor of (widget.value * widget.h)
+    if bar_h > widget.h:
+        bar_h is widget.h
+    if bar_h > 0:
+        # Green zone (bottom 60%)
+        green_h is floor of (widget.h * 0.6)
+        yellow_h is floor of (widget.h * 0.2)
+        # Draw green portion
+        gh is bar_h
+        if gh > green_h:
+            gh is green_h
+        if gh > 0:
+            gfx_rect of [ax + 1, ay + widget.h - gh, widget.w - 2, gh, 40, 180, 80]
+        # Draw yellow portion
+        if bar_h > green_h:
+            yh is bar_h - green_h
+            if yh > yellow_h:
+                yh is yellow_h
+            gfx_rect of [ax + 1, ay + widget.h - green_h - yh, widget.w - 2, yh, 200, 200, 40]
+        # Draw red portion
+        if bar_h > green_h + yellow_h:
+            rh is bar_h - green_h - yellow_h
+            gfx_rect of [ax + 1, ay + widget.h - bar_h, widget.w - 2, rh, 220, 50, 40]
+    # Peak hold line
+    if widget.peak > 0:
+        peak_y is ay + widget.h - floor of (widget.peak * widget.h)
+        if peak_y >= ay and peak_y < ay + widget.h:
+            gfx_line of [ax + 1, peak_y, ax + widget.w - 1, peak_y, 255, 255, 255]
+
+define _render_canvas(widget, ax, ay) as:
+    if widget.on_paint != null:
+        widget.on_paint of [widget, ax, ay]
+
+define _render_waveform_view(widget, ax, ay) as:
+    # Background
+    gfx_rect of [ax, ay, widget.w, widget.h, 18, 18, 26]
+    mid_y is ay + floor of (widget.h / 2)
+    # Center line
+    gfx_line of [ax, mid_y, ax + widget.w, mid_y, 35, 35, 45]
+    # Selection highlight
+    if widget.sel_start >= 0 and widget.sel_end >= 0:
+        s0 is floor of ((widget.sel_start - widget.offset) / widget.zoom)
+        s1 is floor of ((widget.sel_end - widget.offset) / widget.zoom)
+        if s1 > s0:
+            gfx_rect of [ax + s0, ay, s1 - s0, widget.h, widget.color[0], widget.color[1], widget.color[2], 30]
+    # Waveform
+    n is len of widget.samples
+    if n > 0:
+        c is widget.color
+        prev_y is mid_y
+        for px in range of widget.w:
+            si is floor of (widget.offset + px * widget.zoom)
+            if si >= 0 and si < n:
+                amp is widget.samples[si] * (widget.h / 2)
+                sy is mid_y - floor of amp
+                gfx_line of [ax + px, prev_y, ax + px + 1, sy, c[0], c[1], c[2]]
+                prev_y is sy
+            else:
+                prev_y is mid_y
+    # Playhead
+    if widget.playhead >= 0:
+        px is floor of ((widget.playhead - widget.offset) / widget.zoom)
+        if px >= 0 and px < widget.w:
+            gfx_line of [ax + px, ay, ax + px, ay + widget.h, 255, 80, 80]
+    # Border
+    gfx_rrect of [ax, ay, widget.w, 1, 0, 35, 35, 45]
+    gfx_rrect of [ax, ay + widget.h - 1, widget.w, 1, 0, 35, 35, 45]
+
+define _render_code_view(widget, ax, ay) as:
+    # Background
+    gfx_rect of [ax, ay, widget.w, widget.h, 20, 20, 30]
+    gfx_clip of [ax + 1, ay + 1, widget.w - 2, widget.h - 2]
+    # Split text into lines by scanning for newline
+    lines is []
+    cur is ""
+    src is widget.text
+    for ci in range of (len of src):
+        ch is substr of [src, ci, 1]
+        if ch == "\n":
+            append of [lines, cur]
+            cur is ""
+        else:
+            cur is cur + ch
+    append of [lines, cur]
+    line_h is _theme.char_h + 4
+    gutter_w is 0
+    if widget.line_numbers == 1:
+        gutter_w is 30
+    for li in range of (len of lines):
+        ly is ay + 2 + li * line_h - widget.scroll_y
+        if ly + line_h > ay and ly < ay + widget.h:
+            if widget.line_numbers == 1:
+                ln_text is f"{li + 1}"
+                gfx_text of [ax + 4, ly, ln_text, _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], 1]
+            _draw_text_clipped of [ax + gutter_w + 4, ly, widget.w - gutter_w - 8, lines[li], _theme.text_color, 1]
+    gfx_clip of null
+    # Border
+    gfx_rrect of [ax, ay, widget.w, 1, 0, 35, 35, 45]
+    gfx_rrect of [ax, ay + widget.h - 1, widget.w, 1, 0, 35, 35, 45]
+    # Scrollbar
+    total_h is (len of lines) * line_h
+    if total_h > widget.h:
+        sb_h is floor of (widget.h * widget.h / total_h)
+        if sb_h < 16:
+            sb_h is 16
+        sb_y is ay + floor of (widget.scroll_y * (widget.h - sb_h) / (total_h - widget.h))
+        gfx_rrect of [ax + widget.w - 6, sb_y, 4, sb_h, 2, 80, 80, 100]
+
+define _mousemove_chart(hit, root, mx, my) as:
+    abs_x is hit._ax
+    plot_x is abs_x + 40
+    plot_w is hit.w - 56
+    rel_x is mx - plot_x
+    if rel_x >= 0 and plot_w > 0 and (len of hit.series) > 0:
+        max_n is 0
+        for si in range of (len of hit.series):
+            if (len of hit.series[si].data) > max_n:
+                max_n is len of hit.series[si].data
+        if max_n > 1:
+            hit.hover_index is floor of (rel_x / plot_w * (max_n - 1) + 0.5)
+            if hit.hover_index < 0:
+                hit.hover_index is 0
+            if hit.hover_index >= max_n:
+                hit.hover_index is max_n - 1
+        else:
+            hit.hover_index is 0
+    else:
+        hit.hover_index is -1
+
+define _mousemove_bar_chart(hit, root, mx, my) as:
+    abs_x is hit._ax
+    n is len of hit.values
+    if n > 0:
+        bar_w is floor of ((hit.w - 16) / n) - hit.bar_gap
+        if bar_w < 4:
+            bar_w is 4
+        rel_x is mx - abs_x - 8
+        idx is floor of (rel_x / (bar_w + hit.bar_gap))
+        if idx >= 0 and idx < n:
+            hit.hover_index is idx
+        else:
+            hit.hover_index is -1
+    else:
+        hit.hover_index is -1
+
+define _mousedown_canvas(hit, root, mx, my, ev) as:
+    if hit.on_mouse != null:
+        hit.on_mouse of [hit, ev]
+
+define _mousedown_waveform_view(hit, root, mx, my, ev) as:
+    abs_x is hit._ax
+    sample_pos is floor of (hit.offset + (mx - abs_x) * hit.zoom)
+    hit.sel_start is sample_pos
+    hit.sel_end is sample_pos
+    _drag_widget is hit
+    _drag_ox is abs_x
+
+define _mousedown_bar_chart(hit, root, mx, my, ev) as:
+    abs_x is hit._ax
+    n is len of hit.values
+    if n > 0:
+        bar_w is floor of ((hit.w - 16) / n) - hit.bar_gap
+        if bar_w < 4:
+            bar_w is 4
+        rel_x is mx - abs_x - 8
+        idx is floor of (rel_x / (bar_w + hit.bar_gap))
+        if idx >= 0 and idx < n:
+            if hit.on_click != null:
+                hit.on_click of [hit, idx]
+
+define _clear_hover_chart(widget) as:
+    widget.hover_index is -1
+
+define _clear_hover_bar_chart(widget) as:
+    widget.hover_index is -1
+
+define _scroll_code_view(widget, dx, dy) as:
+    widget.scroll_y is widget.scroll_y + dy
+    if widget.scroll_y < 0:
+        widget.scroll_y is 0
+    # Estimate total height from text
+    n_lines is 1
+    src is widget.text
+    for ci in range of (len of src):
+        ch is substr of [src, ci, 1]
+        if ch == "\n":
+            n_lines is n_lines + 1
+    line_h is _theme.char_h + 4
+    max_sy is n_lines * line_h - widget.h
+    if max_sy < 0:
+        max_sy is 0
+    if widget.scroll_y > max_sy:
+        widget.scroll_y is max_sy
+
+_register_widget of ["chart", {
+    "render": _render_chart,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": _mousemove_chart,
+    "clear_hover": _clear_hover_chart,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["bar_chart", {
+    "render": _render_bar_chart,
+    "hit_test": null,
+    "on_mousedown": _mousedown_bar_chart,
+    "on_mousemove": _mousemove_bar_chart,
+    "clear_hover": _clear_hover_bar_chart,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["gauge", {
+    "render": _render_gauge,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["meter", {
+    "render": _render_meter,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]
+
+_register_widget of ["canvas", {
+    "render": _render_canvas,
+    "hit_test": null,
+    "on_mousedown": _mousedown_canvas,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["waveform_view", {
+    "render": _render_waveform_view,
+    "hit_test": null,
+    "on_mousedown": _mousedown_waveform_view,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["code_view", {
+    "render": _render_code_view,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": _scroll_code_view,
+    "container": 0,
+    "focusable": 1
+}]

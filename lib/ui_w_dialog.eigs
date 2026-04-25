@@ -1,0 +1,257 @@
+# ============================================================
+# UI Widgets — Dialog: dialog, property_editor, toast, color_picker + HSV
+# ============================================================
+
+define dialog(id, w, h, title, message, buttons, on_button) as:
+    return {
+        "type": "dialog",
+        "id": id,
+        "x": 0, "y": 0, "w": w, "h": h,
+        "title": title,
+        "message": message,
+        "buttons": buttons,
+        "on_button": on_button,
+        "hover_btn": -1,
+        "visible": 0
+    }
+
+define color_picker(id, x, y, on_change) as:
+    return {
+        "type": "color_picker",
+        "id": id,
+        "x": x, "y": y, "w": 180, "h": 150,
+        "hue": 0,
+        "sat": 1.0,
+        "val": 1.0,
+        "color": [255, 0, 0],
+        "drag_part": null,
+        "on_change": on_change,
+        "visible": 1
+    }
+
+define property_editor(id, x, y, w, h, properties, on_change) as:
+    sp is scroll_panel of [id, x, y, w, h]
+    row_y is 4
+    for pi in range of (len of properties):
+        prop is properties[pi]
+        lbl is label of [f"{id}_lbl_{pi}", 8, row_y + 4, prop.key]
+        lbl.color is _theme.text_dim
+        add_child of [sp, lbl]
+        input_x is floor of (w / 2)
+        input_w is floor of (w / 2) - 24
+        if prop.type == "number":
+            p_min is 0
+            p_max is 100
+            p_step is 1
+            if prop.min != null:
+                p_min is prop.min
+            if prop.max != null:
+                p_max is prop.max
+            cb is _make_prop_cb of [on_change, prop.key]
+            inp is spinbox of [f"{id}_inp_{pi}", input_x, row_y, input_w, p_min, p_max, prop.value, p_step, cb]
+            add_child of [sp, inp]
+        elif prop.type == "text":
+            cb is _make_prop_cb of [on_change, prop.key]
+            inp is text_input of [f"{id}_inp_{pi}", input_x, row_y, input_w, f"{prop.value}", cb]
+            add_child of [sp, inp]
+        elif prop.type == "bool":
+            bval is 0
+            if prop.value == 1 or prop.value == "true":
+                bval is 1
+            cb is _make_prop_cb of [on_change, prop.key]
+            inp is toggle of [f"{id}_inp_{pi}", input_x, row_y, bval, cb]
+            add_child of [sp, inp]
+        elif prop.type == "choice":
+            items is prop.items
+            if items == null:
+                items is []
+            sel is 0
+            for si in range of (len of items):
+                if items[si] == prop.value:
+                    sel is si
+            cb is _make_prop_cb of [on_change, prop.key]
+            inp is dropdown of [f"{id}_inp_{pi}", input_x, row_y, input_w, items, sel, cb]
+            add_child of [sp, inp]
+        row_y is row_y + 28
+    sp.content_h is row_y
+    return sp
+
+define _make_prop_cb(on_change, key) as:
+    define cb(w) as:
+        val is null
+        if w.type == "spinbox":
+            val is w.value
+        elif w.type == "text_input":
+            val is w.text
+        elif w.type == "toggle":
+            val is w.value
+        elif w.type == "dropdown":
+            if w.selected >= 0 and w.selected < (len of w.items):
+                val is w.items[w.selected]
+        if on_change != null:
+            on_change of {"key": key, "value": val}
+    return cb
+
+# ---- HSV to RGB conversion ----
+
+define _hsv_to_rgb(h, s, v) as:
+    c is v * s
+    hp is h / 60
+    x is c * (1 - abs of (hp - 2 * floor of (hp / 2) - 1))
+    m is v - c
+    if hp < 1:
+        r is c
+        g is x
+        b is 0
+    elif hp < 2:
+        r is x
+        g is c
+        b is 0
+    elif hp < 3:
+        r is 0
+        g is c
+        b is x
+    elif hp < 4:
+        r is 0
+        g is x
+        b is c
+    elif hp < 5:
+        r is x
+        g is 0
+        b is c
+    else:
+        r is c
+        g is 0
+        b is x
+    return [floor of ((r + m) * 255), floor of ((g + m) * 255), floor of ((b + m) * 255)]
+
+# ---- Render functions ----
+
+define _render_dialog(widget, ax, ay) as:
+    if widget.visible == 1:
+        # Overlay dims the background
+        gfx_rect of [0, 0, 9999, 9999, 0, 0, 0, 140]
+        # Center the dialog
+        dx is ax + floor of ((widget.w - widget.w) / 2)
+        dy is ay + floor of ((widget.h - widget.h) / 2)
+        # Dialog background
+        gfx_rrect of [ax, ay, widget.w, widget.h, _theme.radius_lg, _theme.panel_bg[0], _theme.panel_bg[1], _theme.panel_bg[2]]
+        # Title bar
+        gfx_rrect of [ax, ay, widget.w, 32, _theme.radius_lg, _theme.tab_bg[0], _theme.tab_bg[1], _theme.tab_bg[2]]
+        gfx_text of [ax + 12, ay + 9, widget.title, _theme.tab_text_active[0], _theme.tab_text_active[1], _theme.tab_text_active[2], _theme.font_scale]
+        # Message
+        gfx_text of [ax + 16, ay + 48, widget.message, _theme.text_color[0], _theme.text_color[1], _theme.text_color[2], _theme.font_scale]
+        # Buttons
+        btn_y is ay + widget.h - 40
+        btn_x is ax + widget.w
+        i is (len of widget.buttons) - 1
+        loop while i >= 0:
+            btext is widget.buttons[i]
+            bw is (text_width of [btext, _theme.font_scale]) + 24
+            btn_x is btn_x - bw - 8
+            if i == widget.hover_btn:
+                bbg is _theme.btn_hover
+            else:
+                bbg is _theme.btn_bg
+            if i == 0:
+                bbg is _theme.accent
+            _draw_rbox of [btn_x, btn_y, bw, 28, _theme.radius_sm, bbg, _theme.panel_border]
+            gfx_text of [btn_x + 12, btn_y + 7, btext, 255, 255, 255, _theme.font_scale]
+            i is i - 1
+
+define _render_color_picker(widget, ax, ay) as:
+    # SV square: 150x120 at top-left
+    sq_w is 150
+    sq_h is 120
+    # Draw SV square as horizontal color strips
+    for row in range of sq_h:
+        v_val is 1.0 - row / sq_h
+        for col_step in range of 15:
+            s_val is col_step / 15.0
+            c is _hsv_to_rgb of [widget.hue, s_val, v_val]
+            strip_x is ax + floor of (col_step * sq_w / 15)
+            strip_w is floor of (sq_w / 15)
+            gfx_rect of [strip_x, ay + row, strip_w, 1, c[0], c[1], c[2]]
+    # SV crosshair
+    cx_sv is ax + floor of (widget.sat * sq_w)
+    cy_sv is ay + floor of ((1.0 - widget.val) * sq_h)
+    gfx_line of [cx_sv - 4, cy_sv, cx_sv + 4, cy_sv, 255, 255, 255]
+    gfx_line of [cx_sv, cy_sv - 4, cx_sv, cy_sv + 4, 255, 255, 255]
+    # Hue bar: 20x120 to the right of SV square
+    hue_x is ax + sq_w + 8
+    hue_w is 20
+    for row in range of sq_h:
+        h_val is row * 360 / sq_h
+        c is _hsv_to_rgb of [h_val, 1.0, 1.0]
+        gfx_rect of [hue_x, ay + row, hue_w, 1, c[0], c[1], c[2]]
+    # Hue marker
+    hue_marker_y is ay + floor of (widget.hue * sq_h / 360)
+    gfx_rect of [hue_x - 2, hue_marker_y - 1, hue_w + 4, 3, 255, 255, 255]
+    # Color preview
+    pc is widget.color
+    gfx_rrect of [ax, ay + sq_h + 6, 40, 24, 4, pc[0], pc[1], pc[2]]
+    # RGB text
+    gfx_text of [ax + 48, ay + sq_h + 12, f"R:{pc[0]} G:{pc[1]} B:{pc[2]}", _theme.text_color[0], _theme.text_color[1], _theme.text_color[2], 1]
+
+# ---- Mousedown functions ----
+
+define _mousedown_color_picker(hit, root, mx, my, ev) as:
+    abs_x is hit._ax
+    abs_y is hit._ay
+    rel_x is mx - abs_x
+    rel_y is my - abs_y
+    if rel_x < 150 and rel_y < 120:
+        hit.drag_part is "sv"
+        _drag_widget is hit
+        hit.sat is rel_x / 150.0
+        hit.val is 1.0 - rel_y / 120.0
+    elif rel_x >= 158 and rel_x < 178 and rel_y < 120:
+        hit.drag_part is "hue"
+        _drag_widget is hit
+        hit.hue is rel_y * 360 / 120.0
+    hit.color is _hsv_to_rgb of [hit.hue, hit.sat, hit.val]
+    if hit.on_change != null:
+        hit.on_change of hit
+
+# ---- Dialog click handler ----
+
+define _handle_dialog_click(dlg, mx, my) as:
+    btn_y is dlg.y + dlg.h - 40
+    btn_x is dlg.x + dlg.w
+    i is (len of dlg.buttons) - 1
+    loop while i >= 0:
+        btext is dlg.buttons[i]
+        bw is (text_width of [btext, _theme.font_scale]) + 24
+        btn_x is btn_x - bw - 8
+        if _point_in_rect of [mx, my, btn_x, btn_y, bw, 28]:
+            dlg.visible is 0
+            if dlg.on_button != null:
+                dlg.on_button of [dlg, i]
+            return null
+        i is i - 1
+
+# ---- Registration ----
+
+_register_widget of ["dialog", {
+    "render": _render_dialog,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]
+
+_register_widget of ["color_picker", {
+    "render": _render_color_picker,
+    "hit_test": null,
+    "on_mousedown": _mousedown_color_picker,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]

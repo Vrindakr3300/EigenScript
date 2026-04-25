@@ -1,0 +1,374 @@
+# ============================================================
+# UI Toolkit Unit Tests — layout, hit-testing, focus, registry
+# ============================================================
+# Runs without SDL2 by stubbing gfx_* functions.
+
+load_file of "lib/test.eigs"
+
+# ---- Stub gfx functions (no-ops for headless testing) ----
+
+define gfx_open(args) as:
+    return 1
+
+define gfx_close(args) as:
+    return null
+
+define gfx_clear(args) as:
+    return null
+
+define gfx_rect(args) as:
+    return null
+
+define gfx_rrect(args) as:
+    return null
+
+define gfx_line(args) as:
+    return null
+
+define gfx_point(args) as:
+    return null
+
+define gfx_circle(args) as:
+    return null
+
+define gfx_text(args) as:
+    return null
+
+define gfx_clip(args) as:
+    return null
+
+define gfx_present(args) as:
+    return null
+
+define gfx_poll(args) as:
+    return null
+
+define gfx_delay(args) as:
+    return null
+
+define gfx_ticks(args) as:
+    return 1000
+
+# ---- Load UI toolkit ----
+
+load_file of "lib/ui.eigs"
+
+print of "=== UI Toolkit Tests ==="
+
+# ============================================================
+# 1. Constructor tests
+# ============================================================
+
+print of "--- Constructor Tests ---"
+
+b is button of ["btn1", 10, 20, 80, 30, "Click", null]
+assert_eq of [b.type, "button", "button type"]
+assert_eq of [b.id, "btn1", "button id"]
+assert_eq of [b.x, 10, "button x"]
+assert_eq of [b.y, 20, "button y"]
+assert_eq of [b.w, 80, "button w"]
+assert_eq of [b.h, 30, "button h"]
+assert_eq of [b.label, "Click", "button label"]
+assert_eq of [b.hover, 0, "button hover default"]
+assert_eq of [b.pressed, 0, "button pressed default"]
+assert_eq of [b.enabled, 1, "button enabled default"]
+assert_eq of [b.visible, 1, "button visible default"]
+
+s is slider of ["sl1", 5, 10, 200, 0, 100, 50, null]
+assert_eq of [s.type, "slider", "slider type"]
+assert_eq of [s.value, 50, "slider value"]
+assert_eq of [s.min_val, 0, "slider min"]
+assert_eq of [s.max_val, 100, "slider max"]
+
+p is panel of ["pan1", 0, 0, 400, 300]
+assert_eq of [p.type, "panel", "panel type"]
+assert_eq of [len of p.children, 0, "panel empty children"]
+
+lbl is label of ["lbl1", 10, 10, "Hello"]
+assert_eq of [lbl.type, "label", "label type"]
+assert_eq of [lbl.text, "Hello", "label text"]
+
+t is toggle of ["tog1", 0, 0, 0, null]
+assert_eq of [t.type, "toggle", "toggle type"]
+assert_eq of [t.value, 0, "toggle default off"]
+
+# ============================================================
+# 2. Registry tests
+# ============================================================
+
+print of "--- Registry Tests ---"
+
+# Widget types are registered
+assert_true of [_widget_registry["button"] != null, "button registered"]
+assert_true of [_widget_registry["slider"] != null, "slider registered"]
+assert_true of [_widget_registry["panel"] != null, "panel registered"]
+assert_true of [_widget_registry["tabs"] != null, "tabs registered"]
+assert_true of [_widget_registry["table"] != null, "table registered"]
+
+# Container flag
+assert_eq of [_widget_registry["panel"].container, 1, "panel is container"]
+assert_eq of [_widget_registry["hbox"].container, 1, "hbox is container"]
+assert_eq of [_widget_registry["button"].container, 0, "button not container"]
+assert_eq of [_widget_registry["slider"].container, 0, "slider not container"]
+
+# Focusable flag
+assert_eq of [_widget_registry["button"].focusable, 1, "button focusable"]
+assert_eq of [_widget_registry["slider"].focusable, 1, "slider focusable"]
+assert_eq of [_widget_registry["label"].focusable, 0, "label not focusable"]
+assert_eq of [_widget_registry["separator"].focusable, 0, "separator not focusable"]
+
+# _is_container uses registry
+assert_eq of [_is_container of "panel", 1, "_is_container panel"]
+assert_eq of [_is_container of "vbox", 1, "_is_container vbox"]
+assert_eq of [_is_container of "button", 0, "_is_container button"]
+
+# ============================================================
+# 3. Layout tests
+# ============================================================
+
+print of "--- Layout Tests ---"
+
+# hbox with 3 children of equal width
+root is panel of ["root", 0, 0, 300, 100]
+hb is hbox of ["hb", 0, 0, 300, 50]
+hb.gap is 0
+hb.padding is 0
+c1 is button of ["c1", 0, 0, 100, 30, "A", null]
+c2 is button of ["c2", 0, 0, 100, 30, "B", null]
+c3 is button of ["c3", 0, 0, 100, 30, "C", null]
+add_child of [hb, c1]
+add_child of [hb, c2]
+add_child of [hb, c3]
+add_child of [root, hb]
+
+_layout of [root, 0, 0]
+
+assert_eq of [c1.x, 0, "hbox child1 x"]
+assert_eq of [c2.x, 100, "hbox child2 x"]
+assert_eq of [c3.x, 200, "hbox child3 x"]
+
+# vbox with gap
+root2 is panel of ["root2", 0, 0, 200, 400]
+vb is vbox of ["vb", 10, 10, 200, 300]
+vb.gap is 10
+vb.padding is 5
+v1 is button of ["v1", 0, 0, 80, 30, "X", null]
+v2 is button of ["v2", 0, 0, 80, 30, "Y", null]
+add_child of [vb, v1]
+add_child of [vb, v2]
+add_child of [root2, vb]
+
+_layout of [root2, 0, 0]
+
+assert_eq of [v1.y, 5, "vbox child1 y (padding)"]
+assert_eq of [v2.y, 45, "vbox child2 y (30h + 10gap + 5pad)"]
+
+# Cached absolute positions
+assert_eq of [root2._ax, 0, "root _ax"]
+assert_eq of [root2._ay, 0, "root _ay"]
+assert_eq of [vb._ax, 10, "vbox _ax"]
+assert_eq of [vb._ay, 10, "vbox _ay"]
+assert_eq of [v1._ax, 15, "vbox child1 _ax (10 + 5pad)"]
+assert_eq of [v1._ay, 15, "vbox child1 _ay (10 + 5pad)"]
+
+# ============================================================
+# 4. Hit-test tests
+# ============================================================
+
+print of "--- Hit-Test Tests ---"
+
+# Build a simple tree
+hr is panel of ["hr", 0, 0, 400, 300]
+hb1 is button of ["hb1", 10, 10, 80, 30, "Hit", null]
+hb2 is button of ["hb2", 100, 10, 80, 30, "Miss", null]
+add_child of [hr, hb1]
+add_child of [hr, hb2]
+
+_layout of [hr, 0, 0]
+
+# Hit inside button 1
+result is _hit_test of [hr, 0, 0, 50, 25]
+assert_true of [result != null, "hit test finds widget"]
+assert_eq of [result.id, "hb1", "hit test correct widget"]
+
+# Hit inside button 2
+result is _hit_test of [hr, 0, 0, 140, 25]
+assert_true of [result != null, "hit test button 2"]
+assert_eq of [result.id, "hb2", "hit test button 2 id"]
+
+# Miss — empty area
+result is _hit_test of [hr, 0, 0, 250, 250]
+assert_true of [result == null, "hit test miss returns null"]
+
+# Hit test respects visibility
+hb1.visible is 0
+result is _hit_test of [hr, 0, 0, 50, 25]
+assert_true of [result == null, "invisible widget not hit"]
+hb1.visible is 1
+
+# ============================================================
+# 5. Focus tests
+# ============================================================
+
+print of "--- Focus Tests ---"
+
+# Build tree: panel > [button, label, slider, button]
+fp is panel of ["fp", 0, 0, 400, 200]
+fb1 is button of ["fb1", 10, 10, 60, 24, "A", null]
+fl is label of ["fl", 80, 10, "Text"]
+fs is slider of ["fs", 10, 50, 200, 0, 100, 50, null]
+fb2 is button of ["fb2", 10, 80, 60, 24, "B", null]
+add_child of [fp, fb1]
+add_child of [fp, fl]
+add_child of [fp, fs]
+add_child of [fp, fb2]
+
+_layout of [fp, 0, 0]
+
+_focus_list is []
+_build_focus_list of fp
+assert_eq of [len of _focus_list, 3, "focus list skips label (3 focusable)"]
+assert_eq of [_focus_list[0].id, "fb1", "focus list[0] = button 1"]
+assert_eq of [_focus_list[1].id, "fs", "focus list[1] = slider"]
+assert_eq of [_focus_list[2].id, "fb2", "focus list[2] = button 2"]
+
+# Focus cycling
+_focus_index is -1
+_focused_widget is null
+_focused_input is null
+_focus_next of [fp, 0]
+assert_eq of [_focused_widget.id, "fb1", "focus next -> button 1"]
+
+_focus_next of [fp, 0]
+assert_eq of [_focused_widget.id, "fs", "focus next -> slider"]
+
+_focus_next of [fp, 0]
+assert_eq of [_focused_widget.id, "fb2", "focus next -> button 2"]
+
+_focus_next of [fp, 0]
+assert_eq of [_focused_widget.id, "fb1", "focus wraps to button 1"]
+
+# Reverse
+_focus_next of [fp, 1]
+assert_eq of [_focused_widget.id, "fb2", "focus prev wraps to button 2"]
+
+# Disabled widget skipped
+fs.enabled is 0
+_focus_list is []
+_build_focus_list of fp
+assert_eq of [len of _focus_list, 2, "disabled slider not in focus list"]
+fs.enabled is 1
+
+# ============================================================
+# 6. Scroll tests
+# ============================================================
+
+print of "--- Scroll Tests ---"
+
+sp is scroll_panel of ["sp", 0, 0, 200, 100]
+sp.content_h is 500
+
+_layout of [sp, 0, 0]
+
+# Scroll down
+_scroll_panels of [sp, 0, 60]
+assert_eq of [sp.scroll_y, 60, "scroll down 60"]
+
+# Scroll past max
+_scroll_panels of [sp, 0, 500]
+assert_eq of [sp.scroll_y, 400, "scroll clamped to max (500-100)"]
+
+# Scroll back up past 0
+_scroll_panels of [sp, 0, -9999]
+assert_eq of [sp.scroll_y, 0, "scroll clamped to 0"]
+
+# Item list scroll
+il is item_list of ["il", 0, 0, 100, 60, ["a", "b", "c", "d", "e"], null]
+
+_layout of [il, 0, 0]
+
+_scroll_panels of [il, 0, 30]
+assert_eq of [il.scroll_y, 30, "item_list scroll down"]
+
+_scroll_panels of [il, 0, 999]
+max_expected is (len of il.items) * il.item_h - il.h
+assert_eq of [il.scroll_y, max_expected, "item_list scroll clamped"]
+
+_scroll_panels of [il, 0, -9999]
+assert_eq of [il.scroll_y, 0, "item_list scroll min 0"]
+
+# ============================================================
+# 7. Keyboard accessibility — 10 new focusable types
+# ============================================================
+
+print of "--- Keyboard Accessibility Tests ---"
+
+# Build tree with all 10 new focusable types
+kp is panel of ["kp", 0, 0, 800, 600]
+add_child of [kp, canvas of ["kc", 0, 0, 100, 100, null, null]]
+add_child of [kp, editable_label of ["kel", 0, 0, "edit", null]]
+add_child of [kp, grid of ["kg", 0, 0, 4, 4, 20, 20, null]]
+add_child of [kp, chart of ["kch", 0, 0, 200, 100]]
+add_child of [kp, bar_chart of ["kbc", 0, 0, 200, 100, ["a"], [1], null]]
+add_child of [kp, gauge of ["kga", 0, 0, 60, 0, 100, 50, ""]]
+add_child of [kp, code_view of ["kcv", 0, 0, 200, 100, "hello"]]
+add_child of [kp, color_picker of ["kcp", 0, 0, null]]
+add_child of [kp, waveform_view of ["kwv", 0, 0, 200, 100]]
+add_child of [kp, piano_keyboard of ["kpk", 0, 0, 2, null]]
+
+_layout of [kp, 0, 0]
+
+_focus_list is []
+_build_focus_list of kp
+assert_eq of [len of _focus_list, 10, "all 10 new types in focus list"]
+
+# Verify specific types are present
+found_canvas is 0
+found_grid is 0
+found_chart is 0
+found_gauge is 0
+found_color_picker is 0
+for i in range of (len of _focus_list):
+    if _focus_list[i].type == "canvas":
+        found_canvas is 1
+    if _focus_list[i].type == "grid":
+        found_grid is 1
+    if _focus_list[i].type == "chart":
+        found_chart is 1
+    if _focus_list[i].type == "gauge":
+        found_gauge is 1
+    if _focus_list[i].type == "color_picker":
+        found_color_picker is 1
+assert_eq of [found_canvas, 1, "canvas focusable"]
+assert_eq of [found_grid, 1, "grid focusable"]
+assert_eq of [found_chart, 1, "chart focusable"]
+assert_eq of [found_gauge, 1, "gauge focusable"]
+assert_eq of [found_color_picker, 1, "color_picker focusable"]
+
+# Grid keyboard: arrow moves hover
+g is grid of ["tg", 0, 0, 4, 4, 20, 20, null]
+g.hover_row is 1
+g.hover_col is 1
+_focused_widget is g
+_handle_focus_key of [kp, {"key": "right", "shift": 0, "ctrl": 0, "alt": 0}]
+assert_eq of [g.hover_col, 2, "grid right arrow"]
+_handle_focus_key of [kp, {"key": "down", "shift": 0, "ctrl": 0, "alt": 0}]
+assert_eq of [g.hover_row, 2, "grid down arrow"]
+
+# Grid keyboard: space toggles cell
+_handle_focus_key of [kp, {"key": "space", "shift": 0, "ctrl": 0, "alt": 0}]
+assert_eq of [g.cells[2][2], 1, "grid space toggles on"]
+_handle_focus_key of [kp, {"key": "space", "shift": 0, "ctrl": 0, "alt": 0}]
+assert_eq of [g.cells[2][2], 0, "grid space toggles off"]
+
+# Editable label: enter starts editing
+el is editable_label of ["tel", 0, 0, "test", null]
+_focused_widget is el
+_handle_focus_key of [kp, {"key": "return", "shift": 0, "ctrl": 0, "alt": 0}]
+assert_eq of [el.editing, 1, "editable_label enter starts editing"]
+
+# ============================================================
+# Summary
+# ============================================================
+
+test_summary of null

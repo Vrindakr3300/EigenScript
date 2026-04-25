@@ -1,0 +1,305 @@
+# ============================================================
+# UI Widgets — Sliders: slider, vslider, knob, scrollbar + drag math
+# ============================================================
+
+define slider(id, x, y, w, min_val, max_val, value, on_change) as:
+    return {
+        "type": "slider",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": 16,
+        "min_val": min_val, "max_val": max_val, "value": value,
+        "on_change": on_change,
+        "dragging": 0,
+        "hover": 0,
+        "visible": 1,
+        "enabled": 1
+    }
+
+define vslider(id, x, y, h, min_val, max_val, value, on_change) as:
+    return {
+        "type": "vslider",
+        "id": id,
+        "x": x, "y": y, "w": 16, "h": h,
+        "min_val": min_val, "max_val": max_val, "value": value,
+        "on_change": on_change,
+        "dragging": 0,
+        "hover": 0,
+        "visible": 1,
+        "enabled": 1
+    }
+
+define knob(id, x, y, size, min_val, max_val, value, on_change) as:
+    return {
+        "type": "knob",
+        "id": id,
+        "x": x, "y": y, "w": size, "h": size,
+        "min_val": min_val, "max_val": max_val, "value": value,
+        "on_change": on_change,
+        "dragging": 0,
+        "drag_start_y": 0,
+        "drag_start_val": 0,
+        "hover": 0,
+        "visible": 1,
+        "enabled": 1
+    }
+
+define scrollbar(id, x, y, length, vertical, on_change) as:
+    if vertical == 1:
+        sw is 12
+        sh is length
+    else:
+        sw is length
+        sh is 12
+    return {
+        "type": "scrollbar",
+        "id": id,
+        "x": x, "y": y, "w": sw, "h": sh,
+        "vertical": vertical,
+        "value": 0,
+        "thumb_size": 0.2,
+        "on_change": on_change,
+        "dragging": 0,
+        "hover": 0,
+        "visible": 1,
+        "enabled": 1
+    }
+
+# ---- Render functions ----
+
+define _render_slider(widget, ax, ay) as:
+    track_y is ay + floor of (widget.h / 2) - 2
+    # Track background
+    gfx_rrect of [ax, track_y, widget.w, 4, 2, _theme.slider_track[0], _theme.slider_track[1], _theme.slider_track[2]]
+    # Fill
+    range_val is widget.max_val - widget.min_val
+    if range_val > 0:
+        frac is (widget.value - widget.min_val) / range_val
+    else:
+        frac is 0
+    fill_w is floor of (frac * (widget.w - 8))
+    if fill_w > 0:
+        gfx_rrect of [ax, track_y, fill_w, 4, 2, _theme.slider_fill[0], _theme.slider_fill[1], _theme.slider_fill[2]]
+    # Thumb
+    thumb_x is ax + fill_w - 5
+    gfx_rrect of [thumb_x, ay + 2, 10, widget.h - 4, 3, _theme.slider_thumb[0], _theme.slider_thumb[1], _theme.slider_thumb[2]]
+
+define _render_vslider(widget, ax, ay) as:
+    track_x is ax + floor of (widget.w / 2) - 2
+    gfx_rrect of [track_x, ay, 4, widget.h, 2, _theme.slider_track[0], _theme.slider_track[1], _theme.slider_track[2]]
+    range_val is widget.max_val - widget.min_val
+    if range_val > 0:
+        frac is (widget.value - widget.min_val) / range_val
+    else:
+        frac is 0
+    # Fill from bottom up
+    fill_h is floor of (frac * (widget.h - 8))
+    if fill_h > 0:
+        gfx_rrect of [track_x, ay + widget.h - fill_h, 4, fill_h, 2, _theme.slider_fill[0], _theme.slider_fill[1], _theme.slider_fill[2]]
+    # Thumb
+    thumb_y is ay + widget.h - fill_h - 5
+    gfx_rrect of [ax + 2, thumb_y, widget.w - 4, 10, 3, _theme.slider_thumb[0], _theme.slider_thumb[1], _theme.slider_thumb[2]]
+
+define _render_knob(widget, ax, ay) as:
+    # Draw knob as a filled circle with a pointer line
+    cx is ax + floor of (widget.w / 2)
+    cy is ay + floor of (widget.h / 2)
+    r is floor of (widget.w / 2) - 2
+    gfx_circle of [cx, cy, r, _theme.knob_bg[0], _theme.knob_bg[1], _theme.knob_bg[2]]
+    # Arc indicator — draw small filled circle at edge
+    range_val is widget.max_val - widget.min_val
+    if range_val > 0:
+        frac is (widget.value - widget.min_val) / range_val
+    else:
+        frac is 0
+    # Angle: from 225deg (min) to -45deg (max), i.e. 270deg sweep
+    angle is (3.927 - frac * 4.712)
+    px is cx + floor of ((cos of angle) * (r - 2))
+    py is cy - floor of ((sin of angle) * (r - 2))
+    gfx_line of [cx, cy, px, py, _theme.knob_pointer[0], _theme.knob_pointer[1], _theme.knob_pointer[2]]
+    # Small dot at pointer tip
+    gfx_circle of [px, py, 2, _theme.knob_fg[0], _theme.knob_fg[1], _theme.knob_fg[2]]
+
+define _render_scrollbar(widget, ax, ay) as:
+    c is _theme.slider_track
+    gfx_rrect of [ax, ay, widget.w, widget.h, 3, c[0], c[1], c[2]]
+    # Thumb
+    ts is widget.thumb_size
+    if ts < 0.05:
+        ts is 0.05
+    if ts > 1:
+        ts is 1
+    if widget.vertical == 1:
+        thumb_h is floor of (ts * widget.h)
+        if thumb_h < 16:
+            thumb_h is 16
+        thumb_y is ay + floor of (widget.value * (widget.h - thumb_h))
+        tc is _theme.slider_thumb
+        if widget.hover == 1 or widget.dragging == 1:
+            tc is _theme.slider_fill
+        gfx_rrect of [ax + 2, thumb_y, widget.w - 4, thumb_h, 3, tc[0], tc[1], tc[2]]
+    else:
+        thumb_w is floor of (ts * widget.w)
+        if thumb_w < 16:
+            thumb_w is 16
+        thumb_x is ax + floor of (widget.value * (widget.w - thumb_w))
+        tc is _theme.slider_thumb
+        if widget.hover == 1 or widget.dragging == 1:
+            tc is _theme.slider_fill
+        gfx_rrect of [thumb_x, ay + 2, thumb_w, widget.h - 4, 3, tc[0], tc[1], tc[2]]
+
+# ---- Mousedown functions ----
+
+define _mousedown_slider(hit, root, mx, my, ev) as:
+    if hit.enabled == 1:
+        hit.dragging is 1
+        _drag_widget is hit
+        _drag_ox is hit._ax
+        _update_drag of [hit, mx]
+
+define _mousedown_vslider(hit, root, mx, my, ev) as:
+    if hit.enabled == 1:
+        hit.dragging is 1
+        _drag_widget is hit
+        _drag_oy is hit._ay
+        _update_vdrag of [hit, my]
+
+define _mousedown_knob(hit, root, mx, my, ev) as:
+    if hit.enabled == 1:
+        hit.dragging is 1
+        hit.drag_start_y is my
+        hit.drag_start_val is hit.value
+        _drag_widget is hit
+
+define _mousedown_scrollbar(hit, root, mx, my, ev) as:
+    if hit.enabled == 1:
+        hit.dragging is 1
+        _drag_widget is hit
+        _drag_ox is hit._ax
+        _drag_oy is hit._ay
+        _update_scrollbar_drag of [hit, mx, my]
+
+# ---- Drag math ----
+
+define _update_drag(widget, mx) as:
+    range_val is widget.max_val - widget.min_val
+    if range_val <= 0:
+        return null
+    frac is (mx - _drag_ox) / widget.w
+    if frac < 0:
+        frac is 0
+    if frac > 1:
+        frac is 1
+    widget.value is widget.min_val + frac * range_val
+    if widget.on_change != null:
+        widget.on_change of widget
+
+define _update_vdrag(widget, my) as:
+    range_val is widget.max_val - widget.min_val
+    if range_val <= 0:
+        return null
+    # Inverted: top = max, bottom = min
+    frac is 1.0 - (my - _drag_oy) / widget.h
+    if frac < 0:
+        frac is 0
+    if frac > 1:
+        frac is 1
+    widget.value is widget.min_val + frac * range_val
+    if widget.on_change != null:
+        widget.on_change of widget
+
+define _update_knob_drag(widget, my) as:
+    # Vertical drag: up = increase, down = decrease
+    # 200px of drag covers the full range
+    range_val is widget.max_val - widget.min_val
+    if range_val <= 0:
+        return null
+    delta is (widget.drag_start_y - my) / 200.0
+    new_val is widget.drag_start_val + delta * range_val
+    if new_val < widget.min_val:
+        new_val is widget.min_val
+    if new_val > widget.max_val:
+        new_val is widget.max_val
+    widget.value is new_val
+    if widget.on_change != null:
+        widget.on_change of widget
+
+define _update_scrollbar_drag(widget, mx, my) as:
+    if widget.vertical == 1:
+        ts is widget.thumb_size
+        if ts < 0.05:
+            ts is 0.05
+        thumb_h is floor of (ts * widget.h)
+        if thumb_h < 16:
+            thumb_h is 16
+        track is widget.h - thumb_h
+        if track <= 0:
+            return null
+        frac is (my - _drag_oy - thumb_h / 2) / track
+    else:
+        ts is widget.thumb_size
+        if ts < 0.05:
+            ts is 0.05
+        thumb_w is floor of (ts * widget.w)
+        if thumb_w < 16:
+            thumb_w is 16
+        track is widget.w - thumb_w
+        if track <= 0:
+            return null
+        frac is (mx - _drag_ox - thumb_w / 2) / track
+    if frac < 0:
+        frac is 0
+    if frac > 1:
+        frac is 1
+    widget.value is frac
+    if widget.on_change != null:
+        widget.on_change of widget
+
+# ---- Registration ----
+
+_register_widget of ["slider", {
+    "render": _render_slider,
+    "hit_test": null,
+    "on_mousedown": _mousedown_slider,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["vslider", {
+    "render": _render_vslider,
+    "hit_test": null,
+    "on_mousedown": _mousedown_vslider,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["knob", {
+    "render": _render_knob,
+    "hit_test": null,
+    "on_mousedown": _mousedown_knob,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["scrollbar", {
+    "render": _render_scrollbar,
+    "hit_test": null,
+    "on_mousedown": _mousedown_scrollbar,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]

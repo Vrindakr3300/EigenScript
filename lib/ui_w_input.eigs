@@ -1,0 +1,576 @@
+# UI Widgets — Input: text_input, editable_label, spinbox, combobox
+
+define text_input(id, x, y, w, text, on_change) as:
+    return {
+        "type": "text_input",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": 24,
+        "text": text,
+        "cursor": len of text,
+        "sel_start": -1,
+        "sel_end": -1,
+        "on_change": on_change,
+        "focused": 0,
+        "hover": 0,
+        "visible": 1,
+        "enabled": 1
+    }
+
+define editable_label(id, x, y, text, on_commit) as:
+    return {
+        "type": "editable_label",
+        "id": id,
+        "x": x, "y": y,
+        "w": (text_width of [text, _theme.font_scale]) + 8,
+        "h": _theme.char_h + 4,
+        "text": text,
+        "editing": 0,
+        "cursor": 0,
+        "sel_start": -1,
+        "sel_end": -1,
+        "on_commit": on_commit,
+        "on_dblclick": null,
+        "color": _theme.text_color,
+        "scale": _theme.font_scale,
+        "visible": 1
+    }
+
+define spinbox(id, x, y, w, min_val, max_val, value, step, on_change) as:
+    return {
+        "type": "spinbox",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": 24,
+        "min_val": min_val, "max_val": max_val,
+        "value": value, "step": step,
+        "on_change": on_change,
+        "hover": 0,
+        "hover_btn": 0,
+        "visible": 1,
+        "enabled": 1
+    }
+
+define combobox(id, x, y, w, items, on_change) as:
+    return {
+        "type": "combobox",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": 24,
+        "items": items,
+        "filter_text": "",
+        "filtered": items,
+        "selected": -1,
+        "open": 0,
+        "hover_index": -1,
+        "cursor": 0,
+        "on_change": on_change,
+        "hover": 0,
+        "visible": 1,
+        "enabled": 1
+    }
+
+define _render_text_input(widget, ax, ay) as:
+    if widget.focused == 1:
+        border is _theme.accent
+    else:
+        border is _theme.panel_border
+    _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius_sm, _theme.dropdown_bg, border]
+    # Selection highlight
+    if widget.sel_start != null and widget.sel_start >= 0 and widget.sel_end != null and widget.sel_end >= 0:
+        ss is widget.sel_start
+        se is widget.sel_end
+        if ss > se:
+            tmp is ss
+            ss is se
+            se is tmp
+        sel_x is ax + 6 + ss * _theme.char_w
+        sel_w is (se - ss) * _theme.char_w
+        sbg is _theme.selection_bg
+        gfx_rect of [sel_x, ay + 3, sel_w, widget.h - 6, sbg[0], sbg[1], sbg[2], 100]
+    _draw_text_clipped of [ax + 6, ay + 5, widget.w - 12, widget.text, _theme.text_color, _theme.font_scale]
+    # Blinking cursor
+    if widget.focused == 1 and ((gfx_ticks of null) % 1000) < 530:
+        cursor_x is ax + 6 + widget.cursor * _theme.char_w
+        if cursor_x < ax + widget.w - 4:
+            gfx_line of [cursor_x, ay + 4, cursor_x, ay + widget.h - 4, _theme.accent[0], _theme.accent[1], _theme.accent[2]]
+
+define _render_editable_label(widget, ax, ay) as:
+    if widget.editing == 1:
+        # Editing mode — draw like text_input
+        ew is widget.w
+        if ew < 60:
+            ew is 60
+        _draw_rbox of [ax, ay - 2, ew, widget.h + 4, _theme.radius_sm, _theme.dropdown_bg, _theme.accent]
+        _draw_text_clipped of [ax + 4, ay, ew - 8, widget.text, _theme.text_color, widget.scale]
+        if ((gfx_ticks of null) % 1000) < 530:
+            cursor_x is ax + 4 + widget.cursor * (6 * widget.scale)
+            gfx_line of [cursor_x, ay, cursor_x, ay + widget.h, _theme.accent[0], _theme.accent[1], _theme.accent[2]]
+    else:
+        gfx_text of [ax, ay, widget.text, widget.color[0], widget.color[1], widget.color[2], widget.scale]
+
+define _render_spinbox(widget, ax, ay) as:
+    # Main box
+    _draw_rbox of [ax, ay, widget.w - 40, widget.h, _theme.radius_sm, _theme.dropdown_bg, _theme.panel_border]
+    # Value text
+    val_text is f"{floor of widget.value}"
+    _draw_text_clipped of [ax + 6, ay + 5, widget.w - 52, val_text, _theme.text_color, _theme.font_scale]
+    # Minus button
+    btn_w is 18
+    mbg is _theme.btn_bg
+    if widget.hover_btn == 1:
+        mbg is _theme.btn_hover
+    _draw_rbox of [ax + widget.w - 40, ay, btn_w, widget.h, _theme.radius_sm, mbg, _theme.panel_border]
+    gfx_text of [ax + widget.w - 36, ay + 5, "-", _theme.text_color[0], _theme.text_color[1], _theme.text_color[2], _theme.font_scale]
+    # Plus button
+    pbg is _theme.btn_bg
+    if widget.hover_btn == 2:
+        pbg is _theme.btn_hover
+    _draw_rbox of [ax + widget.w - 20, ay, btn_w, widget.h, _theme.radius_sm, pbg, _theme.panel_border]
+    gfx_text of [ax + widget.w - 15, ay + 5, "+", _theme.text_color[0], _theme.text_color[1], _theme.text_color[2], _theme.font_scale]
+
+define _render_combobox(widget, ax, ay) as:
+    if widget.hover == 1:
+        cbg is _theme.dropdown_hover
+    else:
+        cbg is _theme.dropdown_bg
+    if widget.open == 1:
+        cb_border is _theme.accent
+    else:
+        cb_border is _theme.panel_border
+    _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius_sm, cbg, cb_border]
+    # Display filter text when open, otherwise selected item text
+    if widget.open == 1:
+        disp_text is widget.filter_text
+    elif widget.selected >= 0 and widget.selected < (len of widget.items):
+        disp_text is widget.items[widget.selected]
+    else:
+        disp_text is widget.filter_text
+    _draw_text_clipped of [ax + 6, ay + 5, widget.w - 24, disp_text, _theme.text_color, _theme.font_scale]
+    # Arrow
+    arrow_x is ax + widget.w - 16
+    arrow_y is ay + 8
+    gfx_line of [arrow_x, arrow_y, arrow_x + 4, arrow_y + 6, _theme.dropdown_arrow[0], _theme.dropdown_arrow[1], _theme.dropdown_arrow[2]]
+    gfx_line of [arrow_x + 8, arrow_y, arrow_x + 4, arrow_y + 6, _theme.dropdown_arrow[0], _theme.dropdown_arrow[1], _theme.dropdown_arrow[2]]
+    # Cursor when open
+    if widget.open == 1 and ((gfx_ticks of null) % 1000) < 530:
+        cx_pos is ax + 6 + widget.cursor * _theme.char_w
+        if cx_pos < ax + widget.w - 20:
+            gfx_line of [cx_pos, ay + 4, cx_pos, ay + widget.h - 4, _theme.accent[0], _theme.accent[1], _theme.accent[2]]
+    # Dropdown when open
+    if widget.open == 1:
+        item_h is 24
+        menu_h is (len of widget.filtered) * item_h
+        if menu_h > 200:
+            menu_h is 200
+        if menu_h > 0:
+            gfx_rrect of [ax, ay + widget.h + 2, widget.w, menu_h, _theme.radius_sm, _theme.menu_bg[0], _theme.menu_bg[1], _theme.menu_bg[2]]
+            for i in range of (len of widget.filtered):
+                iy is ay + widget.h + 2 + i * item_h
+                if iy < ay + widget.h + 2 + menu_h:
+                    if i == widget.hover_index:
+                        gfx_rrect of [ax + 2, iy, widget.w - 4, item_h, _theme.radius_sm, _theme.menu_hover[0], _theme.menu_hover[1], _theme.menu_hover[2]]
+                    _draw_text_clipped of [ax + 8, iy + 5, widget.w - 16, widget.filtered[i], _theme.text_color, _theme.font_scale]
+
+define _hit_test_combobox(widget, ax, ay, mx, my) as:
+    total_h is widget.h
+    if widget.open == 1:
+        drop_h is (len of widget.filtered) * 24
+        if drop_h > 200:
+            drop_h is 200
+        total_h is widget.h + drop_h + 2
+    if _point_in_rect of [mx, my, ax, ay, widget.w, total_h]:
+        return widget
+    return null
+
+define _mousemove_spinbox(hit, root, mx, my) as:
+    abs_x is hit._ax
+    rel_x is mx - abs_x
+    if rel_x >= hit.w - 40 and rel_x < hit.w - 20:
+        hit.hover_btn is 1
+    elif rel_x >= hit.w - 20:
+        hit.hover_btn is 2
+    else:
+        hit.hover_btn is 0
+
+define _mousemove_combobox(hit, root, mx, my) as:
+    if hit.open == 1:
+        abs_y is hit._ay
+        rel_y is my - abs_y - hit.h - 2
+        if rel_y >= 0:
+            hit.hover_index is floor of (rel_y / 24)
+        else:
+            hit.hover_index is -1
+
+define _mousedown_text_input(hit, root, mx, my, ev) as:
+    if hit.enabled == 1:
+        _unfocus_all of root
+        hit.focused is 1
+        _focused_input is hit
+
+define _mousedown_editable_label(hit, root, mx, my, ev) as:
+    # Single click does nothing (double-click starts editing)
+    pass is 0
+
+define _mousedown_spinbox(hit, root, mx, my, ev) as:
+    if hit.enabled == 1:
+        abs_x is hit._ax
+        rel_x is mx - abs_x
+        if rel_x >= hit.w - 40 and rel_x < hit.w - 20:
+            # Minus button
+            hit.value is hit.value - hit.step
+            if hit.value < hit.min_val:
+                hit.value is hit.min_val
+            if hit.on_change != null:
+                hit.on_change of hit
+        elif rel_x >= hit.w - 20:
+            # Plus button
+            hit.value is hit.value + hit.step
+            if hit.value > hit.max_val:
+                hit.value is hit.max_val
+            if hit.on_change != null:
+                hit.on_change of hit
+
+define _mousedown_combobox(hit, root, mx, my, ev) as:
+    if hit.enabled == 1:
+        if hit.open == 1:
+            if hit.hover_index >= 0 and hit.hover_index < (len of hit.filtered):
+                hit.filter_text is hit.filtered[hit.hover_index]
+                # Find original index
+                sel_text is hit.filtered[hit.hover_index]
+                for oi in range of (len of hit.items):
+                    if hit.items[oi] == sel_text:
+                        hit.selected is oi
+                hit.open is 0
+                if hit.on_change != null:
+                    hit.on_change of hit
+            else:
+                hit.open is 0
+        else:
+            hit.open is 1
+            hit.filter_text is ""
+            hit.filtered is hit.items
+            hit.hover_index is 0
+            hit.cursor is 0
+
+define _clear_hover_spinbox(widget) as:
+    widget.hover is 0
+    widget.hover_btn is 0
+
+define _clear_hover_combobox(widget) as:
+    widget.hover is 0
+    widget.hover_index is -1
+
+define _handle_text_key(widget, ev) as:
+    k is ev.key
+    shift is 0
+    if ev.shift != null:
+        shift is ev.shift
+    ctrl is 0
+    if ev.ctrl != null:
+        ctrl is ev.ctrl
+    # Ctrl+key shortcuts
+    if ctrl == 1:
+        if k == "a":
+            widget.sel_start is 0
+            widget.sel_end is len of widget.text
+            widget.cursor is len of widget.text
+            return null
+        if k == "c":
+            _clipboard is _get_selected_text of widget
+            return null
+        if k == "x":
+            _clipboard is _get_selected_text of widget
+            if (len of _clipboard) > 0:
+                _delete_selection of widget
+                if widget.on_change != null:
+                    widget.on_change of widget
+            return null
+        if k == "v":
+            if (len of _clipboard) > 0:
+                if widget.sel_start != null and widget.sel_start >= 0 and widget.sel_end != null and widget.sel_end >= 0:
+                    _delete_selection of widget
+                before is substr of [widget.text, 0, widget.cursor]
+                after is substr of [widget.text, widget.cursor, (len of widget.text) - widget.cursor]
+                widget.text is before + _clipboard + after
+                widget.cursor is widget.cursor + (len of _clipboard)
+                if widget.on_change != null:
+                    widget.on_change of widget
+            return null
+    # Shift+arrow extends selection
+    if shift == 1 and (k == "left" or k == "right" or k == "home" or k == "end"):
+        if widget.sel_start == null or widget.sel_start < 0:
+            widget.sel_start is widget.cursor
+            widget.sel_end is widget.cursor
+        if k == "left" and widget.cursor > 0:
+            widget.cursor is widget.cursor - 1
+        elif k == "right" and widget.cursor < (len of widget.text):
+            widget.cursor is widget.cursor + 1
+        elif k == "home":
+            widget.cursor is 0
+        elif k == "end":
+            widget.cursor is len of widget.text
+        widget.sel_end is widget.cursor
+        return null
+    if k == "backspace":
+        if widget.sel_start != null and widget.sel_start >= 0 and widget.sel_end != null and widget.sel_end >= 0:
+            _delete_selection of widget
+            if widget.on_change != null:
+                widget.on_change of widget
+        elif widget.cursor > 0:
+            before is substr of [widget.text, 0, widget.cursor - 1]
+            after is substr of [widget.text, widget.cursor, (len of widget.text) - widget.cursor]
+            widget.text is before + after
+            widget.cursor is widget.cursor - 1
+            if widget.on_change != null:
+                widget.on_change of widget
+    elif k == "delete":
+        if widget.sel_start != null and widget.sel_start >= 0 and widget.sel_end != null and widget.sel_end >= 0:
+            _delete_selection of widget
+            if widget.on_change != null:
+                widget.on_change of widget
+        elif widget.cursor < (len of widget.text):
+            before is substr of [widget.text, 0, widget.cursor]
+            after is substr of [widget.text, widget.cursor + 1, (len of widget.text) - widget.cursor - 1]
+            widget.text is before + after
+            if widget.on_change != null:
+                widget.on_change of widget
+    elif k == "left":
+        _clear_selection of widget
+        if widget.cursor > 0:
+            widget.cursor is widget.cursor - 1
+    elif k == "right":
+        _clear_selection of widget
+        if widget.cursor < (len of widget.text):
+            widget.cursor is widget.cursor + 1
+    elif k == "home":
+        _clear_selection of widget
+        widget.cursor is 0
+    elif k == "end":
+        _clear_selection of widget
+        widget.cursor is len of widget.text
+    elif k == "return":
+        if widget.type == "editable_label":
+            _commit_editing of widget
+        else:
+            _focused_input is null
+            widget.focused is 0
+    elif k == "escape":
+        if widget.type == "editable_label":
+            widget.editing is 0
+            _focused_input is null
+        else:
+            _focused_input is null
+            widget.focused is 0
+    elif k == "space":
+        _insert_char of [widget, " "]
+    elif (len of k) == 1:
+        ch is k
+        if shift == 1:
+            ch is str_upper of k
+            # Shift+number -> symbol
+            if k == "1":
+                ch is "!"
+            elif k == "2":
+                ch is "@"
+            elif k == "3":
+                ch is "#"
+            elif k == "4":
+                ch is "$"
+            elif k == "5":
+                ch is "%"
+            elif k == "6":
+                ch is "^"
+            elif k == "7":
+                ch is "&"
+            elif k == "8":
+                ch is "*"
+            elif k == "9":
+                ch is "("
+            elif k == "0":
+                ch is ")"
+            elif k == "-":
+                ch is "_"
+            elif k == "=":
+                ch is "+"
+            elif k == ";":
+                ch is ":"
+            elif k == "'":
+                ch is "\""
+            elif k == ",":
+                ch is "<"
+            elif k == ".":
+                ch is ">"
+            elif k == "/":
+                ch is "?"
+        _insert_char of [widget, ch]
+
+define _insert_char(widget, ch) as:
+    # Delete selection first if any
+    if widget.sel_start != null and widget.sel_start >= 0 and widget.sel_end != null and widget.sel_end >= 0:
+        _delete_selection of widget
+    before is substr of [widget.text, 0, widget.cursor]
+    after is substr of [widget.text, widget.cursor, (len of widget.text) - widget.cursor]
+    widget.text is before + ch + after
+    widget.cursor is widget.cursor + 1
+    if widget.on_change != null:
+        widget.on_change of widget
+
+define _get_selected_text(widget) as:
+    if widget.sel_start == null or widget.sel_end == null:
+        return ""
+    if widget.sel_start < 0 or widget.sel_end < 0:
+        return ""
+    s is widget.sel_start
+    e is widget.sel_end
+    if s > e:
+        tmp is s
+        s is e
+        e is tmp
+    return substr of [widget.text, s, e - s]
+
+define _delete_selection(widget) as:
+    if widget.sel_start == null or widget.sel_end == null:
+        return null
+    if widget.sel_start < 0 or widget.sel_end < 0:
+        return null
+    s is widget.sel_start
+    e is widget.sel_end
+    if s > e:
+        tmp is s
+        s is e
+        e is tmp
+    before is substr of [widget.text, 0, s]
+    after is substr of [widget.text, e, (len of widget.text) - e]
+    widget.text is before + after
+    widget.cursor is s
+    widget.sel_start is -1
+    widget.sel_end is -1
+
+define _clear_selection(widget) as:
+    if widget.sel_start != null:
+        widget.sel_start is -1
+    if widget.sel_end != null:
+        widget.sel_end is -1
+
+define _start_editing(widget) as:
+    _unfocus_all_editable of _edit_root
+    widget.editing is 1
+    widget.cursor is len of widget.text
+    _focused_input is widget
+
+define _commit_editing(widget) as:
+    widget.editing is 0
+    widget.w is (text_width of [widget.text, widget.scale]) + 8
+    _focused_input is null
+    if widget.on_commit != null:
+        widget.on_commit of widget
+
+define _unfocus_all_editable(widget) as:
+    if widget == null:
+        return null
+    if widget.type == "editable_label" and widget.editing == 1:
+        _commit_editing of widget
+    if _is_container of widget.type:
+        for i in range of (len of widget.children):
+            _unfocus_all_editable of widget.children[i]
+    if widget.type == "tabs":
+        for i in range of (len of widget.tab_panels):
+            if widget.tab_panels[i] != null:
+                _unfocus_all_editable of widget.tab_panels[i]
+    if widget.type == "splitter":
+        if widget.panel_a != null:
+            _unfocus_all_editable of widget.panel_a
+        if widget.panel_b != null:
+            _unfocus_all_editable of widget.panel_b
+
+define _handle_combobox_key(widget, ev) as:
+    k is ev.key
+    if k == "escape":
+        widget.open is 0
+        return null
+    if k == "return":
+        if widget.hover_index >= 0 and widget.hover_index < (len of widget.filtered):
+            widget.filter_text is widget.filtered[widget.hover_index]
+            widget.selected is widget.hover_index
+            widget.open is 0
+            if widget.on_change != null:
+                widget.on_change of widget
+        return null
+    if k == "up":
+        widget.hover_index is widget.hover_index - 1
+        if widget.hover_index < 0:
+            widget.hover_index is 0
+        return null
+    if k == "down":
+        widget.hover_index is widget.hover_index + 1
+        if widget.hover_index >= (len of widget.filtered):
+            widget.hover_index is (len of widget.filtered) - 1
+        return null
+    if k == "backspace":
+        if (len of widget.filter_text) > 0:
+            widget.filter_text is substr of [widget.filter_text, 0, (len of widget.filter_text) - 1]
+            widget.cursor is len of widget.filter_text
+    elif k == "space":
+        widget.filter_text is widget.filter_text + " "
+        widget.cursor is len of widget.filter_text
+    elif (len of k) == 1:
+        shift is 0
+        if ev.shift != null:
+            shift is ev.shift
+        ch is k
+        if shift == 1:
+            ch is str_upper of k
+        widget.filter_text is widget.filter_text + ch
+        widget.cursor is len of widget.filter_text
+    # Re-filter
+    widget.filtered is []
+    for i in range of (len of widget.items):
+        if (len of widget.filter_text) == 0 or (contains of [str_lower of widget.items[i], str_lower of widget.filter_text]) == 1:
+            append of [widget.filtered, widget.items[i]]
+    widget.hover_index is 0
+
+_register_widget of ["text_input", {
+    "render": _render_text_input,
+    "hit_test": null,
+    "on_mousedown": _mousedown_text_input,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["editable_label", {
+    "render": _render_editable_label,
+    "hit_test": null,
+    "on_mousedown": _mousedown_editable_label,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["spinbox", {
+    "render": _render_spinbox,
+    "hit_test": null,
+    "on_mousedown": _mousedown_spinbox,
+    "on_mousemove": _mousemove_spinbox,
+    "clear_hover": _clear_hover_spinbox,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["combobox", {
+    "render": _render_combobox,
+    "hit_test": _hit_test_combobox,
+    "on_mousedown": _mousedown_combobox,
+    "on_mousemove": _mousemove_combobox,
+    "clear_hover": _clear_hover_combobox,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]

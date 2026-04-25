@@ -1,0 +1,243 @@
+# ============================================================
+# UI Widgets — Special: splitter, piano_kb
+# ============================================================
+
+define splitter(id, x, y, w, h, split_pos, on_resize) as:
+    return {
+        "type": "splitter",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "split_pos": split_pos,
+        "on_resize": on_resize,
+        "panel_a": null,
+        "panel_b": null,
+        "dragging": 0,
+        "hover": 0,
+        "visible": 1,
+        "bar_width": 4
+    }
+
+define piano_keyboard(id, x, y, octaves, on_note) as:
+    # 2 octaves = 24 semitones, white keys are wider
+    whites_per_oct is 7
+    key_w is 18
+    key_h is 80
+    black_h is 50
+    total_w is octaves * whites_per_oct * key_w + key_w
+    return {
+        "type": "piano_kb",
+        "id": id,
+        "x": x, "y": y,
+        "w": total_w, "h": key_h,
+        "octaves": octaves,
+        "on_note": on_note,
+        "key_w": key_w,
+        "key_h": key_h,
+        "black_h": black_h,
+        "pressed_note": -1,
+        "hover_note": -1,
+        "base_octave": 4,
+        "visible": 1
+    }
+
+# ---- Piano note helper ----
+
+define _piano_note_at(widget, rel_x, rel_y) as:
+    kw is widget.key_w
+    bh is widget.black_h
+    # Check black keys first (they overlap white keys)
+    if rel_y < bh:
+        for o in range of widget.octaves:
+            ox is o * 7 * kw
+            # Black key positions relative to octave start
+            # C#: after C, D#: after D, F#: after F, G#: after G, A#: after A
+            blacks is [0, 1, 3, 4, 5]
+            notes is [1, 3, 6, 8, 10]
+            for bi in range of 5:
+                bx is ox + blacks[bi] * kw + kw - 5
+                if rel_x >= bx and rel_x < bx + 10:
+                    return o * 12 + notes[bi]
+    # White key
+    white_idx is floor of (rel_x / kw)
+    oct is floor of (white_idx / 7)
+    key_in_oct is white_idx - oct * 7
+    # White key -> semitone: 0,2,4,5,7,9,11
+    white_to_semi is [0, 2, 4, 5, 7, 9, 11]
+    if key_in_oct >= 0 and key_in_oct < 7:
+        return oct * 12 + white_to_semi[key_in_oct]
+    # Final C
+    if oct == widget.octaves:
+        return widget.octaves * 12
+    return -1
+
+# ---- Render functions ----
+
+define _render_splitter(widget, ax, ay) as:
+    sp is floor of widget.split_pos
+    bw is widget.bar_width
+    # Panel A (left)
+    if widget.panel_a != null:
+        gfx_clip of [ax, ay, sp, widget.h]
+        render of [widget.panel_a, ax, ay]
+        gfx_clip of null
+    # Divider bar
+    dbg is _theme.panel_border
+    if widget.hover == 1 or widget.dragging == 1:
+        dbg is _theme.accent
+    gfx_rect of [ax + sp, ay, bw, widget.h, dbg[0], dbg[1], dbg[2]]
+    # Panel B (right)
+    if widget.panel_b != null:
+        gfx_clip of [ax + sp + bw, ay, widget.w - sp - bw, widget.h]
+        render of [widget.panel_b, ax + sp + bw, ay]
+        gfx_clip of null
+
+define _render_piano_kb(widget, ax, ay) as:
+    kw is widget.key_w
+    kh is widget.key_h
+    bh is widget.black_h
+    # White key pattern per octave: C D E F G A B = indices 0,2,4,5,7,9,11
+    # Draw white keys first
+    wx is ax
+    for o in range of widget.octaves:
+        for wk in range of 7:
+            # Map white key index to semitone
+            if wk == 0:
+                note is o * 12
+            elif wk == 1:
+                note is o * 12 + 2
+            elif wk == 2:
+                note is o * 12 + 4
+            elif wk == 3:
+                note is o * 12 + 5
+            elif wk == 4:
+                note is o * 12 + 7
+            elif wk == 5:
+                note is o * 12 + 9
+            else:
+                note is o * 12 + 11
+            if note == widget.pressed_note:
+                gfx_rrect of [wx, ay, kw - 1, kh, 2, 80, 140, 220]
+            elif note == widget.hover_note:
+                gfx_rrect of [wx, ay, kw - 1, kh, 2, 230, 230, 240]
+            else:
+                gfx_rrect of [wx, ay, kw - 1, kh, 2, 240, 240, 245]
+            # Border
+            gfx_line of [wx + kw - 1, ay, wx + kw - 1, ay + kh, 180, 180, 190]
+            wx is wx + kw
+    # Final C
+    note is widget.octaves * 12
+    if note == widget.pressed_note:
+        gfx_rrect of [wx, ay, kw - 1, kh, 2, 80, 140, 220]
+    else:
+        gfx_rrect of [wx, ay, kw - 1, kh, 2, 240, 240, 245]
+    # Black keys on top
+    wx is ax
+    for o in range of widget.octaves:
+        # Black keys at positions: C#(1) D#(3) F#(6) G#(8) A#(10)
+        for wk in range of 7:
+            has_black is 0
+            if wk == 0:
+                has_black is 1
+                bnote is o * 12 + 1
+            elif wk == 1:
+                has_black is 1
+                bnote is o * 12 + 3
+            elif wk == 3:
+                has_black is 1
+                bnote is o * 12 + 6
+            elif wk == 4:
+                has_black is 1
+                bnote is o * 12 + 8
+            elif wk == 5:
+                has_black is 1
+                bnote is o * 12 + 10
+            if has_black == 1:
+                bx is wx + kw - 5
+                if bnote == widget.pressed_note:
+                    gfx_rrect of [bx, ay, 10, bh, 2, 60, 100, 180]
+                elif bnote == widget.hover_note:
+                    gfx_rrect of [bx, ay, 10, bh, 2, 60, 60, 70]
+                else:
+                    gfx_rrect of [bx, ay, 10, bh, 2, 30, 30, 35]
+            wx is wx + kw
+    # Octave labels
+    for o in range of widget.octaves:
+        lx is ax + o * 7 * kw + 2
+        gfx_text of [lx, ay + kh - 12, f"C{widget.base_octave + o}", 140, 140, 160, 1]
+
+# ---- Hit test functions ----
+
+define _hit_test_splitter(widget, ax, ay, mx, my) as:
+    sp is floor of widget.split_pos
+    bw is widget.bar_width
+    # Check divider bar
+    if _point_in_rect of [mx, my, ax + sp, ay, bw, widget.h]:
+        return widget
+    # Check panel A
+    if widget.panel_a != null:
+        hit is _hit_test of [widget.panel_a, ax, ay, mx, my]
+        if hit != null:
+            return hit
+    # Check panel B
+    if widget.panel_b != null:
+        hit is _hit_test of [widget.panel_b, ax + sp + bw, ay, mx, my]
+        if hit != null:
+            return hit
+    return null
+
+# ---- Mousemove functions ----
+
+define _mousemove_piano_kb(hit, root, mx, my) as:
+    abs_x is hit._ax
+    abs_y is hit._ay
+    hit.hover_note is _piano_note_at of [hit, mx - abs_x, my - abs_y]
+
+# ---- Mousedown functions ----
+
+define _mousedown_splitter(hit, root, mx, my, ev) as:
+    hit.dragging is 1
+    _drag_widget is hit
+    _drag_ox is hit._ax
+
+define _mousedown_piano_kb(hit, root, mx, my, ev) as:
+    abs_x is hit._ax
+    abs_y is hit._ay
+    note is _piano_note_at of [hit, mx - abs_x, my - abs_y]
+    if note >= 0:
+        hit.pressed_note is note
+        if hit.on_note != null:
+            hit.on_note of [hit, note, 1]
+
+# ---- Clear hover functions ----
+
+define _clear_hover_splitter(widget) as:
+    widget.hover is 0
+
+define _clear_hover_piano_kb(widget) as:
+    widget.hover_note is -1
+
+# ---- Registration ----
+
+_register_widget of ["splitter", {
+    "render": _render_splitter,
+    "hit_test": _hit_test_splitter,
+    "on_mousedown": _mousedown_splitter,
+    "on_mousemove": null,
+    "clear_hover": _clear_hover_splitter,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]
+
+_register_widget of ["piano_kb", {
+    "render": _render_piano_kb,
+    "hit_test": null,
+    "on_mousedown": _mousedown_piano_kb,
+    "on_mousemove": _mousemove_piano_kb,
+    "clear_hover": _clear_hover_piano_kb,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]

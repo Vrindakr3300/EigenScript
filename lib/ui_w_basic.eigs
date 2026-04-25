@@ -1,0 +1,172 @@
+# ============================================================
+# UI Widgets — Basic: label, separator, section, color_dot, badge, progress_bar
+# ============================================================
+
+define label(id, x, y, text) as:
+    return {
+        "type": "label",
+        "id": id,
+        "x": x, "y": y,
+        "text": text,
+        "color": _theme.text_color,
+        "scale": _theme.font_scale,
+        "visible": 1
+    }
+
+define separator(id, x, y, length, vertical) as:
+    if vertical == 1:
+        sw is 1
+        sh is length
+    else:
+        sw is length
+        sh is 1
+    return {
+        "type": "separator",
+        "id": id,
+        "x": x, "y": y, "w": sw, "h": sh,
+        "color": _theme.panel_border,
+        "visible": 1
+    }
+
+define section(id, x, y, w, text) as:
+    return {
+        "type": "section",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": 20,
+        "text": text,
+        "visible": 1
+    }
+
+define color_dot(id, x, y, size, color) as:
+    return {
+        "type": "color_dot",
+        "id": id,
+        "x": x, "y": y, "w": size, "h": size,
+        "color": color,
+        "visible": 1
+    }
+
+define badge(id, x, y, text, color) as:
+    bw is (text_width of [text, _theme.font_scale]) + 12
+    bh is _theme.font_scale * 7 + 6
+    return {
+        "type": "badge",
+        "id": id,
+        "x": x, "y": y, "w": bw, "h": bh,
+        "text": text,
+        "color": color,
+        "visible": 1
+    }
+
+define progress_bar(id, x, y, w, value) as:
+    return {
+        "type": "progress_bar",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": 12,
+        "value": value,
+        "visible": 1
+    }
+
+# ---- Render functions ----
+
+define _render_label(widget, ax, ay) as:
+    gfx_text of [ax, ay, widget.text, widget.color[0], widget.color[1], widget.color[2], widget.scale]
+
+define _render_separator(widget, ax, ay) as:
+    gfx_rect of [ax, ay, widget.w, widget.h, widget.color[0], widget.color[1], widget.color[2]]
+
+define _render_section(widget, ax, ay) as:
+    # Line — label — line
+    lw is text_width of [widget.text, 1]
+    line_y is ay + 10
+    gfx_line of [ax, line_y, ax + 6, line_y, _theme.panel_border[0], _theme.panel_border[1], _theme.panel_border[2]]
+    gfx_text of [ax + 10, ay + 6, widget.text, _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], 1]
+    gfx_line of [ax + 14 + lw, line_y, ax + widget.w, line_y, _theme.panel_border[0], _theme.panel_border[1], _theme.panel_border[2]]
+
+define _render_color_dot(widget, ax, ay) as:
+    gfx_circle of [ax + floor of (widget.w / 2), ay + floor of (widget.h / 2), floor of (widget.w / 2), widget.color[0], widget.color[1], widget.color[2]]
+
+define _render_badge(widget, ax, ay) as:
+    c is widget.color
+    gfx_rrect of [ax, ay, widget.w, widget.h, floor of (widget.h / 2), c[0], c[1], c[2]]
+    gfx_text of [ax + 6, ay + 3, widget.text, 255, 255, 255, _theme.font_scale]
+
+define _render_progress_bar(widget, ax, ay) as:
+    gfx_rrect of [ax, ay, widget.w, widget.h, 3, _theme.slider_track[0], _theme.slider_track[1], _theme.slider_track[2]]
+    fill_w is floor of (widget.value * widget.w)
+    if fill_w > 0:
+        gfx_rrect of [ax, ay, fill_w, widget.h, 3, _theme.accent[0], _theme.accent[1], _theme.accent[2]]
+
+# ---- Registration ----
+
+_register_widget of ["label", {
+    "render": _render_label,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]
+
+_register_widget of ["separator", {
+    "render": _render_separator,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]
+
+_register_widget of ["section", {
+    "render": _render_section,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]
+
+_register_widget of ["color_dot", {
+    "render": _render_color_dot,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]
+
+_register_widget of ["badge", {
+    "render": _render_badge,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]
+
+_register_widget of ["progress_bar", {
+    "render": _render_progress_bar,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]

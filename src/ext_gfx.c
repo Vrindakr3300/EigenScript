@@ -114,7 +114,11 @@ static int load_sdl2(void) {
     if (!g_sdl_lib) g_sdl_lib = dlopen("libSDL2.so", RTLD_LAZY);
     if (!g_sdl_lib) return 0;
 
-    #define LOAD(name) p_##name = dlsym(g_sdl_lib, #name)
+    int ok = 1;
+    #define LOAD(name) do { \
+        p_##name = dlsym(g_sdl_lib, #name); \
+        if (!p_##name) { fprintf(stderr, "gfx: missing symbol %s\n", #name); ok = 0; } \
+    } while(0)
     LOAD(SDL_Init); LOAD(SDL_Quit); LOAD(SDL_GetError);
     LOAD(SDL_CreateWindow); LOAD(SDL_DestroyWindow); LOAD(SDL_SetWindowTitle);
     LOAD(SDL_CreateRenderer); LOAD(SDL_DestroyRenderer);
@@ -122,11 +126,21 @@ static int load_sdl2(void) {
     LOAD(SDL_RenderClear); LOAD(SDL_RenderFillRect);
     LOAD(SDL_RenderDrawLine); LOAD(SDL_RenderDrawPoint);
     LOAD(SDL_RenderPresent); LOAD(SDL_PollEvent);
-    LOAD(SDL_GetTicks); LOAD(SDL_Delay); LOAD(SDL_RenderSetClipRect);
-    LOAD(SDL_OpenAudioDevice); LOAD(SDL_CloseAudioDevice);
-    LOAD(SDL_QueueAudio); LOAD(SDL_PauseAudioDevice);
-    LOAD(SDL_GetQueuedAudioSize); LOAD(SDL_ClearQueuedAudio);
+    LOAD(SDL_GetTicks); LOAD(SDL_Delay);
     #undef LOAD
+    /* Optional symbols — NULL is fine */
+    p_SDL_RenderSetClipRect = dlsym(g_sdl_lib, "SDL_RenderSetClipRect");
+    p_SDL_OpenAudioDevice = dlsym(g_sdl_lib, "SDL_OpenAudioDevice");
+    p_SDL_CloseAudioDevice = dlsym(g_sdl_lib, "SDL_CloseAudioDevice");
+    p_SDL_QueueAudio = dlsym(g_sdl_lib, "SDL_QueueAudio");
+    p_SDL_PauseAudioDevice = dlsym(g_sdl_lib, "SDL_PauseAudioDevice");
+    p_SDL_GetQueuedAudioSize = dlsym(g_sdl_lib, "SDL_GetQueuedAudioSize");
+    p_SDL_ClearQueuedAudio = dlsym(g_sdl_lib, "SDL_ClearQueuedAudio");
+    if (!ok) {
+        dlclose(g_sdl_lib);
+        g_sdl_lib = NULL;
+        return 0;
+    }
     return 1;
 }
 
@@ -195,6 +209,8 @@ Value* builtin_gfx_open(Value *arg) {
     }
     if (!g_renderer) {
         fprintf(stderr, "gfx_open: SDL_CreateRenderer failed\n");
+        p_SDL_DestroyWindow(g_window);
+        g_window = NULL;
         return make_num(0);
     }
     p_SDL_SetRenderDrawBlendMode(g_renderer, MY_SDL_BLENDMODE_BLEND);
@@ -204,9 +220,14 @@ Value* builtin_gfx_open(Value *arg) {
 /* gfx_close of null */
 Value* builtin_gfx_close(Value *arg) {
     (void)arg;
+    if (g_audio_device) { p_SDL_CloseAudioDevice(g_audio_device); g_audio_device = 0; }
     if (g_renderer) { p_SDL_DestroyRenderer(g_renderer); g_renderer = NULL; }
     if (g_window) { p_SDL_DestroyWindow(g_window); g_window = NULL; }
-    if (g_sdl_lib) p_SDL_Quit();
+    if (g_sdl_lib) {
+        p_SDL_Quit();
+        dlclose(g_sdl_lib);
+        g_sdl_lib = NULL;
+    }
     return make_null();
 }
 
@@ -582,6 +603,10 @@ Value* builtin_gfx_text(Value *arg) {
 /* audio_open of [freq, channels] — open audio device with queue mode */
 Value* builtin_audio_open(Value *arg) {
     if (!g_sdl_lib) { if (!load_sdl2()) return make_num(0); }
+    if (!p_SDL_OpenAudioDevice) {
+        fprintf(stderr, "audio_open: SDL2 audio symbols not available\n");
+        return make_num(0);
+    }
     p_SDL_Init(MY_SDL_INIT_AUDIO);
 
     SDL_AudioSpec want = {0}, have = {0};

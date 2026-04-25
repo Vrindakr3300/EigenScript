@@ -49,10 +49,11 @@ define _draw_text_clipped(x, y, w, text, color, scale) as:
 
 define _draw_focus_ring(x, y, w, h, rad) as:
     c is _theme.focus_ring
-    # Outer ring
-    gfx_rrect of [x - 2, y - 2, w + 4, h + 4, rad + 1, c[0], c[1], c[2]]
-    # Inner cutout — restore bg color to create border effect
-    gfx_rrect of [x, y, w, h, rad, _theme.panel_bg[0], _theme.panel_bg[1], _theme.panel_bg[2]]
+    # Draw four edge rects to form a 2px border without overwriting widget content
+    gfx_rect of [x - 2, y - 2, w + 4, 2, c[0], c[1], c[2]]
+    gfx_rect of [x - 2, y + h, w + 4, 2, c[0], c[1], c[2]]
+    gfx_rect of [x - 2, y, 2, h, c[0], c[1], c[2]]
+    gfx_rect of [x + w, y, 2, h, c[0], c[1], c[2]]
 
 # ---- Disabled overlay ----
 # Semi-transparent overlay to dim disabled widgets

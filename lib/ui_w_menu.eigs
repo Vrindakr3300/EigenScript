@@ -1,0 +1,378 @@
+# ============================================================
+# UI Widgets — Menu: dropdown, menu, radio_group, tabs
+# ============================================================
+
+define dropdown(id, x, y, w, items, selected, on_change) as:
+    return {
+        "type": "dropdown",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": 24,
+        "items": items,
+        "selected": selected,
+        "on_change": on_change,
+        "open": 0,
+        "hover": 0,
+        "hover_index": -1,
+        "visible": 1,
+        "enabled": 1
+    }
+
+define menu(id, items, on_select) as:
+    return {
+        "type": "menu",
+        "id": id,
+        "x": 0, "y": 0, "w": 140, "h": 0,
+        "items": items,
+        "on_select": on_select,
+        "hover_index": -1,
+        "visible": 0
+    }
+
+define radio_group(id, x, y, items, selected, on_change) as:
+    return {
+        "type": "radio_group",
+        "id": id,
+        "x": x, "y": y, "w": 0, "h": 24,
+        "items": items,
+        "selected": selected,
+        "on_change": on_change,
+        "hover_index": -1,
+        "visible": 1,
+        "enabled": 1
+    }
+
+define tabs(id, x, y, w, h, tab_names, on_tab) as:
+    return {
+        "type": "tabs",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "tab_names": tab_names,
+        "active": 0,
+        "on_tab": on_tab,
+        "tab_panels": [],
+        "hover_tab": -1,
+        "visible": 1
+    }
+
+# ---- Render functions ----
+
+define _render_dropdown(widget, ax, ay) as:
+    if widget.hover == 1:
+        dbg is _theme.dropdown_hover
+    else:
+        dbg is _theme.dropdown_bg
+    _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius_sm, dbg, _theme.panel_border]
+    # Current selection text
+    if widget.selected >= 0 and widget.selected < (len of widget.items):
+        sel_text is widget.items[widget.selected]
+    else:
+        sel_text is ""
+    _draw_text_clipped of [ax + 6, ay + 5, widget.w - 24, sel_text, _theme.text_color, _theme.font_scale]
+    # Arrow indicator
+    arrow_x is ax + widget.w - 16
+    arrow_y is ay + 8
+    gfx_line of [arrow_x, arrow_y, arrow_x + 4, arrow_y + 6, _theme.dropdown_arrow[0], _theme.dropdown_arrow[1], _theme.dropdown_arrow[2]]
+    gfx_line of [arrow_x + 8, arrow_y, arrow_x + 4, arrow_y + 6, _theme.dropdown_arrow[0], _theme.dropdown_arrow[1], _theme.dropdown_arrow[2]]
+    # Open menu
+    if widget.open == 1:
+        item_h is 24
+        menu_h is (len of widget.items) * item_h
+        gfx_rrect of [ax, ay + widget.h + 2, widget.w, menu_h, _theme.radius_sm, _theme.menu_bg[0], _theme.menu_bg[1], _theme.menu_bg[2]]
+        for i in range of (len of widget.items):
+            iy is ay + widget.h + 2 + i * item_h
+            if i == widget.hover_index:
+                gfx_rrect of [ax + 2, iy, widget.w - 4, item_h, _theme.radius_sm, _theme.menu_hover[0], _theme.menu_hover[1], _theme.menu_hover[2]]
+            _draw_text_clipped of [ax + 8, iy + 5, widget.w - 16, widget.items[i], _theme.text_color, _theme.font_scale]
+
+define _render_menu(widget, ax, ay) as:
+    if widget.visible == 1:
+        item_h is 24
+        menu_h is (len of widget.items) * item_h
+        # Shadow
+        gfx_rrect of [ax + 2, ay + 2, widget.w, menu_h, _theme.radius_sm, 10, 10, 15, 120]
+        # Background
+        gfx_rrect of [ax, ay, widget.w, menu_h, _theme.radius_sm, _theme.menu_bg[0], _theme.menu_bg[1], _theme.menu_bg[2]]
+        for i in range of (len of widget.items):
+            iy is ay + i * item_h
+            if i == widget.hover_index:
+                gfx_rrect of [ax + 2, iy + 1, widget.w - 4, item_h - 2, _theme.radius_sm, _theme.menu_hover[0], _theme.menu_hover[1], _theme.menu_hover[2]]
+            item is widget.items[i]
+            if item == "-":
+                # Separator
+                gfx_line of [ax + 8, iy + 12, ax + widget.w - 8, iy + 12, _theme.panel_border[0], _theme.panel_border[1], _theme.panel_border[2]]
+            elif (type of item) == "list":
+                # [label, shortcut]
+                _draw_text_clipped of [ax + 10, iy + 5, widget.w - 20, item[0], _theme.text_color, _theme.font_scale]
+                sw is text_width of [item[1], 1]
+                gfx_text of [ax + widget.w - sw - 10, iy + 8, item[1], _theme.text_dim[0], _theme.text_dim[1], _theme.text_dim[2], 1]
+            else:
+                _draw_text_clipped of [ax + 10, iy + 5, widget.w - 20, item, _theme.text_color, _theme.font_scale]
+
+define _render_radio_group(widget, ax, ay) as:
+    rx is ax
+    for i in range of (len of widget.items):
+        rw is (text_width of [widget.items[i], _theme.font_scale]) + 16
+        if i == widget.selected:
+            rbg is _theme.accent
+            rtc is [255, 255, 255]
+        elif i == widget.hover_index:
+            rbg is _theme.btn_hover
+            rtc is _theme.text_color
+        else:
+            rbg is _theme.btn_bg
+            rtc is _theme.text_color
+        # First item gets left radius, last gets right, middle gets none
+        if i == 0:
+            gfx_rrect of [rx, ay, rw, widget.h, _theme.radius_sm, rbg[0], rbg[1], rbg[2]]
+        elif i == (len of widget.items) - 1:
+            gfx_rrect of [rx, ay, rw, widget.h, _theme.radius_sm, rbg[0], rbg[1], rbg[2]]
+        else:
+            gfx_rect of [rx, ay, rw, widget.h, rbg[0], rbg[1], rbg[2]]
+        gfx_text of [rx + 8, ay + 5, widget.items[i], rtc[0], rtc[1], rtc[2], _theme.font_scale]
+        rx is rx + rw
+
+define _render_tabs(widget, ax, ay) as:
+    # Tab bar
+    tab_h is 28
+    gfx_rect of [ax, ay, widget.w, tab_h, _theme.tab_bg[0], _theme.tab_bg[1], _theme.tab_bg[2]]
+    tab_x is ax
+    for i in range of (len of widget.tab_names):
+        tw is (text_width of [widget.tab_names[i], _theme.font_scale]) + 24
+        if i == widget.active:
+            tbg is _theme.tab_active
+            tc is _theme.tab_text_active
+        elif i == widget.hover_tab:
+            tbg is _theme.tab_hover
+            tc is _theme.tab_text
+        else:
+            tbg is _theme.tab_bg
+            tc is _theme.tab_text
+        gfx_rect of [tab_x, ay, tw, tab_h, tbg[0], tbg[1], tbg[2]]
+        gfx_text of [tab_x + 12, ay + 7, widget.tab_names[i], tc[0], tc[1], tc[2], _theme.font_scale]
+        tab_x is tab_x + tw
+    # Active tab panel
+    if widget.active < (len of widget.tab_panels):
+        tp is widget.tab_panels[widget.active]
+        if tp != null:
+            render of [tp, ax, ay + tab_h]
+
+# ---- Hit test functions ----
+
+define _hit_test_dropdown(widget, ax, ay, mx, my) as:
+    total_h is widget.h
+    if widget.open == 1:
+        total_h is widget.h + (len of widget.items) * 24 + 2
+    if _point_in_rect of [mx, my, ax, ay, widget.w, total_h]:
+        return widget
+    return null
+
+define _hit_test_tabs(widget, ax, ay, mx, my) as:
+    tab_h is 28
+    if widget.active < (len of widget.tab_panels):
+        tp is widget.tab_panels[widget.active]
+        if tp != null:
+            hit is _hit_test of [tp, ax, ay + tab_h, mx, my]
+            if hit != null:
+                return hit
+    # Tab bar hit — return the tabs widget itself
+    if _point_in_rect of [mx, my, ax, ay, widget.w, 28]:
+        return widget
+    return null
+
+define _hit_test_menu(widget, ax, ay, mx, my) as:
+    if widget.visible == 1:
+        menu_h is (len of widget.items) * 24
+        if _point_in_rect of [mx, my, ax, ay, widget.w, menu_h]:
+            return widget
+    return null
+
+# ---- Mousemove functions ----
+
+define _mousemove_dropdown(hit, root, mx, my) as:
+    if hit.open == 1:
+        abs_y is hit._ay
+        rel_y is my - abs_y - hit.h
+        if rel_y >= 0:
+            hit.hover_index is floor of (rel_y / 24)
+        else:
+            hit.hover_index is -1
+
+define _mousemove_menu(hit, root, mx, my) as:
+    abs_y is hit._ay
+    hit.hover_index is floor of ((my - abs_y) / 24)
+
+define _mousemove_radio_group(hit, root, mx, my) as:
+    abs_x is hit._ax
+    hit.hover_index is _radio_index_at of [hit, mx - abs_x]
+
+define _mousemove_tabs(hit, root, mx, my) as:
+    abs_x is hit._ax
+    _update_tab_hover of [hit, mx - abs_x]
+
+# ---- Mousedown functions ----
+
+define _mousedown_dropdown(hit, root, mx, my, ev) as:
+    if hit.enabled == 1:
+        if hit.open == 1:
+            # Click on open menu — select item
+            if hit.hover_index >= 0 and hit.hover_index < (len of hit.items):
+                hit.selected is hit.hover_index
+                if hit.on_change != null:
+                    hit.on_change of hit
+            hit.open is 0
+        else:
+            hit.open is 1
+
+define _mousedown_menu(hit, root, mx, my, ev) as:
+    if hit.hover_index >= 0 and hit.hover_index < (len of hit.items):
+        item is hit.items[hit.hover_index]
+        is_sep is 0
+        if (type of item) == "str" and item == "-":
+            is_sep is 1
+        if is_sep == 0:
+            if hit.on_select != null:
+                hit.on_select of [hit, hit.hover_index]
+    hit.visible is 0
+
+define _mousedown_radio_group(hit, root, mx, my, ev) as:
+    if hit.enabled == 1:
+        abs_x is hit._ax
+        idx is _radio_index_at of [hit, mx - abs_x]
+        if idx >= 0 and idx != hit.selected:
+            hit.selected is idx
+            if hit.on_change != null:
+                hit.on_change of hit
+
+define _mousedown_tabs(hit, root, mx, my, ev) as:
+    abs_x is hit._ax
+    idx is _tab_index_at of [hit, mx - abs_x]
+    if idx >= 0:
+        hit.active is idx
+        if hit.on_tab != null:
+            hit.on_tab of hit
+
+# ---- Clear hover functions ----
+
+define _clear_hover_dropdown(widget) as:
+    widget.hover is 0
+    widget.hover_index is -1
+
+define _clear_hover_radio_group(widget) as:
+    widget.hover_index is -1
+
+define _clear_hover_tabs(widget) as:
+    widget.hover_tab is -1
+
+# ---- Helper functions ----
+
+define _update_tab_hover(widget, rel_x) as:
+    tab_x is 0
+    for i in range of (len of widget.tab_names):
+        tw is (text_width of [widget.tab_names[i], _theme.font_scale]) + 24
+        if rel_x >= tab_x and rel_x < tab_x + tw:
+            widget.hover_tab is i
+            return null
+        tab_x is tab_x + tw
+    widget.hover_tab is -1
+
+define _tab_index_at(widget, rel_x) as:
+    tab_x is 0
+    for i in range of (len of widget.tab_names):
+        tw is (text_width of [widget.tab_names[i], _theme.font_scale]) + 24
+        if rel_x >= tab_x and rel_x < tab_x + tw:
+            return i
+        tab_x is tab_x + tw
+    return -1
+
+define _radio_index_at(widget, rel_x) as:
+    rx is 0
+    for i in range of (len of widget.items):
+        rw is (text_width of [widget.items[i], _theme.font_scale]) + 16
+        if rel_x >= rx and rel_x < rx + rw:
+            return i
+        rx is rx + rw
+    return -1
+
+define _close_dropdowns(widget) as:
+    if widget.type == "dropdown":
+        widget.open is 0
+    elif widget.type == "combobox":
+        widget.open is 0
+    elif _is_container of widget.type:
+        for i in range of (len of widget.children):
+            _close_dropdowns of widget.children[i]
+    elif widget.type == "tabs":
+        for i in range of (len of widget.tab_panels):
+            if widget.tab_panels[i] != null:
+                _close_dropdowns of widget.tab_panels[i]
+    elif widget.type == "splitter":
+        if widget.panel_a != null:
+            _close_dropdowns of widget.panel_a
+        if widget.panel_b != null:
+            _close_dropdowns of widget.panel_b
+
+define _close_menus(widget) as:
+    if widget.type == "menu":
+        widget.visible is 0
+    elif _is_container of widget.type:
+        for i in range of (len of widget.children):
+            _close_menus of widget.children[i]
+    elif widget.type == "tabs":
+        for i in range of (len of widget.tab_panels):
+            if widget.tab_panels[i] != null:
+                _close_menus of widget.tab_panels[i]
+    elif widget.type == "splitter":
+        if widget.panel_a != null:
+            _close_menus of widget.panel_a
+        if widget.panel_b != null:
+            _close_menus of widget.panel_b
+
+# ---- Registration ----
+
+_register_widget of ["dropdown", {
+    "render": _render_dropdown,
+    "hit_test": _hit_test_dropdown,
+    "on_mousedown": _mousedown_dropdown,
+    "on_mousemove": _mousemove_dropdown,
+    "clear_hover": _clear_hover_dropdown,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["menu", {
+    "render": _render_menu,
+    "hit_test": _hit_test_menu,
+    "on_mousedown": _mousedown_menu,
+    "on_mousemove": _mousemove_menu,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]
+
+_register_widget of ["radio_group", {
+    "render": _render_radio_group,
+    "hit_test": null,
+    "on_mousedown": _mousedown_radio_group,
+    "on_mousemove": _mousemove_radio_group,
+    "clear_hover": _clear_hover_radio_group,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 1
+}]
+
+_register_widget of ["tabs", {
+    "render": _render_tabs,
+    "hit_test": _hit_test_tabs,
+    "on_mousedown": _mousedown_tabs,
+    "on_mousemove": _mousemove_tabs,
+    "clear_hover": _clear_hover_tabs,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]

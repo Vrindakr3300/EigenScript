@@ -9,8 +9,13 @@
 #
 # Children with flex > 0 share remaining space by weight.
 # Children with flex == 0 (or no flex field) keep their own w/h.
+#
+# _layout caches absolute positions as widget._ax / widget._ay
+# so event dispatch can use them directly instead of tree walks.
 
-define _layout(widget) as:
+define _layout(widget, ox, oy) as:
+    widget._ax is ox + widget.x
+    widget._ay is oy + widget.y
     if widget.type == "hbox":
         _layout_box of [widget, 1]
     elif widget.type == "vbox":
@@ -21,16 +26,17 @@ define _layout(widget) as:
         # Recurse into containers but don't reposition their children
         if _is_container of widget.type:
             for i in range of (len of widget.children):
-                _layout of widget.children[i]
+                _layout of [widget.children[i], widget._ax, widget._ay]
         if widget.type == "tabs":
             for i in range of (len of widget.tab_panels):
                 if widget.tab_panels[i] != null:
-                    _layout of widget.tab_panels[i]
+                    _layout of [widget.tab_panels[i], widget._ax, widget._ay + 28]
         if widget.type == "splitter":
             if widget.panel_a != null:
-                _layout of widget.panel_a
+                _layout of [widget.panel_a, widget._ax, widget._ay]
             if widget.panel_b != null:
-                _layout of widget.panel_b
+                sp is floor of widget.split_pos
+                _layout of [widget.panel_b, widget._ax + sp + widget.bar_width, widget._ay]
 
 define _layout_box(widget, horizontal) as:
     pad is 0
@@ -56,7 +62,7 @@ define _layout_box(widget, horizontal) as:
 
     for i in range of n:
         child is widget.children[i]
-        _layout of child
+        _layout of [child, widget._ax, widget._ay]
         child_flex is 0
         if child.flex != null:
             child_flex is child.flex
@@ -77,7 +83,7 @@ define _layout_box(widget, horizontal) as:
     if flex_space < 0:
         flex_space is 0
 
-    # Second pass: position children
+    # Second pass: position children and update cached absolute positions
     pos is pad
     for i in range of n:
         child is widget.children[i]
@@ -111,6 +117,9 @@ define _layout_box(widget, horizontal) as:
             if child_flex > 0 and flex_total > 0:
                 child.h is floor of (child_flex / flex_total * flex_space)
             pos is pos + child.h + gap
+        # Update cached absolute position after layout repositioned the child
+        child._ax is widget._ax + child.x
+        child._ay is widget._ay + child.y
 
 define _layout_toolbar(widget) as:
     pad is 0
@@ -127,11 +136,14 @@ define _layout_toolbar(widget) as:
     pos is pad
     for i in range of n:
         child is widget.children[i]
-        _layout of child
+        _layout of [child, widget._ax, widget._ay]
         child.x is pos
         # Center vertically in toolbar
         child.y is floor of ((widget.h - child.h) / 2)
         pos is pos + child.w + gap
+        # Update cached absolute position
+        child._ax is widget._ax + child.x
+        child._ay is widget._ay + child.y
 
 define _is_container(t) as:
     if t == "panel" or t == "hbox" or t == "vbox" or t == "scroll_panel" or t == "toolbar":

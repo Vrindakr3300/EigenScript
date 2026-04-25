@@ -1,0 +1,296 @@
+# ============================================================
+# UI Widgets — Containers: panel, hbox, vbox, toolbar, statusbar, scroll_panel
+# ============================================================
+
+define panel(id, x, y, w, h) as:
+    return {
+        "type": "panel",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "bg": _theme.panel_bg,
+        "border": _theme.panel_border,
+        "children": [],
+        "visible": 1
+    }
+
+define hbox(id, x, y, w, h) as:
+    return {
+        "type": "hbox",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "bg": null,
+        "border": null,
+        "children": [],
+        "gap": 0,
+        "padding": 0,
+        "align": "start",
+        "visible": 1
+    }
+
+define vbox(id, x, y, w, h) as:
+    return {
+        "type": "vbox",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "bg": null,
+        "border": null,
+        "children": [],
+        "gap": 0,
+        "padding": 0,
+        "align": "start",
+        "visible": 1
+    }
+
+define toolbar(id, x, y, w) as:
+    return {
+        "type": "toolbar",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": 40,
+        "bg": _theme.tab_bg,
+        "children": [],
+        "gap": 4,
+        "padding": 8,
+        "visible": 1
+    }
+
+define statusbar(id, x, y, w) as:
+    return {
+        "type": "statusbar",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": 24,
+        "bg": _theme.tab_bg,
+        "sections": [],
+        "visible": 1
+    }
+
+define scroll_panel(id, x, y, w, h) as:
+    return {
+        "type": "scroll_panel",
+        "id": id,
+        "x": x, "y": y, "w": w, "h": h,
+        "bg": _theme.panel_bg,
+        "border": _theme.panel_border,
+        "children": [],
+        "scroll_x": 0,
+        "scroll_y": 0,
+        "content_w": 0,
+        "content_h": 0,
+        "visible": 1
+    }
+
+# ---- Render functions ----
+
+define _render_panel(widget, ax, ay) as:
+    _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius, widget.bg, widget.border]
+    for i in range of (len of widget.children):
+        render of [widget.children[i], ax, ay]
+
+define _render_hbox(widget, ax, ay) as:
+    if widget.bg != null:
+        _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius, widget.bg, widget.border]
+    for i in range of (len of widget.children):
+        render of [widget.children[i], ax, ay]
+
+define _render_vbox(widget, ax, ay) as:
+    if widget.bg != null:
+        _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius, widget.bg, widget.border]
+    for i in range of (len of widget.children):
+        render of [widget.children[i], ax, ay]
+
+define _render_toolbar(widget, ax, ay) as:
+    if widget.bg != null:
+        gfx_rect of [ax, ay, widget.w, widget.h, widget.bg[0], widget.bg[1], widget.bg[2]]
+    for i in range of (len of widget.children):
+        render of [widget.children[i], ax, ay]
+
+define _render_statusbar(widget, ax, ay) as:
+    if widget.bg != null:
+        gfx_rect of [ax, ay, widget.w, widget.h, widget.bg[0], widget.bg[1], widget.bg[2]]
+    # Render sections left-to-right
+    sx is ax
+    total_flex is 0
+    fixed_w is 0
+    for i in range of (len of widget.sections):
+        sec is widget.sections[i]
+        sf is 0
+        if sec.flex != null:
+            sf is sec.flex
+        if sf > 0:
+            total_flex is total_flex + sf
+        else:
+            fixed_w is fixed_w + sec.width
+    flex_avail is widget.w - fixed_w
+    for i in range of (len of widget.sections):
+        sec is widget.sections[i]
+        sf is 0
+        if sec.flex != null:
+            sf is sec.flex
+        if sf > 0 and total_flex > 0:
+            sw is floor of (sf / total_flex * flex_avail)
+        else:
+            sw is sec.width
+        # Separator between sections
+        if i > 0:
+            gfx_line of [sx, ay + 4, sx, ay + widget.h - 4, _theme.panel_border[0], _theme.panel_border[1], _theme.panel_border[2]]
+        _draw_text_clipped of [sx + 6, ay + 5, sw - 12, sec.text, _theme.text_dim, _theme.font_scale]
+        sx is sx + sw
+
+define _render_scroll_panel(widget, ax, ay) as:
+    _draw_rbox of [ax, ay, widget.w, widget.h, _theme.radius, widget.bg, widget.border]
+    gfx_clip of [ax + 1, ay + 1, widget.w - 2, widget.h - 2]
+    for i in range of (len of widget.children):
+        render of [widget.children[i], ax - widget.scroll_x, ay - widget.scroll_y]
+    gfx_clip of null
+    # Vertical scrollbar
+    if widget.content_h > widget.h:
+        sb_h is floor of (widget.h * widget.h / widget.content_h)
+        if sb_h < 20:
+            sb_h is 20
+        sb_y is ay + floor of (widget.scroll_y * (widget.h - sb_h) / (widget.content_h - widget.h))
+        gfx_rrect of [ax + widget.w - 6, sb_y, 4, sb_h, 2, 80, 80, 100]
+    # Horizontal scrollbar
+    if widget.content_w > widget.w:
+        sb_w is floor of (widget.w * widget.w / widget.content_w)
+        if sb_w < 20:
+            sb_w is 20
+        sb_x is ax + floor of (widget.scroll_x * (widget.w - sb_w) / (widget.content_w - widget.w))
+        gfx_rrect of [sb_x, ay + widget.h - 6, sb_w, 4, 2, 80, 80, 100]
+
+# ---- Hit test functions ----
+
+define _hit_test_container(widget, ax, ay, mx, my) as:
+    # Test children in reverse order (topmost first)
+    i is (len of widget.children) - 1
+    loop while i >= 0:
+        hit is _hit_test of [widget.children[i], ax, ay, mx, my]
+        if hit != null:
+            return hit
+        i is i - 1
+    return null
+
+define _hit_test_scroll_panel(widget, ax, ay, mx, my) as:
+    if _point_in_rect of [mx, my, ax, ay, widget.w, widget.h]:
+        # Check if clicking on vertical scrollbar area (right 8px)
+        if widget.content_h > widget.h and mx >= ax + widget.w - 8:
+            return widget
+        # Check children with scroll offset
+        i is (len of widget.children) - 1
+        loop while i >= 0:
+            hit is _hit_test of [widget.children[i], ax - widget.scroll_x, ay - widget.scroll_y, mx, my]
+            if hit != null:
+                return hit
+            i is i - 1
+        return widget
+    return null
+
+# ---- Mousedown functions ----
+
+define _mousedown_scroll_panel(hit, root, mx, my, ev) as:
+    # Scrollbar click — jump to position
+    if hit.content_h > hit.h:
+        abs_y is hit._ay
+        abs_x is hit._ax
+        if mx >= abs_x + hit.w - 8:
+            frac is (my - abs_y) / hit.h
+            hit.scroll_y is floor of (frac * (hit.content_h - hit.h))
+            if hit.scroll_y < 0:
+                hit.scroll_y is 0
+            max_sy is hit.content_h - hit.h
+            if hit.scroll_y > max_sy:
+                hit.scroll_y is max_sy
+
+# ---- Scroll functions ----
+
+define _scroll_scroll_panel(widget, dx, dy) as:
+    # Vertical scroll
+    widget.scroll_y is widget.scroll_y + dy
+    if widget.scroll_y < 0:
+        widget.scroll_y is 0
+    max_sy is widget.content_h - widget.h
+    if max_sy < 0:
+        max_sy is 0
+    if widget.scroll_y > max_sy:
+        widget.scroll_y is max_sy
+    # Horizontal scroll
+    widget.scroll_x is widget.scroll_x + dx
+    if widget.scroll_x < 0:
+        widget.scroll_x is 0
+    max_sx is widget.content_w - widget.w
+    if max_sx < 0:
+        max_sx is 0
+    if widget.scroll_x > max_sx:
+        widget.scroll_x is max_sx
+
+# ---- Registration ----
+
+_register_widget of ["panel", {
+    "render": _render_panel,
+    "hit_test": _hit_test_container,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 1,
+    "focusable": 0
+}]
+
+_register_widget of ["hbox", {
+    "render": _render_hbox,
+    "hit_test": _hit_test_container,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 1,
+    "focusable": 0
+}]
+
+_register_widget of ["vbox", {
+    "render": _render_vbox,
+    "hit_test": _hit_test_container,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 1,
+    "focusable": 0
+}]
+
+_register_widget of ["toolbar", {
+    "render": _render_toolbar,
+    "hit_test": _hit_test_container,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 1,
+    "focusable": 0
+}]
+
+_register_widget of ["statusbar", {
+    "render": _render_statusbar,
+    "hit_test": null,
+    "on_mousedown": null,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": null,
+    "container": 0,
+    "focusable": 0
+}]
+
+_register_widget of ["scroll_panel", {
+    "render": _render_scroll_panel,
+    "hit_test": _hit_test_scroll_panel,
+    "on_mousedown": _mousedown_scroll_panel,
+    "on_mousemove": null,
+    "clear_hover": null,
+    "clear_pressed": null,
+    "scroll": _scroll_scroll_panel,
+    "container": 1,
+    "focusable": 0
+}]
