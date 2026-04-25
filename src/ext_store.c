@@ -579,6 +579,18 @@ static Value* builtin_store_put(Value *arg) {
         Value *nv = dict_get(col_info, "next_id");
         root_page = (uint32_t)(rv ? rv->data.num : 0);
         next_id = (int)(nv ? nv->data.num : 1);
+
+        /* Validate root_page: must be > 0 (page 0 is catalog) and within file */
+        if (root_page == 0 || root_page >= store->page_count) {
+            /* Invalid root — allocate fresh records page and repair catalog */
+            root_page = store_alloc_page(store);
+            Page rp;
+            memset(&rp, 0, sizeof(Page));
+            rp.type = PAGE_RECORDS;
+            store_write_page(store, root_page, &rp);
+            dict_set(col_info, "root", make_num(root_page));
+            store->dirty = 1;
+        }
     }
 
     /* Determine key */
@@ -615,9 +627,12 @@ static Value* builtin_store_put(Value *arg) {
         return make_null();
     }
 
-    /* Find last page in chain with space */
+    /* Find last page in chain with space.
+     * Track last_good_pg — the last page we successfully read as PAGE_RECORDS.
+     * Only link new pages from a known-good page. */
     uint32_t pg = root_page;
-    uint32_t prev_pg = 0;
+    uint32_t last_good_pg = 0;
+    int have_good_page = 0;
     Page page;
 
     for (int hops = 0; hops < STORE_MAX_PAGE_HOPS; hops++) {
@@ -627,10 +642,11 @@ static Value* builtin_store_put(Value *arg) {
         if (used < 0) {
             /* Corrupt page — skip to next or allocate new */
             if (page.next_page == 0 || page.next_page >= store->page_count) break;
-            prev_pg = pg;
             pg = page.next_page;
             continue;
         }
+        last_good_pg = pg;
+        have_good_page = 1;
         if ((size_t)(used + record_size) <= STORE_PAGE_DATA_SIZE) {
             /* Fits in this page */
             int off = used;
@@ -653,14 +669,22 @@ static Value* builtin_store_put(Value *arg) {
             return make_str(key_buf);
         }
         if (page.next_page == 0 || page.next_page >= store->page_count) break;
-        prev_pg = pg;
         pg = page.next_page;
     }
 
-    /* Need new page */
+    /* Need new page — link from last known-good page only */
     uint32_t new_pg = store_alloc_page(store);
-    page.next_page = new_pg;
-    store_write_page(store, pg, &page);
+    if (have_good_page) {
+        /* Re-read the last good page to link it */
+        if (store_read_page(store, last_good_pg, &page) == 0 && page.type == PAGE_RECORDS) {
+            page.next_page = new_pg;
+            store_write_page(store, last_good_pg, &page);
+        }
+    } else {
+        /* No valid page in chain — update catalog root to the new page */
+        dict_set(col_info, "root", make_num(new_pg));
+        store->dirty = 1;
+    }
 
     Page new_page;
     memset(&new_page, 0, sizeof(Page));
@@ -681,7 +705,6 @@ static Value* builtin_store_put(Value *arg) {
     memcpy(new_page.data + off, json, json_len);
     store_write_page(store, new_pg, &new_page);
 
-    (void)prev_pg;
     free(json);
     store->dirty = 1;
     store_flush_catalog(store);
