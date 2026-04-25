@@ -4,6 +4,33 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+## [0.9.3.2] — 2026-04-25
+
+### Security
+- **Lexer indent_stack overflow**: bounds-check indent depth (max 64 levels)
+  before pushing to stack-allocated array.
+- **Parser list/dict literal overflow**: bounds-check element count (max 1024)
+  before writing to heap-allocated array.
+- **`read_file_util` ftell guard**: reject negative ftell return before
+  allocating and reading — prevents heap overflow on unseekable files.
+- **`compute_entropy` depth guard**: cap recursion at 64 levels to prevent
+  stack overflow on deeply nested list/dict values.
+- **`value_to_string` depth guard**: same cap, returns `[...]` at depth 64.
+- **CORS header injection**: strip `\r` and `\n` from CORS origin to prevent
+  HTTP response header injection.
+- **Static file TOCTOU**: serve the realpath-resolved canonical path instead
+  of the original request path, closing the symlink-swap window.
+- **HTTP route handler leak**: free TokenList after each request to prevent
+  per-request memory leak under sustained traffic.
+- **Model JSON array overread**: check for `]` before each element read in
+  `json_parse_1d_array` to avoid reading past short arrays.
+- **`save_model_weights` loop bounds**: use `size_t` for `vs * dm` loop bounds
+  to prevent int overflow.
+
+### Hardening
+- **`env_set_local`**: emit diagnostic when scope exceeds MAX_VARS (512)
+  instead of silently dropping bindings.
+
 ## [0.9.3.1] — 2026-04-24
 
 ### Security

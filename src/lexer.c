@@ -97,9 +97,14 @@ TokenList tokenize(const char *source) {
             if (*p == '\0') break;
 
             if (spaces > indent_stack[indent_top]) {
-                indent_top++;
-                indent_stack[indent_top] = spaces;
-                tok_add(&tl, TOK_INDENT, 0, NULL, line, col);
+                if (indent_top >= MAX_INDENT - 1) {
+                    fprintf(stderr, "Syntax error line %d: indent too deep (max %d levels)\n", line, MAX_INDENT);
+                    g_parse_errors++;
+                } else {
+                    indent_top++;
+                    indent_stack[indent_top] = spaces;
+                    tok_add(&tl, TOK_INDENT, 0, NULL, line, col);
+                }
             } else {
                 while (indent_top > 0 && spaces < indent_stack[indent_top]) {
                     indent_top--;

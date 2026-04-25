@@ -1,0 +1,6 @@
+x is [0]
+for i in range of 200:
+    x is [x]
+s is str of x
+assert of [s != null, "str of deep nest works"]
+print of "PASS: deep nesting no crash"

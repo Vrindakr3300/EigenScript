@@ -71,6 +71,7 @@ static int json_parse_1d_array(const char **p, float *out, int len) {
     (*p)++;
     for (int i = 0; i < len; i++) {
         json_skip_ws(p);
+        if (**p == ']') break;
         out[i] = (float)json_parse_number(p);
         json_skip_ws(p);
         if (**p == ',') (*p)++;
@@ -351,13 +352,13 @@ int save_model_weights(const char *path, TransformerModel *model) {
     int df = model->config.d_ff;
     int nl = model->config.n_layers;
 
-    for (int i = 0; i < vs * dm; i++) {
+    for (size_t i = 0; i < (size_t)vs * (size_t)dm; i++) {
         if (isnan(model->token_embeddings[i]) || isinf(model->token_embeddings[i])) {
             fprintf(stderr, "[save-guard] NaN/Inf detected in weights - REFUSING to save corrupted model\n");
             return -1;
         }
     }
-    for (int i = 0; i < dm * vs; i++) {
+    for (size_t i = 0; i < (size_t)dm * (size_t)vs; i++) {
         if (isnan(model->output_proj[i]) || isinf(model->output_proj[i])) {
             fprintf(stderr, "[save-guard] NaN/Inf detected in output_proj - REFUSING to save corrupted model\n");
             return -1;

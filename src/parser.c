@@ -413,6 +413,11 @@ static ASTNode* parse_primary(Parser *p) {
         while (p_cur(p)->type == TOK_COMMA) {
             p_advance(p);
             if (p_cur(p)->type == TOK_RBRACKET) break;
+            if (count >= MAX_LIST) {
+                fprintf(stderr, "Parse error line %d: list literal exceeds %d elements\n", p_cur(p)->line, MAX_LIST);
+                g_parse_errors++;
+                break;
+            }
             elems[count++] = parse_expression(p);
         }
         p_expect(p, TOK_RBRACKET);
@@ -447,6 +452,11 @@ static ASTNode* parse_primary(Parser *p) {
             while (p_cur(p)->type == TOK_COMMA) {
                 p_advance(p);
                 if (p_cur(p)->type == TOK_RBRACE) break;
+                if (count >= MAX_LIST) {
+                    fprintf(stderr, "Parse error line %d: dict literal exceeds %d entries\n", p_cur(p)->line, MAX_LIST);
+                    g_parse_errors++;
+                    break;
+                }
                 keys[count] = parse_expression(p);
                 p_expect(p, TOK_COLON);
                 vals[count] = parse_expression(p);

@@ -529,12 +529,16 @@ static void handle_request(int fd) {
         size_t root_len = strlen(real_root);
         int confined = strncmp(real_file, real_root, root_len) == 0
                        && (real_file[root_len] == '/' || real_file[root_len] == '\0');
+        /* Copy resolved path before freeing — serve the canonical path
+         * to close the TOCTOU window between check and open. */
+        char resolved_path[4096];
+        snprintf(resolved_path, sizeof(resolved_path), "%s", real_file);
         free(real_file); free(real_root);
         if (!confined) {
             send_response(fd, 403, "Forbidden", "text/plain", "Forbidden", 9);
             goto done;
         }
-        send_file(fd, filepath);
+        send_file(fd, resolved_path);
         goto done;
     }}
 
@@ -562,9 +566,11 @@ static void handle_request(int fd) {
                         send_response(fd, 401, "Unauthorized", "application/json",
                                       auth_str, strlen(auth_str));
                         free(auth_str);
+                        free_tokenlist(&auth_tl);
                         goto done;
                     }
                     free(auth_str);
+                    free_tokenlist(&auth_tl);
                 }
                 TokenList tl = tokenize(r->payload);
                 ASTNode *ast = parse(&tl);
@@ -578,6 +584,7 @@ static void handle_request(int fd) {
                     ct = "text/plain";
                 send_response(fd, 200, "OK", ct, result_str, strlen(result_str));
                 free(result_str);
+                free_tokenlist(&tl);
             } else {
                 const char *ct = "application/json";
                 if (r->payload[0] != '{' && r->payload[0] != '[')
@@ -688,8 +695,18 @@ static Value* builtin_http_cors(Value *arg) {
     }
     if (arg->type != VAL_STR) return make_null();
     free(g_server.cors_origin);
-    g_server.cors_origin = xstrdup(arg->data.str);
-    return make_str(arg->data.str);
+    /* Strip CR/LF to prevent header injection */
+    const char *raw = arg->data.str;
+    size_t len = strlen(raw);
+    char *clean = xmalloc(len + 1);
+    size_t j = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (raw[i] != '\r' && raw[i] != '\n')
+            clean[j++] = raw[i];
+    }
+    clean[j] = '\0';
+    g_server.cors_origin = clean;
+    return make_str(clean);
 }
 
 void register_http_builtins(Env *env) {

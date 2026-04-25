@@ -16,8 +16,8 @@ extern __thread int g_try_depth;
 
 
 
-static double compute_entropy(Value *v) {
-    if (!v) return 0.0;
+static double compute_entropy_impl(Value *v, int depth) {
+    if (!v || depth > 64) return 0.0;
     switch (v->type) {
         case VAL_NULL: return 0.0;
         case VAL_NUM: {
@@ -49,7 +49,7 @@ static double compute_entropy(Value *v) {
             if (v->data.list.count == 0) return 0.0;
             double sum = 0.0;
             for (int i = 0; i < v->data.list.count; i++) {
-                sum += compute_entropy(v->data.list.items[i]);
+                sum += compute_entropy_impl(v->data.list.items[i], depth + 1);
             }
             return sum / v->data.list.count + log2(v->data.list.count + 1);
         }
@@ -57,7 +57,7 @@ static double compute_entropy(Value *v) {
             if (v->data.dict.count == 0) return 0.0;
             double sum = 0.0;
             for (int i = 0; i < v->data.dict.count; i++) {
-                sum += compute_entropy(v->data.dict.vals[i]);
+                sum += compute_entropy_impl(v->data.dict.vals[i], depth + 1);
             }
             return sum / v->data.dict.count + log2(v->data.dict.count + 1);
         }
@@ -66,6 +66,10 @@ static double compute_entropy(Value *v) {
         case VAL_JSON_RAW: return 0.0;
     }
     return 0.0;
+}
+
+static double compute_entropy(Value *v) {
+    return compute_entropy_impl(v, 0);
 }
 
 static void update_observer(Value *v) {

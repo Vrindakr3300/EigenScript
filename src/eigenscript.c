@@ -353,8 +353,11 @@ int is_truthy(Value *v) {
     return 0;
 }
 
+static __thread int g_vts_depth = 0;
+
 char* value_to_string(Value *v) {
     if (!v) return xstrdup("null");
+    if (g_vts_depth > 64) return xstrdup("[...]");
     char buf[256];
     switch (v->type) {
         case VAL_NULL: return xstrdup("null");
@@ -371,6 +374,7 @@ char* value_to_string(Value *v) {
             strbuf out;
             strbuf_init(&out);
             strbuf_append_char(&out, '[');
+            g_vts_depth++;
             for (int i = 0; i < v->data.list.count; i++) {
                 if (i > 0) strbuf_append_n(&out, ", ", 2);
                 char *s = value_to_string(v->data.list.items[i]);
@@ -380,6 +384,7 @@ char* value_to_string(Value *v) {
                     strbuf_append(&out, s);
                 free(s);
             }
+            g_vts_depth--;
             strbuf_append_char(&out, ']');
             return strbuf_finish(&out);
         }
@@ -388,6 +393,7 @@ char* value_to_string(Value *v) {
             strbuf out;
             strbuf_init(&out);
             strbuf_append_char(&out, '{');
+            g_vts_depth++;
             for (int i = 0; i < v->data.dict.count; i++) {
                 if (i > 0) strbuf_append_n(&out, ", ", 2);
                 eigs_json_escape_string(&out, v->data.dict.keys[i]);
@@ -399,6 +405,7 @@ char* value_to_string(Value *v) {
                     strbuf_append(&out, vs);
                 free(vs);
             }
+            g_vts_depth--;
             strbuf_append_char(&out, '}');
             return strbuf_finish(&out);
         }
@@ -456,6 +463,8 @@ void env_set_local(Env *env, const char *name, Value *val) {
         env->values[env->count] = val;
         val_incref(val);
         env->count++;
+    } else {
+        fprintf(stderr, "Error: too many variables in scope (max %d)\n", MAX_VARS);
     }
 }
 
