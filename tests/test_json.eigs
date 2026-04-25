@@ -13,8 +13,7 @@ print of json_encode of decoded
 
 print of "--- JS4: Object decode ---"
 obj is json_decode of "{\"name\":\"eigen\"}"
-print of obj[0]
-print of obj[1]
+print of obj.name
 
 print of ""
 print of "=== JSON COMPLETE ==="

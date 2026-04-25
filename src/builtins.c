@@ -571,6 +571,28 @@ static void eigs_json_encode_value(Value *v, strbuf *out) {
             strbuf_append_char(out, ']');
             break;
         }
+        case VAL_DICT: {
+            strbuf_append_char(out, '{');
+            for (int i = 0; i < v->data.dict.count; i++) {
+                if (i > 0) strbuf_append_char(out, ',');
+                strbuf_append_char(out, '"');
+                for (const char *c = v->data.dict.keys[i]; *c; c++) {
+                    switch (*c) {
+                        case '"': strbuf_append_n(out, "\\\"", 2); break;
+                        case '\\': strbuf_append_n(out, "\\\\", 2); break;
+                        case '\n': strbuf_append_n(out, "\\n", 2); break;
+                        case '\r': strbuf_append_n(out, "\\r", 2); break;
+                        case '\t': strbuf_append_n(out, "\\t", 2); break;
+                        default: strbuf_append_char(out, *c); break;
+                    }
+                }
+                strbuf_append_char(out, '"');
+                strbuf_append_char(out, ':');
+                eigs_json_encode_value(v->data.dict.vals[i], out);
+            }
+            strbuf_append_char(out, '}');
+            break;
+        }
         default:
             strbuf_append(out, "null");
             break;
@@ -608,6 +630,26 @@ static Value* eigs_json_parse_string(const char *s, int *pos) {
                 case 'r': strbuf_append_char(&buf, '\r'); break;
                 case 't': strbuf_append_char(&buf, '\t'); break;
                 case '/': strbuf_append_char(&buf, '/'); break;
+                case 'u': {
+                    char hex[5] = {0};
+                    for (int hi = 0; hi < 4; hi++) {
+                        (*pos)++;
+                        if (!s[*pos]) break;
+                        hex[hi] = s[*pos];
+                    }
+                    unsigned int cp = (unsigned int)strtoul(hex, NULL, 16);
+                    if (cp < 0x80) {
+                        strbuf_append_char(&buf, (char)cp);
+                    } else if (cp < 0x800) {
+                        strbuf_append_char(&buf, (char)(0xC0 | (cp >> 6)));
+                        strbuf_append_char(&buf, (char)(0x80 | (cp & 0x3F)));
+                    } else {
+                        strbuf_append_char(&buf, (char)(0xE0 | (cp >> 12)));
+                        strbuf_append_char(&buf, (char)(0x80 | ((cp >> 6) & 0x3F)));
+                        strbuf_append_char(&buf, (char)(0x80 | (cp & 0x3F)));
+                    }
+                    break;
+                }
                 default: strbuf_append_char(&buf, s[*pos]); break;
             }
         } else {
@@ -651,9 +693,9 @@ static Value* eigs_json_parse_array(const char *s, int *pos) {
 
 static Value* eigs_json_parse_object(const char *s, int *pos) {
     (*pos)++;
-    Value *list = make_list(8);
+    Value *dict = make_dict(8);
     eigs_json_skip_ws(s, pos);
-    if (s[*pos] == '}') { (*pos)++; return list; }
+    if (s[*pos] == '}') { (*pos)++; return dict; }
     while (s[*pos]) {
         eigs_json_skip_ws(s, pos);
         Value *key = eigs_json_parse_string(s, pos);
@@ -662,14 +704,13 @@ static Value* eigs_json_parse_object(const char *s, int *pos) {
         if (s[*pos] == ':') (*pos)++;
         eigs_json_skip_ws(s, pos);
         Value *val = eigs_json_parse_value(s, pos);
-        list_append(list, key);
-        list_append(list, val ? val : make_null());
+        dict_set(dict, key->data.str, val ? val : make_null());
         eigs_json_skip_ws(s, pos);
         if (s[*pos] == ',') { (*pos)++; continue; }
         if (s[*pos] == '}') { (*pos)++; break; }
         break;
     }
-    return list;
+    return dict;
 }
 
 Value* eigs_json_parse_value(const char *s, int *pos) {
@@ -815,14 +856,23 @@ Value* builtin_split(Value *arg) {
             delim = arg->data.list.items[1]->data.str;
     }
     Value *list = make_list(0);
-    char *copy = xstrdup(str);
-    char *saveptr;
-    char *token = strtok_r(copy, delim, &saveptr);
-    while (token) {
-        list_append(list, make_str(token));
-        token = strtok_r(NULL, delim, &saveptr);
+    size_t dlen = strlen(delim);
+    if (dlen == 0) {
+        list_append(list, make_str(str));
+        return list;
     }
-    free(copy);
+    const char *p = str;
+    const char *found;
+    while ((found = strstr(p, delim)) != NULL) {
+        size_t seg_len = (size_t)(found - p);
+        char *seg = xmalloc(seg_len + 1);
+        memcpy(seg, p, seg_len);
+        seg[seg_len] = '\0';
+        list_append(list, make_str(seg));
+        free(seg);
+        p = found + dlen;
+    }
+    list_append(list, make_str(p));
     return list;
 }
 
@@ -1628,9 +1678,11 @@ Value* builtin_json_path(Value *arg) {
     char *segment = strtok_r(path_copy, ".", &saveptr);
 
     while (segment && current) {
-        if (current->type == VAL_LIST) {
-            /* Could be an object (key-value pairs) or array */
-            /* Try numeric index first */
+        if (current->type == VAL_DICT) {
+            current = dict_get(current, segment);
+            if (!current) return make_str("");
+        } else if (current->type == VAL_LIST) {
+            /* Array — try numeric index */
             char *endp;
             long idx = strtol(segment, &endp, 10);
             if (*endp == '\0') {

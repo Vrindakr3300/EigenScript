@@ -1,0 +1,33 @@
+# JSON round-trip tests
+
+# json_encode handles dicts
+d is {"name": "Alice", "age": 30}
+encoded is json_encode of d
+assert of [contains of [encoded, "\"name\""], "json_encode must include dict keys"]
+assert of [contains of [encoded, "\"Alice\""], "json_encode must include dict string values"]
+assert of [contains of [encoded, "30"], "json_encode must include dict num values"]
+
+# json_decode returns dict for objects
+decoded is json_decode of "{\"x\": 42, \"y\": \"hello\"}"
+assert of [type of decoded == "dict", "json_decode object must return dict"]
+assert of [decoded.x == 42, "dict field access after decode"]
+assert of [decoded.y == "hello", "dict string field after decode"]
+
+# Round-trip: encode then decode
+original is {"a": 1, "b": "test", "c": [1, 2, 3]}
+rt is json_decode of json_encode of original
+assert of [rt.a == 1, "round-trip num"]
+assert of [rt.b == "test", "round-trip string"]
+assert of [len of rt.c == 3, "round-trip list length"]
+
+# Unicode escape
+u is json_decode of "{\"msg\": \"a \\u0026 b\"}"
+assert of [u.msg == "a & b", "unicode escape u0026 must become ampersand"]
+
+# Nested dict encode
+nested is {"outer": {"inner": 99}}
+ne is json_encode of nested
+assert of [contains of [ne, "\"inner\""], "nested dict encode"]
+assert of [contains of [ne, "99"], "nested dict value encode"]
+
+print of "json roundtrip: all passed"

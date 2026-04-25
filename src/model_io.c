@@ -485,7 +485,9 @@ Value* builtin_eigen_model_load(Value *arg) {
 Value* eigs_json_parse_value(const char *s, int *pos);
 
 Value* json_obj_get(Value *obj, const char *key) {
-    if (!obj || obj->type != VAL_LIST) return NULL;
+    if (!obj) return NULL;
+    if (obj->type == VAL_DICT) return dict_get(obj, key);
+    if (obj->type != VAL_LIST) return NULL;
     for (int i = 0; i + 1 < obj->data.list.count; i += 2) {
         Value *k = obj->data.list.items[i];
         if (k && k->type == VAL_STR && strcmp(k->data.str, key) == 0) {

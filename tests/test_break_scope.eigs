@@ -1,0 +1,45 @@
+# break/continue must not escape function call boundaries
+
+define breaker as:
+    break
+
+define continuer as:
+    continue
+
+# break inside called function must not break caller's loop
+count is 0
+for i in [1, 2, 3]:
+    breaker of null
+    count is count + 1
+assert of [count == 3, "break inside function must not escape to caller loop"]
+
+# continue inside called function must not skip caller's loop body
+total is 0
+for i in [1, 2, 3]:
+    continuer of null
+    total is total + i
+assert of [total == 6, "continue inside function must not escape to caller loop"]
+
+# break inside nested call must not escape
+define inner_break as:
+    break
+
+define outer_fn as:
+    inner_break of null
+    return 42
+
+result is 0
+for i in [1, 2, 3]:
+    result is outer_fn of null
+assert of [result == 42, "nested break must not escape through two function calls"]
+
+# while loop version
+count2 is 0
+i is 0
+loop while i < 5:
+    i is i + 1
+    breaker of null
+    count2 is count2 + 1
+assert of [count2 == 5, "break in called function must not break while loop"]
+
+print of "break scope: all passed"

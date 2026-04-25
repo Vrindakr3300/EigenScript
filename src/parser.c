@@ -891,6 +891,7 @@ static ASTNode* parse_statement(Parser *p) {
             return n;
         }
         /* Not a dot-assignment — restore and fall through */
+        free_ast(target);
         p->pos = saved;
     }
 

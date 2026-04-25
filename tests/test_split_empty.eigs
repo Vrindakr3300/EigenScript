@@ -1,0 +1,41 @@
+# split must preserve empty segments
+
+# Basic split
+parts is split of ["a,b,c", ","]
+assert of [len of parts == 3, "basic split length"]
+assert of [parts[0] == "a", "basic split first"]
+assert of [parts[2] == "c", "basic split last"]
+
+# Empty segments between consecutive delimiters
+parts2 is split of ["a,,b", ","]
+assert of [len of parts2 == 3, "consecutive delimiters must produce empty segment"]
+assert of [parts2[0] == "a", "first segment"]
+assert of [parts2[1] == "", "empty middle segment"]
+assert of [parts2[2] == "b", "last segment"]
+
+# Leading delimiter
+parts3 is split of [",a,b", ","]
+assert of [len of parts3 == 3, "leading delimiter produces empty first segment"]
+assert of [parts3[0] == "", "leading empty segment"]
+
+# Trailing delimiter
+parts4 is split of ["a,b,", ","]
+assert of [len of parts4 == 3, "trailing delimiter produces empty last segment"]
+assert of [parts4[2] == "", "trailing empty segment"]
+
+# Multi-char delimiter
+parts5 is split of ["a::b::c", "::"]
+assert of [len of parts5 == 3, "multi-char delimiter"]
+assert of [parts5[1] == "b", "multi-char middle"]
+
+# No delimiter found
+parts6 is split of ["hello", ","]
+assert of [len of parts6 == 1, "no delimiter returns single element"]
+assert of [parts6[0] == "hello", "no delimiter preserves string"]
+
+# Empty string
+parts7 is split of ["", ","]
+assert of [len of parts7 == 1, "empty string returns one empty element"]
+assert of [parts7[0] == "", "empty string element is empty"]
+
+print of "split empty: all passed"

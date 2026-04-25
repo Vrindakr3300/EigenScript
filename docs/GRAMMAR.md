@@ -62,6 +62,8 @@ converged  stable  improving  oscillating  diverging  equilibrium
 <  >  <=  >=  ==  !=
 (  )  [  ]  {  }
 ,  :  .
+|>          pipe (left-associative, desugars a |> b to b of a)
+=>          lambda arrow
 ```
 
 ### Whitespace Rules
@@ -138,7 +140,9 @@ block       = INDENT { statement NEWLINE } DEDENT
 Precedence from lowest to highest:
 
 ```
-expression  = or_expr
+expression  = pipe_expr
+
+pipe_expr   = or_expr { '|>' or_expr }
 
 or_expr     = and_expr { 'or' and_expr }
 
@@ -166,7 +170,10 @@ primary     = NUM
             | predicate
             | list_literal
             | dict_literal
+            | lambda
             | '(' expression ')'
+
+lambda      = '(' [ param_list ] ')' '=>' expression
 ```
 
 ### Postfix Operators
@@ -205,14 +212,16 @@ From lowest to highest precedence:
 
 | Level | Operators | Associativity | Description |
 |-------|-----------|---------------|-------------|
-| 1 | `or` | Left | Logical OR |
-| 2 | `and` | Left | Logical AND |
-| 3 | `==` `!=` `<` `>` `<=` `>=` | None | Comparison |
-| 4 | `+` `-` | Left | Addition, subtraction |
-| 5 | `*` `/` `%` | Left | Multiplication, division, modulo |
-| 6 | `-` (unary) `not` | Right | Negation, logical NOT |
-| 7 | `of` | Left | Function call |
-| 8 | `[i]` `.key` | Left | Index, dot access |
+| 1 | `\|>` | Left | Pipe (desugars `a \|> b` to `b of a`) |
+| 2 | `or` | Left | Logical OR |
+| 3 | `and` | Left | Logical AND |
+| 4 | `==` `!=` `<` `>` `<=` `>=` | None | Comparison |
+| 5 | `+` `-` | Left | Addition, subtraction |
+| 6 | `*` `/` `%` | Left | Multiplication, division, modulo |
+| 7 | `-` (unary) `not` | Right | Negation, logical NOT |
+| 8 | `of` | Left | Function call / observation |
+| 9 | `[i]` `.key` | Left | Index, dot access |
+| 10 | `=>` | — | Lambda (inside parenthesized param list) |
 
 ## Semantic Notes
 

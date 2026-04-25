@@ -385,6 +385,11 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                     env_free(call_env);
                     return g_return_val ? g_return_val : make_null();
                 }
+                if (g_breaking || g_continuing) {
+                    g_breaking = 0;
+                    g_continuing = 0;
+                    break;
+                }
             }
             update_observer(result);
             env_set(env, "__observer__", result);

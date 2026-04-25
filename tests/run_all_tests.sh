@@ -375,7 +375,7 @@ JS3_RT=$(echo "$JS_OUTPUT" | grep -A1 'JS3:' | tail -1)
 check "JS4 round-trip" "$JS3_RT" "[1,2,3]"
 
 JS4_KEY=$(echo "$JS_OUTPUT" | grep -A1 'JS4:' | tail -1)
-check "JS5 object decode key" "$JS4_KEY" "name"
+check "JS5 object decode key" "$JS4_KEY" "eigen"
 echo ""
 
 echo "[14/15] Arena Ownership (5 checks)"
