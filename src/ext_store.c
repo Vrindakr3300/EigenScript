@@ -328,6 +328,22 @@ static int store_read_header(Store *store) {
     if (memcmp(hdr, STORE_MAGIC, 4) != 0) return -1;
     store->page_count = (uint32_t)(hdr[12] | (hdr[13] << 8) | (hdr[14] << 16) | (hdr[15] << 24));
     store->free_page  = (uint32_t)(hdr[16] | (hdr[17] << 8) | (hdr[18] << 16) | (hdr[19] << 24));
+
+    /* Validate page_count against file size */
+    long pos = ftell(store->fp);
+    if (fseek(store->fp, 0, SEEK_END) != 0) return -1;
+    long file_size = ftell(store->fp);
+    fseek(store->fp, pos, SEEK_SET);
+    if (file_size < 0) return -1;
+    uint32_t max_pages = (uint32_t)((file_size - STORE_HEADER_SIZE) / STORE_PAGE_SIZE) + 1;
+    if (store->page_count > max_pages) {
+        fprintf(stderr, "store_open: page_count %u exceeds file capacity %u\n",
+            store->page_count, max_pages);
+        return -1;
+    }
+    if (store->free_page >= store->page_count && store->free_page != 0) {
+        store->free_page = 0;  /* corrupt free pointer — reset */
+    }
     return 0;
 }
 
@@ -380,7 +396,7 @@ static int store_load_catalog(Store *store) {
     strbuf_init(&buf);
     uint32_t pg = 0;
 
-    while (1) {
+    for (int hops = 0; hops < STORE_MAX_PAGE_HOPS; hops++) {
         Page page;
         if (store_read_page(store, pg, &page) != 0) break;
         if (page.type != PAGE_CATALOG) break;
@@ -389,7 +405,7 @@ static int store_load_catalog(Store *store) {
         } else if (page.count > STORE_PAGE_DATA_SIZE) {
             break;  /* corrupt catalog page */
         }
-        if (page.next_page == 0) break;
+        if (page.next_page == 0 || page.next_page >= store->page_count) break;
         pg = page.next_page;
     }
 
@@ -604,12 +620,13 @@ static Value* builtin_store_put(Value *arg) {
     uint32_t prev_pg = 0;
     Page page;
 
-    while (1) {
-        store_read_page(store, pg, &page);
+    for (int hops = 0; hops < STORE_MAX_PAGE_HOPS; hops++) {
+        if (store_read_page(store, pg, &page) != 0) break;
+        if (page.type != PAGE_RECORDS) break;
         int used = page_data_used(&page);
         if (used < 0) {
             /* Corrupt page — skip to next or allocate new */
-            if (page.next_page == 0) break;
+            if (page.next_page == 0 || page.next_page >= store->page_count) break;
             prev_pg = pg;
             pg = page.next_page;
             continue;
@@ -635,7 +652,7 @@ static Value* builtin_store_put(Value *arg) {
             store_flush_catalog(store);
             return make_str(key_buf);
         }
-        if (page.next_page == 0) break;
+        if (page.next_page == 0 || page.next_page >= store->page_count) break;
         prev_pg = pg;
         pg = page.next_page;
     }
@@ -701,7 +718,7 @@ static Value* builtin_store_get(Value *arg) {
 
     size_t target_key_len = strlen(key_buf);
 
-    while (pg != 0) {
+    for (int _hops = 0; pg != 0 && _hops < STORE_MAX_PAGE_HOPS; _hops++) {
         Page page;
         if (store_read_page(store, pg, &page) != 0) break;
         if (page.type != PAGE_RECORDS) break;
@@ -723,7 +740,7 @@ static Value* builtin_store_get(Value *arg) {
             }
         }
         get_next_page:
-        pg = page.next_page;
+        pg = page.next_page; if (pg >= store->page_count) break;
     }
     return make_null();
 }
@@ -757,7 +774,7 @@ static Value* builtin_store_delete(Value *arg) {
     uint32_t pg = (uint32_t)rv->data.num;
     size_t target_key_len = strlen(key_buf);
 
-    while (pg != 0) {
+    for (int _hops = 0; pg != 0 && _hops < STORE_MAX_PAGE_HOPS; _hops++) {
         Page page;
         if (store_read_page(store, pg, &page) != 0) break;
         if (page.type != PAGE_RECORDS) break;
@@ -784,7 +801,7 @@ static Value* builtin_store_delete(Value *arg) {
             }
         }
         del_next:
-        pg = page.next_page;
+        pg = page.next_page; if (pg >= store->page_count) break;
     }
     return make_num(0);
 }
@@ -808,7 +825,7 @@ static Value* builtin_store_query(Value *arg) {
 
     Value *results = make_list(16);
 
-    while (pg != 0) {
+    for (int _hops = 0; pg != 0 && _hops < STORE_MAX_PAGE_HOPS; _hops++) {
         Page page;
         if (store_read_page(store, pg, &page) != 0) break;
         if (page.type != PAGE_RECORDS) break;
@@ -827,7 +844,7 @@ static Value* builtin_store_query(Value *arg) {
             list_append(results, val);
         }
         query_next:
-        pg = page.next_page;
+        pg = page.next_page; if (pg >= store->page_count) break;
     }
     return results;
 }
@@ -850,7 +867,7 @@ static Value* builtin_store_count(Value *arg) {
     uint32_t pg = (uint32_t)rv->data.num;
 
     int count = 0;
-    while (pg != 0) {
+    for (int _hops = 0; pg != 0 && _hops < STORE_MAX_PAGE_HOPS; _hops++) {
         Page page;
         if (store_read_page(store, pg, &page) != 0) break;
         if (page.type != PAGE_RECORDS) break;
@@ -863,7 +880,7 @@ static Value* builtin_store_count(Value *arg) {
             count++;
         }
         count_next:
-        pg = page.next_page;
+        pg = page.next_page; if (pg >= store->page_count) break;
     }
     return make_num(count);
 }
@@ -941,7 +958,7 @@ static Value* builtin_store_drop(Value *arg) {
     Value *rv = dict_get(col_info, "root");
     if (rv) {
         uint32_t pg = (uint32_t)rv->data.num;
-        while (pg != 0) {
+        for (int _hops = 0; pg != 0 && _hops < STORE_MAX_PAGE_HOPS; _hops++) {
             Page page;
             if (store_read_page(store, pg, &page) != 0) break;
             uint32_t next = page.next_page;
@@ -952,6 +969,7 @@ static Value* builtin_store_drop(Value *arg) {
             store_write_page(store, pg, &page);
             store->free_page = pg;
             pg = next;
+            if (pg >= store->page_count) break;
         }
     }
 

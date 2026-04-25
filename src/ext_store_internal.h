@@ -13,6 +13,7 @@
 #define STORE_PAGE_DATA_SIZE (STORE_PAGE_SIZE - 7) /* 7 bytes header per page */
 #define STORE_MAX_KEY_LEN 256
 #define STORE_MAX_RECORD_SIZE (STORE_PAGE_DATA_SIZE - 6) /* key_len(2) + key + json_len(4) + json */
+#define STORE_MAX_PAGE_HOPS 10000  /* cycle/runaway guard for page chain traversal */
 
 /* Page types */
 #define PAGE_FREE 0
