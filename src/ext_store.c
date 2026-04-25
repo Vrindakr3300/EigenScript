@@ -580,16 +580,9 @@ static Value* builtin_store_put(Value *arg) {
         root_page = (uint32_t)(rv ? rv->data.num : 0);
         next_id = (int)(nv ? nv->data.num : 1);
 
-        /* Validate root_page: must be > 0 (page 0 is catalog) and within file */
         if (root_page == 0 || root_page >= store->page_count) {
-            /* Invalid root — allocate fresh records page and repair catalog */
-            root_page = store_alloc_page(store);
-            Page rp;
-            memset(&rp, 0, sizeof(Page));
-            rp.type = PAGE_RECORDS;
-            store_write_page(store, root_page, &rp);
-            dict_set(col_info, "root", make_num(root_page));
-            store->dirty = 1;
+            fprintf(stderr, "Error: store_put: corrupt root page %u for collection '%s'\n", root_page, collection);
+            return make_null();
         }
     }
 
@@ -627,26 +620,16 @@ static Value* builtin_store_put(Value *arg) {
         return make_null();
     }
 
-    /* Find last page in chain with space.
-     * Track last_good_pg — the last page we successfully read as PAGE_RECORDS.
-     * Only link new pages from a known-good page. */
+    /* Find last page in chain with space. Fail on any corruption. */
     uint32_t pg = root_page;
-    uint32_t last_good_pg = 0;
-    int have_good_page = 0;
     Page page;
 
     for (int hops = 0; hops < STORE_MAX_PAGE_HOPS; hops++) {
-        if (store_read_page(store, pg, &page) != 0) break;
-        if (page.type != PAGE_RECORDS) break;
+        if (store_read_page(store, pg, &page) != 0) { free(json); return make_null(); }
+        if (page.type != PAGE_RECORDS) { free(json); return make_null(); }
         int used = page_data_used(&page);
-        if (used < 0) {
-            /* Corrupt page — skip to next or allocate new */
-            if (page.next_page == 0 || page.next_page >= store->page_count) break;
-            pg = page.next_page;
-            continue;
-        }
-        last_good_pg = pg;
-        have_good_page = 1;
+        if (used < 0) { free(json); return make_null(); }
+
         if ((size_t)(used + record_size) <= STORE_PAGE_DATA_SIZE) {
             /* Fits in this page */
             int off = used;
@@ -672,19 +655,10 @@ static Value* builtin_store_put(Value *arg) {
         pg = page.next_page;
     }
 
-    /* Need new page — link from last known-good page only */
+    /* Need new page — link from current (last valid) page */
     uint32_t new_pg = store_alloc_page(store);
-    if (have_good_page) {
-        /* Re-read the last good page to link it */
-        if (store_read_page(store, last_good_pg, &page) == 0 && page.type == PAGE_RECORDS) {
-            page.next_page = new_pg;
-            store_write_page(store, last_good_pg, &page);
-        }
-    } else {
-        /* No valid page in chain — update catalog root to the new page */
-        dict_set(col_info, "root", make_num(new_pg));
-        store->dirty = 1;
-    }
+    page.next_page = new_pg;
+    store_write_page(store, pg, &page);
 
     Page new_page;
     memset(&new_page, 0, sizeof(Page));
@@ -749,7 +723,7 @@ static Value* builtin_store_get(Value *arg) {
         int offset = 0;
         for (int i = 0; i < (int)page.count; i++) {
             StoreRecord rec;
-            if (store_record_next(&page, &offset, &rec) != 0) goto get_next_page;
+            if (store_record_next(&page, &offset, &rec) != 0) return make_null();
             if (rec.key_len == 0) continue;  /* deleted */
 
             if (rec.key_len == target_key_len &&
@@ -762,7 +736,6 @@ static Value* builtin_store_get(Value *arg) {
                 return result;
             }
         }
-        get_next_page:
         pg = page.next_page; if (pg >= store->page_count) break;
     }
     return make_null();
@@ -806,7 +779,7 @@ static Value* builtin_store_delete(Value *arg) {
         for (int i = 0; i < (int)page.count; i++) {
             int kl_offset = offset;
             StoreRecord rec;
-            if (store_record_next(&page, &offset, &rec) != 0) goto del_next;
+            if (store_record_next(&page, &offset, &rec) != 0) return make_num(0);
             if (rec.key_len == 0) continue;  /* deleted */
 
             if (rec.key_len == target_key_len &&
@@ -823,7 +796,6 @@ static Value* builtin_store_delete(Value *arg) {
                 return make_num(1);
             }
         }
-        del_next:
         pg = page.next_page; if (pg >= store->page_count) break;
     }
     return make_num(0);
@@ -856,7 +828,7 @@ static Value* builtin_store_query(Value *arg) {
         int offset = 0;
         for (int i = 0; i < (int)page.count; i++) {
             StoreRecord rec;
-            if (store_record_next(&page, &offset, &rec) != 0) goto query_next;
+            if (store_record_next(&page, &offset, &rec) != 0) return results;
             if (rec.key_len == 0) continue;  /* deleted */
 
             char *json = xmalloc(rec.json_len + 1);
@@ -866,7 +838,6 @@ static Value* builtin_store_query(Value *arg) {
             free(json);
             list_append(results, val);
         }
-        query_next:
         pg = page.next_page; if (pg >= store->page_count) break;
     }
     return results;
@@ -898,11 +869,10 @@ static Value* builtin_store_count(Value *arg) {
         int offset = 0;
         for (int i = 0; i < (int)page.count; i++) {
             StoreRecord rec;
-            if (store_record_next(&page, &offset, &rec) != 0) goto count_next;
+            if (store_record_next(&page, &offset, &rec) != 0) return make_num(count);
             if (rec.key_len == 0) continue;  /* deleted */
             count++;
         }
-        count_next:
         pg = page.next_page; if (pg >= store->page_count) break;
     }
     return make_num(count);
