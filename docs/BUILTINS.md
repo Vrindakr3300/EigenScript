@@ -5,13 +5,14 @@ Core builtins are always available; extension builtins (HTTP, DB, model,
 gfx, audio) require a full build or the `gfx` target.
 
 New since 0.8.1: concurrency (`spawn`, `thread_join`, `channel`, `send`,
-`recv`, `close_channel`, `channel_closed`), hashing (`sha256`, `md5`,
+`recv`, `try_recv`, `close_channel`, `channel_closed`), spatial queries
+(`nearest_in_range`), hashing (`sha256`, `md5`,
 `sha256_file`, `md5_file`, `hmac_sha256`), EigenStore (`store_open`,
 `store_close`, `store_put`, `store_get`, `store_delete`, `store_query`,
 `store_count`, `store_update`, `store_collections`, `store_drop`),
 observer tuning (`set_observer_thresholds`, `get_observer_thresholds`),
 audio (`audio_open`, `audio_close`, `audio_pause`, `audio_play`,
-`audio_queue_size`, `audio_clear`, `audio_sine`, `audio_saw`,
+`audio_queue_size`, `audio_clear`, `audio_sine`, `audio_saw`, `audio_sweep`,
 `audio_square`, `audio_noise`, `audio_mix`, `audio_gain`,
 `audio_envelope`), and `free_val`/`free_ast` for memory management.
 
@@ -384,3 +385,28 @@ Requires full build. Transformer model inference and training.
 | `native_train_step_builtin` | `native_train_step_builtin of [input, output, lr]` | Single training step |
 | `model_save_weights` | `model_save_weights of "path.json"` | Save model weights to JSON |
 | `model_load_weights` | `model_load_weights of "path.json"` | Load model weights (alias) |
+
+## Concurrency
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `spawn` | `spawn of fn` or `spawn of [fn, arg]` | Spawn a thread running `fn`. With list form, passes `arg` as the function's first parameter. Returns a thread handle dict. |
+| `thread_join` | `thread_join of handle` | Block until thread completes. Returns the thread function's return value. |
+| `channel` | `channel of null` | Create a bounded FIFO channel (capacity 64). Returns a channel handle dict. |
+| `send` | `send of [channel, value]` | Send a value to the channel. Blocks if full. |
+| `recv` | `recv of channel` | Receive a value from the channel. **Blocks** until a value is available or the channel is closed. |
+| `try_recv` | `try_recv of channel` | Non-blocking receive. Returns the value if available, `null` if the channel is empty. |
+| `close_channel` | `close_channel of channel` | Close the channel. Wakes all blocked senders/receivers. |
+| `channel_closed` | `channel_closed of channel` | Returns 1 if closed, 0 otherwise. |
+
+## Spatial Queries
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `nearest_in_range` | `nearest_in_range of [entities, x, y, range, world_w, world_h]` | Find the nearest active entity within `range` using torus (wrapping) distance. `entities` is a list of dicts with `"px"`, `"py"`, `"active"` keys. Returns `{"index", "dist", "dx", "dy"}` or `null`. Optional extra args: custom key names `[..., px_key, py_key, active_key]`. |
+
+## Audio (additional)
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `audio_sweep` | `audio_sweep of [freq_start, freq_end, duration, amplitude, waveform]` | Generate a frequency sweep with continuous phase. `waveform`: 0=sine, 1=sawtooth. Returns sample list. |

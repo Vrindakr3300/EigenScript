@@ -2394,6 +2394,7 @@ Value* builtin_get_at(Value *arg) {
 
 typedef struct {
     Value *fn;
+    Value *fn_arg;
     Env *parent_env;
     Value *result;
     volatile int done;
@@ -2408,7 +2409,8 @@ static void *thread_entry(void *arg) {
     if (fn->type == VAL_FN) {
         Env *call_env = env_new(fn->data.fn.closure);
         if (fn->data.fn.param_count > 0) {
-            env_set_local(call_env, fn->data.fn.params[0], make_null());
+            env_set_local(call_env, fn->data.fn.params[0],
+                          h->fn_arg ? h->fn_arg : make_null());
         }
         Value *result = make_null();
         g_returning = 0;
@@ -2424,7 +2426,7 @@ static void *thread_entry(void *arg) {
         h->result = result;
         if (result) val_incref(result);
     } else if (fn->type == VAL_BUILTIN) {
-        h->result = fn->data.builtin(make_null());
+        h->result = fn->data.builtin(h->fn_arg ? h->fn_arg : make_null());
         if (h->result) val_incref(h->result);
     }
     h->done = 1;
@@ -2433,13 +2435,23 @@ static void *thread_entry(void *arg) {
 }
 
 Value* builtin_spawn(Value *arg) {
-    if (!arg || (arg->type != VAL_FN && arg->type != VAL_BUILTIN)) {
-        runtime_error(0, "spawn requires a function");
+    Value *fn = arg;
+    Value *fn_arg = NULL;
+    /* Accept [fn, arg] list or bare function */
+    if (arg && arg->type == VAL_LIST && arg->data.list.count >= 1) {
+        fn = arg->data.list.items[0];
+        if (arg->data.list.count >= 2)
+            fn_arg = arg->data.list.items[1];
+    }
+    if (!fn || (fn->type != VAL_FN && fn->type != VAL_BUILTIN)) {
+        runtime_error(0, "spawn requires a function or [function, arg]");
         return make_null();
     }
     ThreadHandle *h = xmalloc(sizeof(ThreadHandle));
-    h->fn = arg;
-    val_incref(arg);
+    h->fn = fn;
+    val_incref(fn);
+    h->fn_arg = fn_arg;
+    if (fn_arg) val_incref(fn_arg);
     h->parent_env = g_global_env;
     h->result = NULL;
     h->done = 0;
@@ -2465,6 +2477,7 @@ Value* builtin_thread_join(Value *arg) {
     pthread_join(h->tid, NULL);
     Value *result = h->result ? h->result : make_null();
     val_decref(h->fn);
+    if (h->fn_arg) val_decref(h->fn_arg);
     handle_release(hid);
     free(h);
     return result;
@@ -2551,6 +2564,25 @@ Value* builtin_recv(Value *arg) {
     return val ? val : make_null();
 }
 
+/* try_recv of channel — non-blocking receive, returns null if empty */
+Value* builtin_try_recv(Value *arg) {
+    Channel *ch = get_channel(arg);
+    if (!ch) {
+        runtime_error(0, "try_recv: invalid channel");
+        return make_null();
+    }
+    pthread_mutex_lock(&ch->mutex);
+    Value *val = NULL;
+    if (ch->count > 0) {
+        val = ch->buffer[ch->head];
+        ch->head = (ch->head + 1) % CHANNEL_BUF_SIZE;
+        ch->count--;
+        pthread_cond_signal(&ch->not_full);
+    }
+    pthread_mutex_unlock(&ch->mutex);
+    return val ? val : make_null();
+}
+
 Value* builtin_close_channel(Value *arg) {
     Channel *ch = get_channel(arg);
     if (!ch) {
@@ -2569,6 +2601,67 @@ Value* builtin_channel_closed(Value *arg) {
     Channel *ch = get_channel(arg);
     if (!ch) return make_num(1);
     return make_num(ch->closed ? 1 : 0);
+}
+
+/* nearest_in_range of [entities, x, y, range, world_w, world_h, px_key, py_key, active_key]
+   Returns {"index": idx, "dist": d, "dx": dx, "dy": dy} or null if none found.
+   Iterates entities (list of dicts), finds nearest active entity within range
+   using torus distance. Keys default to "px", "py", "active" if not provided. */
+Value* builtin_nearest_in_range(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 6) {
+        runtime_error(0, "nearest_in_range requires [entities, x, y, range, world_w, world_h]");
+        return make_null();
+    }
+    Value *entities = arg->data.list.items[0];
+    if (!entities || entities->type != VAL_LIST) return make_null();
+    double px = arg->data.list.items[1]->data.num;
+    double py = arg->data.list.items[2]->data.num;
+    double range = arg->data.list.items[3]->data.num;
+    double ww = arg->data.list.items[4]->data.num;
+    double wh = arg->data.list.items[5]->data.num;
+    const char *px_key = "px", *py_key = "py", *active_key = "active";
+    if (arg->data.list.count >= 7 && arg->data.list.items[6]->type == VAL_STR)
+        px_key = arg->data.list.items[6]->data.str;
+    if (arg->data.list.count >= 8 && arg->data.list.items[7]->type == VAL_STR)
+        py_key = arg->data.list.items[7]->data.str;
+    if (arg->data.list.count >= 9 && arg->data.list.items[8]->type == VAL_STR)
+        active_key = arg->data.list.items[8]->data.str;
+
+    double range_sq = range * range;
+    double best_sq = range_sq;
+    int best_idx = -1;
+    double best_dx = 0, best_dy = 0;
+    int n = entities->data.list.count;
+
+    for (int i = 0; i < n; i++) {
+        Value *e = entities->data.list.items[i];
+        if (!e || e->type != VAL_DICT) continue;
+        Value *av = dict_get(e, active_key);
+        if (av && av->type == VAL_NUM && av->data.num != 1.0) continue;
+        Value *ex = dict_get(e, px_key);
+        Value *ey = dict_get(e, py_key);
+        if (!ex || !ey || ex->type != VAL_NUM || ey->type != VAL_NUM) continue;
+
+        double dx = ex->data.num - px;
+        double dy = ey->data.num - py;
+        double hw = ww * 0.5, hh = wh * 0.5;
+        if (dx > hw) dx -= ww; else if (dx < -hw) dx += ww;
+        if (dy > hh) dy -= wh; else if (dy < -hh) dy += wh;
+        double dsq = dx * dx + dy * dy;
+        if (dsq < best_sq) {
+            best_sq = dsq;
+            best_idx = i;
+            best_dx = dx;
+            best_dy = dy;
+        }
+    }
+    if (best_idx < 0) return make_null();
+    Value *result = make_dict(8);
+    dict_set(result, "index", make_num(best_idx));
+    dict_set(result, "dist", make_num(sqrt(best_sq)));
+    dict_set(result, "dx", make_num(best_dx));
+    dict_set(result, "dy", make_num(best_dy));
+    return result;
 }
 
 void register_builtins(Env *env) {
@@ -2720,6 +2813,8 @@ void register_builtins(Env *env) {
     env_set_local(env, "channel", make_builtin(builtin_channel));
     env_set_local(env, "send", make_builtin(builtin_send));
     env_set_local(env, "recv", make_builtin(builtin_recv));
+    env_set_local(env, "try_recv", make_builtin(builtin_try_recv));
+    env_set_local(env, "nearest_in_range", make_builtin(builtin_nearest_in_range));
     env_set_local(env, "close_channel", make_builtin(builtin_close_channel));
     env_set_local(env, "channel_closed", make_builtin(builtin_channel_closed));
 

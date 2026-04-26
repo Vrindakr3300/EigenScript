@@ -735,6 +735,36 @@ Value* builtin_audio_square(Value *arg) {
     return list;
 }
 
+/* audio_sweep of [freq_start, freq_end, duration, amplitude, waveform]
+   waveform: 0=sine, 1=sawtooth.  Continuous phase sweep. */
+Value* builtin_audio_sweep(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 5) return make_list(0);
+    double f0 = arg->data.list.items[0]->data.num;
+    double f1 = arg->data.list.items[1]->data.num;
+    double dur = arg->data.list.items[2]->data.num;
+    double amp = arg->data.list.items[3]->data.num;
+    int wave = (int)arg->data.list.items[4]->data.num;
+    int rate = g_audio_freq > 0 ? g_audio_freq : 44100;
+    int n = (int)(dur * rate);
+    if (n <= 0 || n > rate * 30) return make_list(0);
+
+    Value *list = make_list(n);
+    double phase = 0.0;
+    for (int i = 0; i < n; i++) {
+        double t = (double)i / n;
+        double freq = f0 + (f1 - f0) * t;
+        phase += freq / rate;
+        if (phase > 1.0) phase -= 1.0;
+        double s;
+        if (wave == 0)
+            s = sin(2.0 * M_PI * phase) * amp;
+        else
+            s = (2.0 * phase - 1.0) * amp;
+        list_append(list, make_num(s));
+    }
+    return list;
+}
+
 /* audio_noise of [duration, amplitude] — white noise */
 Value* builtin_audio_noise(Value *arg) {
     if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) return make_list(0);
@@ -862,6 +892,7 @@ void register_gfx_builtins(Env *env) {
     env_set_local(env, "audio_sine", make_builtin(builtin_audio_sine));
     env_set_local(env, "audio_saw", make_builtin(builtin_audio_saw));
     env_set_local(env, "audio_square", make_builtin(builtin_audio_square));
+    env_set_local(env, "audio_sweep", make_builtin(builtin_audio_sweep));
     env_set_local(env, "audio_noise", make_builtin(builtin_audio_noise));
     env_set_local(env, "audio_mix", make_builtin(builtin_audio_mix));
     env_set_local(env, "audio_gain", make_builtin(builtin_audio_gain));
