@@ -2331,6 +2331,23 @@ Value* builtin_range(Value *arg) {
     return result;
 }
 
+/* fill of [count, value] — create a list of `count` elements all set to `value`.
+   Much faster than a loop for large arrays (e.g., 64K memory). */
+Value* builtin_fill(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) {
+        runtime_error(0, "fill requires [count, value]");
+        return make_list(0);
+    }
+    int count = (int)arg->data.list.items[0]->data.num;
+    Value *val = arg->data.list.items[1];
+    if (count < 0) count = 0;
+    if (count > 10000000) count = 10000000; /* 10M cap */
+    Value *result = make_list(count);
+    for (int i = 0; i < count; i++)
+        list_append(result, val);
+    return result;
+}
+
 /* ==== BUILTIN: set_at — mutate a list element in place ==== */
 /* set_at of [list, index, value] — sets list[index] = value, returns list */
 /* set_at of [list, row, col, value] — sets list[row][col] = value for 2D */
@@ -2664,6 +2681,60 @@ Value* builtin_nearest_in_range(Value *arg) {
     return result;
 }
 
+/* dispatch of [table, key, arg] — O(1) function dispatch.
+   table: list of functions (or null for unused slots).
+   key: integer index into the table.
+   arg: value passed to the selected function.
+   Returns the function's return value, or null if slot is empty. */
+Value* builtin_dispatch(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 3) {
+        runtime_error(0, "dispatch requires [table, key, arg]");
+        return make_null();
+    }
+    Value *table = arg->data.list.items[0];
+    int key = (int)arg->data.list.items[1]->data.num;
+    Value *fn_arg = arg->data.list.items[2];
+
+    if (!table || table->type != VAL_LIST) {
+        runtime_error(0, "dispatch: table must be a list");
+        return make_null();
+    }
+    if (key < 0 || key >= table->data.list.count) {
+        return make_null();
+    }
+    Value *fn = table->data.list.items[key];
+    if (!fn || fn->type == VAL_NULL) {
+        return make_null();
+    }
+
+    if (fn->type == VAL_BUILTIN) {
+        return fn->data.builtin(fn_arg);
+    }
+
+    if (fn->type == VAL_FN) {
+        Env *call_env = env_new(fn->data.fn.closure);
+        if (fn->data.fn.param_count > 0) {
+            env_set_local(call_env, fn->data.fn.params[0], fn_arg);
+        }
+        g_returning = 0;
+        g_return_val = NULL;
+        Value *result = make_null();
+        for (int i = 0; i < fn->data.fn.body_count; i++) {
+            result = eval_node(fn->data.fn.body[i], call_env);
+            if (g_returning) {
+                result = g_return_val;
+                g_returning = 0;
+                break;
+            }
+        }
+        env_free(call_env);
+        return result ? result : make_null();
+    }
+
+    runtime_error(0, "dispatch: slot %d is not a function", key);
+    return make_null();
+}
+
 void register_builtins(Env *env) {
     /* ---- Core language builtins (always available) ---- */
     env_set_local(env, "print", make_builtin(builtin_print));
@@ -2815,6 +2886,8 @@ void register_builtins(Env *env) {
     env_set_local(env, "recv", make_builtin(builtin_recv));
     env_set_local(env, "try_recv", make_builtin(builtin_try_recv));
     env_set_local(env, "nearest_in_range", make_builtin(builtin_nearest_in_range));
+    env_set_local(env, "dispatch", make_builtin(builtin_dispatch));
+    env_set_local(env, "fill", make_builtin(builtin_fill));
     env_set_local(env, "close_channel", make_builtin(builtin_close_channel));
     env_set_local(env, "channel_closed", make_builtin(builtin_channel_closed));
 
