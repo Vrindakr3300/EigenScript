@@ -114,6 +114,7 @@ const char* val_type_name(ValType t) {
         case VAL_NULL: return "null";
         case VAL_JSON_RAW: return "json_raw";
         case VAL_DICT: return "dict";
+        case VAL_BUFFER: return "buffer";
         default: return "?";
     }
 }
@@ -166,6 +167,9 @@ void free_value(Value *v) {
             for (int i = 0; i < v->data.fn.param_count; i++)
                 free(v->data.fn.params[i]);
             free(v->data.fn.params);
+            break;
+        case VAL_BUFFER:
+            free(v->data.buffer.data);
             break;
         default:
             break;
@@ -349,6 +353,7 @@ int is_truthy(Value *v) {
         case VAL_BUILTIN: return 1;
         case VAL_JSON_RAW: return v->data.str && v->data.str[0] != '\0';
         case VAL_DICT: return v->data.dict.count > 0;
+        case VAL_BUFFER: return v->data.buffer.count > 0;
     }
     return 0;
 }
@@ -411,6 +416,9 @@ char* value_to_string(Value *v) {
         }
         case VAL_BUILTIN: return xstrdup("<builtin>");
         case VAL_JSON_RAW: return xstrdup(v->data.str);
+        case VAL_BUFFER:
+            snprintf(buf, sizeof(buf), "<buffer:%d>", v->data.buffer.count);
+            return xstrdup(buf);
     }
     return xstrdup("?");
 }

@@ -64,6 +64,7 @@ static double compute_entropy_impl(Value *v, int depth) {
         case VAL_FN: return 1.0;
         case VAL_BUILTIN: return 0.0;
         case VAL_JSON_RAW: return 0.0;
+        case VAL_BUFFER: return log2(v->data.buffer.count + 1);
     }
     return 0.0;
 }
@@ -148,13 +149,19 @@ static int eval_num_fast(ASTNode *node, Env *env, double *out) {
                 node->data.index.target->type != AST_DOT &&
                 node->data.index.target->type != AST_INDEX) break;
             Value *target = eval_node(node->data.index.target, env);
-            if (!target || target->type != VAL_LIST) break;
+            if (!target) break;
             double idx_d;
             if (!eval_num_fast(node->data.index.index, env, &idx_d)) break;
             int i = (int)idx_d;
-            if (i < 0 || i >= target->data.list.count) break;
-            Value *v = target->data.list.items[i];
-            if (v && v->type == VAL_NUM) { *out = v->data.num; ok = 1; }
+            if (target->type == VAL_LIST) {
+                if (i < 0 || i >= target->data.list.count) break;
+                Value *v = target->data.list.items[i];
+                if (v && v->type == VAL_NUM) { *out = v->data.num; ok = 1; }
+            } else if (target->type == VAL_BUFFER) {
+                if (i < 0 || i >= target->data.buffer.count) break;
+                *out = target->data.buffer.data[i];
+                ok = 1;
+            }
             break;
         }
         case AST_UNARY: {
@@ -536,6 +543,13 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             } else {
                 runtime_error(node->line, "index %d out of range (list length %d)", i, target->data.list.count);
             }
+        } else if (target->type == VAL_BUFFER) {
+            int i = (int)idx->data.num;
+            if (i >= 0 && i < target->data.buffer.count) {
+                target->data.buffer.data[i] = val->type == VAL_NUM ? val->data.num : 0.0;
+            } else {
+                runtime_error(node->line, "buffer index %d out of range (length %d)", i, target->data.buffer.count);
+            }
         } else if (target->type == VAL_DICT && idx->type == VAL_STR) {
             dict_set(target, idx->data.str, val);
         } else {
@@ -706,6 +720,13 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             if (i >= 0 && i < target->data.list.count)
                 return target->data.list.items[i];
             runtime_error(node->line, "index %d out of range (length %d)", i, target->data.list.count);
+            return make_null();
+        }
+        if (target->type == VAL_BUFFER && idx->type == VAL_NUM) {
+            int i = (int)idx->data.num;
+            if (i >= 0 && i < target->data.buffer.count)
+                return make_num(target->data.buffer.data[i]);
+            runtime_error(node->line, "buffer index %d out of range (length %d)", i, target->data.buffer.count);
             return make_null();
         }
         if (target->type == VAL_STR && idx->type == VAL_NUM) {

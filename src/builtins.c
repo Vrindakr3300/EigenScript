@@ -333,6 +333,8 @@ Value* builtin_len(Value *arg) {
         return make_num(strlen(arg->data.str));
     if (arg->type == VAL_DICT)
         return make_num(arg->data.dict.count);
+    if (arg->type == VAL_BUFFER)
+        return make_num(arg->data.buffer.count);
     return make_num(0);
 }
 
@@ -529,6 +531,7 @@ Value* builtin_type(Value *arg) {
         case VAL_NULL: return make_str("none");
         case VAL_JSON_RAW: return make_str("json_raw");
         case VAL_DICT: return make_str("dict");
+        case VAL_BUFFER: return make_str("buffer");
     }
     return make_str("none");
 }
@@ -2709,6 +2712,83 @@ Value* builtin_nearest_in_range(Value *arg) {
    key: integer index into the table.
    arg: value passed to the selected function.
    Returns the function's return value, or null if slot is empty. */
+/* ---- Typed numeric buffers (flat double arrays) ---- */
+
+/* buffer of count — create a zero-filled numeric buffer */
+Value* builtin_buffer(Value *arg) {
+    int count = 0;
+    if (arg && arg->type == VAL_NUM) count = (int)arg->data.num;
+    if (count < 0) count = 0;
+    if (count > 10000000) count = 10000000;
+    Value *v = xcalloc(1, sizeof(Value));
+    v->type = VAL_BUFFER;
+    v->data.buffer.count = count;
+    v->data.buffer.data = xcalloc(count, sizeof(double));
+    v->refcount = 1;
+    return v;
+}
+
+/* buf_get of [buf, index] — O(1) indexed read */
+Value* builtin_buf_get(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) return make_num(0);
+    Value *buf = arg->data.list.items[0];
+    int idx = (int)arg->data.list.items[1]->data.num;
+    if (!buf || buf->type != VAL_BUFFER) return make_num(0);
+    if (idx < 0 || idx >= buf->data.buffer.count) return make_num(0);
+    return make_num(buf->data.buffer.data[idx]);
+}
+
+/* buf_set of [buf, index, value] — O(1) indexed write */
+Value* builtin_buf_set(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 3) return make_null();
+    Value *buf = arg->data.list.items[0];
+    int idx = (int)arg->data.list.items[1]->data.num;
+    double val = arg->data.list.items[2]->data.num;
+    if (!buf || buf->type != VAL_BUFFER) return make_null();
+    if (idx < 0 || idx >= buf->data.buffer.count) return make_null();
+    buf->data.buffer.data[idx] = val;
+    return make_null();
+}
+
+/* buf_len of buf — return buffer length */
+Value* builtin_buf_len(Value *arg) {
+    if (!arg || arg->type != VAL_BUFFER) return make_num(0);
+    return make_num(arg->data.buffer.count);
+}
+
+/* buf_from_list of list — convert list of numbers to buffer */
+Value* builtin_buf_from_list(Value *arg) {
+    if (!arg || arg->type != VAL_LIST) return make_null();
+    int n = arg->data.list.count;
+    Value *v = xcalloc(1, sizeof(Value));
+    v->type = VAL_BUFFER;
+    v->data.buffer.count = n;
+    v->data.buffer.data = xcalloc(n > 0 ? n : 1, sizeof(double));
+    v->refcount = 1;
+    for (int i = 0; i < n; i++) {
+        if (arg->data.list.items[i]->type == VAL_NUM)
+            v->data.buffer.data[i] = arg->data.list.items[i]->data.num;
+    }
+    return v;
+}
+
+/* buf_copy of [src, src_off, dst, dst_off, count] — bulk copy between buffers */
+Value* builtin_buf_copy(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 5) return make_null();
+    Value *src = arg->data.list.items[0];
+    int src_off = (int)arg->data.list.items[1]->data.num;
+    Value *dst = arg->data.list.items[2];
+    int dst_off = (int)arg->data.list.items[3]->data.num;
+    int count = (int)arg->data.list.items[4]->data.num;
+    if (!src || src->type != VAL_BUFFER || !dst || dst->type != VAL_BUFFER) return make_null();
+    if (src_off < 0 || dst_off < 0 || count <= 0) return make_null();
+    if (src_off + count > src->data.buffer.count) return make_null();
+    if (dst_off + count > dst->data.buffer.count) return make_null();
+    memmove(&dst->data.buffer.data[dst_off], &src->data.buffer.data[src_off],
+            count * sizeof(double));
+    return make_null();
+}
+
 Value* builtin_dispatch(Value *arg) {
     if (!arg || arg->type != VAL_LIST || arg->data.list.count < 3) {
         runtime_error(0, "dispatch requires [table, key, arg]");
@@ -2912,6 +2992,12 @@ void register_builtins(Env *env) {
     env_set_local(env, "nearest_in_range", make_builtin(builtin_nearest_in_range));
     env_set_local(env, "dispatch", make_builtin(builtin_dispatch));
     env_set_local(env, "fill", make_builtin(builtin_fill));
+    env_set_local(env, "buffer", make_builtin(builtin_buffer));
+    env_set_local(env, "buf_get", make_builtin(builtin_buf_get));
+    env_set_local(env, "buf_set", make_builtin(builtin_buf_set));
+    env_set_local(env, "buf_len", make_builtin(builtin_buf_len));
+    env_set_local(env, "buf_from_list", make_builtin(builtin_buf_from_list));
+    env_set_local(env, "buf_copy", make_builtin(builtin_buf_copy));
     env_set_local(env, "close_channel", make_builtin(builtin_close_channel));
     env_set_local(env, "channel_closed", make_builtin(builtin_channel_closed));
 

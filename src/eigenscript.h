@@ -144,7 +144,7 @@ struct ASTNode {
 /* ---- Value types ---- */
 
 typedef enum {
-    VAL_NUM, VAL_STR, VAL_LIST, VAL_FN, VAL_BUILTIN, VAL_NULL, VAL_JSON_RAW, VAL_DICT
+    VAL_NUM, VAL_STR, VAL_LIST, VAL_FN, VAL_BUILTIN, VAL_NULL, VAL_JSON_RAW, VAL_DICT, VAL_BUFFER
 } ValType;
 
 typedef struct Value Value;
@@ -171,6 +171,7 @@ struct Value {
         struct { char *name; char **params; int param_count; ASTNode **body; int body_count; Env *closure; } fn;
         BuiltinFn builtin;
         struct { char **keys; Value **vals; int count; int capacity; } dict;
+        struct { double *data; int count; } buffer;
     } data;
     double entropy;
     double dH;
