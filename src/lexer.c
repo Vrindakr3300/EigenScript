@@ -302,10 +302,12 @@ TokenList tokenize(const char *source) {
             case '.': tok_add(&tl, TOK_DOT, 0, NULL, line, tok_col); p++; col++; break;
             case '<':
                 if (*(p+1) == '=') { tok_add(&tl, TOK_LE, 0, NULL, line, tok_col); p += 2; col += 2; }
+                else if (*(p+1) == '<') { tok_add(&tl, TOK_SHL, 0, NULL, line, tok_col); p += 2; col += 2; }
                 else { tok_add(&tl, TOK_LT, 0, NULL, line, tok_col); p++; col++; }
                 break;
             case '>':
                 if (*(p+1) == '=') { tok_add(&tl, TOK_GE, 0, NULL, line, tok_col); p += 2; col += 2; }
+                else if (*(p+1) == '>') { tok_add(&tl, TOK_SHR, 0, NULL, line, tok_col); p += 2; col += 2; }
                 else { tok_add(&tl, TOK_GT, 0, NULL, line, tok_col); p++; col++; }
                 break;
             case '!':
@@ -322,8 +324,11 @@ TokenList tokenize(const char *source) {
                 break;
             case '|':
                 if (*(p+1) == '>') { tok_add(&tl, TOK_PIPE, 0, NULL, line, tok_col); p += 2; col += 2; }
-                else { p++; col++; } /* bare | not used */
+                else { tok_add(&tl, TOK_BITOR, 0, NULL, line, tok_col); p++; col++; }
                 break;
+            case '&': tok_add(&tl, TOK_AMP, 0, NULL, line, tok_col); p++; col++; break;
+            case '^': tok_add(&tl, TOK_CARET, 0, NULL, line, tok_col); p++; col++; break;
+            case '~': tok_add(&tl, TOK_TILDE, 0, NULL, line, tok_col); p++; col++; break;
             default:
                 fprintf(stderr, "Syntax error line %d: unexpected character '%c'\n", line, *p);
                 g_parse_errors++;

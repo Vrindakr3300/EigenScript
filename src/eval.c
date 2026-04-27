@@ -98,6 +98,43 @@ static __thread int g_eval_depth = 0;
  * by design. User declared they won't interrogate. */
 __thread int g_unobserved_depth = 0;
 
+/* Reusable scratch lists for 'f of [a, b, ...]' calls.  Avoids allocating
+ * a fresh heap list on every call — the dominant source of memory growth
+ * in tight loops (emulators, numeric kernels).  Uses a stack to handle
+ * nested calls like assert_eq of [add of [3, 4], 7, "msg"]. */
+#define SCRATCH_LIST_CAP 16
+#define SCRATCH_STACK_DEPTH 32
+static __thread struct {
+    Value  val;
+    Value *items[SCRATCH_LIST_CAP];
+} g_scratch_stack[SCRATCH_STACK_DEPTH];
+static __thread int g_scratch_depth = 0;
+static __thread int g_scratch_init = 0;
+
+static Value *scratch_list_begin(void) {
+    if (!g_scratch_init) {
+        for (int i = 0; i < SCRATCH_STACK_DEPTH; i++) {
+            g_scratch_stack[i].val.type = VAL_LIST;
+            g_scratch_stack[i].val.refcount = 999;
+            g_scratch_stack[i].val.arena = 0;
+            g_scratch_stack[i].val.data.list.items = g_scratch_stack[i].items;
+            g_scratch_stack[i].val.data.list.capacity = SCRATCH_LIST_CAP;
+        }
+        g_scratch_init = 1;
+    }
+    if (g_scratch_depth >= SCRATCH_STACK_DEPTH) return NULL; /* fall back to heap */
+    int d = g_scratch_depth++;
+    g_scratch_stack[d].val.data.list.count = 0;
+    return &g_scratch_stack[d].val;
+}
+static void scratch_list_push(Value *scratch, Value *item) {
+    if (scratch->data.list.count < SCRATCH_LIST_CAP)
+        scratch->data.list.items[scratch->data.list.count++] = item;
+}
+static void scratch_list_end(void) {
+    if (g_scratch_depth > 0) g_scratch_depth--;
+}
+
 /* Observer classification thresholds — tunable via set_observer_thresholds.
  * Defaults are very precise. Advanced users studying slow convergence may
  * need to loosen these. Changing them affects how `report of`, `converged`,
@@ -165,27 +202,32 @@ static int eval_num_fast(ASTNode *node, Env *env, double *out) {
             break;
         }
         case AST_UNARY: {
-            if (strcmp(node->data.unary.op, "-") != 0) break;
             double x;
             if (!eval_num_fast(node->data.unary.operand, env, &x)) break;
-            *out = -x;
-            ok = 1;
+            if (node->data.unary.op[0] == '-') { *out = -x; ok = 1; }
+            else if (node->data.unary.op[0] == '~') { *out = (double)(~(int64_t)x); ok = 1; }
             break;
         }
         case AST_BINOP: {
             const char *op = node->data.binop.op;
-            if (op[1] != '\0') break;
-            if (op[0] != '+' && op[0] != '-' && op[0] != '*' &&
-                op[0] != '/' && op[0] != '%') break;
             double l, r;
             if (!eval_num_fast(node->data.binop.left, env, &l)) break;
             if (!eval_num_fast(node->data.binop.right, env, &r)) break;
-            switch (op[0]) {
-                case '+': *out = l + r; ok = 1; break;
-                case '-': *out = l - r; ok = 1; break;
-                case '*': *out = l * r; ok = 1; break;
-                case '/': if (r != 0) { *out = l / r; ok = 1; } break;
-                case '%': if (r != 0) { *out = fmod(l, r); ok = 1; } break;
+            if (op[1] == '\0') {
+                switch (op[0]) {
+                    case '+': *out = l + r; ok = 1; break;
+                    case '-': *out = l - r; ok = 1; break;
+                    case '*': *out = l * r; ok = 1; break;
+                    case '/': if (r != 0) { *out = l / r; ok = 1; } break;
+                    case '%': if (r != 0) { *out = fmod(l, r); ok = 1; } break;
+                    case '&': *out = (double)((int64_t)l & (int64_t)r); ok = 1; break;
+                    case '|': *out = (double)((int64_t)l | (int64_t)r); ok = 1; break;
+                    case '^': *out = (double)((int64_t)l ^ (int64_t)r); ok = 1; break;
+                }
+            } else if (op[0] == '<' && op[1] == '<') {
+                *out = (double)((int64_t)l << (int64_t)r); ok = 1;
+            } else if (op[0] == '>' && op[1] == '>') {
+                *out = (double)((uint64_t)(int64_t)l >> (int64_t)r); ok = 1;
             }
             break;
         }
@@ -312,6 +354,15 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             return make_num(fmod(left->data.num, right->data.num));
         }
 
+        /* Bitwise binary operators — zero-allocation fast path */
+        if (left->type == VAL_NUM && right->type == VAL_NUM) {
+            if (strcmp(op, "&") == 0) return make_num((double)((int64_t)left->data.num & (int64_t)right->data.num));
+            if (strcmp(op, "|") == 0) return make_num((double)((int64_t)left->data.num | (int64_t)right->data.num));
+            if (strcmp(op, "^") == 0) return make_num((double)((int64_t)left->data.num ^ (int64_t)right->data.num));
+            if (strcmp(op, "<<") == 0) return make_num((double)((int64_t)left->data.num << (int64_t)right->data.num));
+            if (strcmp(op, ">>") == 0) return make_num((double)((uint64_t)(int64_t)left->data.num >> (int64_t)right->data.num));
+        }
+
         if (strcmp(op, "=") == 0) {
             if (left->type == VAL_NUM && right->type == VAL_NUM)
                 return make_num(left->data.num == right->data.num ? 1 : 0);
@@ -354,15 +405,37 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         if (strcmp(node->data.unary.op, "not") == 0) {
             return make_num(is_truthy(operand) ? 0 : 1);
         }
+        if (strcmp(node->data.unary.op, "~") == 0) {
+            if (operand->type == VAL_NUM)
+                return make_num((double)(~(int64_t)operand->data.num));
+            runtime_error(node->line, "cannot bitwise-not %s", val_type_name(operand->type));
+            return make_null();
+        }
         return make_null();
     }
 
     case AST_RELATION: {
-        Value *right_val = eval_node(node->data.relation.right, env);
+        /* Fast path: when right side is a list literal (the common 'f of [a,b]'
+         * pattern), use a reusable scratch list instead of heap-allocating.
+         * This eliminates the dominant memory leak in tight loops. */
+        ASTNode *rhs = node->data.relation.right;
+        int use_scratch = (rhs->type == AST_LIST && rhs->data.list.count <= SCRATCH_LIST_CAP);
+        Value *right_val;
+        if (use_scratch) {
+            right_val = scratch_list_begin();
+            if (!right_val) { use_scratch = 0; right_val = eval_node(rhs, env); }
+            else {
+                for (int i = 0; i < rhs->data.list.count; i++)
+                    scratch_list_push(right_val, eval_node(rhs->data.list.elems[i], env));
+            }
+        } else {
+            right_val = eval_node(rhs, env);
+        }
         Value *left_val = eval_node(node->data.relation.left, env);
 
         if (left_val->type == VAL_BUILTIN) {
             Value *result = left_val->data.builtin(right_val);
+            if (use_scratch) scratch_list_end();
             update_observer(result);
             env_set(env, "__observer__", result);
             return result;
@@ -374,8 +447,18 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                 /* Multi-param: unpack list into named params */
                 for (int pi = 0; pi < left_val->data.fn.param_count && pi < right_val->data.list.count; pi++)
                     env_set_local(call_env, left_val->data.fn.params[pi], right_val->data.list.items[pi]);
+                if (use_scratch) scratch_list_end();
             } else {
-                /* Single param: bind to param name (default "n" for classic style) */
+                /* Single param: the list itself IS the argument — cannot use
+                 * scratch list since the function body may hold a reference.
+                 * Materialize a real heap list from the scratch items. */
+                if (use_scratch) {
+                    Value *heap_list = make_list(right_val->data.list.count);
+                    for (int i = 0; i < right_val->data.list.count; i++)
+                        list_append(heap_list, right_val->data.list.items[i]);
+                    scratch_list_end();
+                    right_val = heap_list;
+                }
                 env_set_local(call_env, left_val->data.fn.params[0], right_val);
             }
 
@@ -404,6 +487,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             return result;
         }
 
+        if (use_scratch) scratch_list_end();
         runtime_error(node->line, "cannot call %s (not a function)",
                 val_type_name(left_val->type));
         return make_null();

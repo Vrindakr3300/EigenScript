@@ -533,6 +533,14 @@ static ASTNode* parse_unary(Parser *p) {
         n->data.unary.operand = operand;
         return n;
     }
+    if (p_cur(p)->type == TOK_TILDE) {
+        p_advance(p);
+        ASTNode *operand = parse_unary(p);
+        ASTNode *n = make_node(AST_UNARY, p_cur(p)->line);
+        snprintf(n->data.unary.op, sizeof(n->data.unary.op), "~");
+        n->data.unary.operand = operand;
+        return n;
+    }
     return parse_relation(p);
 }
 
@@ -570,8 +578,67 @@ static ASTNode* parse_addition(Parser *p) {
     return left;
 }
 
-static ASTNode* parse_comparison(Parser *p) {
+static ASTNode* parse_shift(Parser *p) {
     ASTNode *left = parse_addition(p);
+    while (p_cur(p)->type == TOK_SHL || p_cur(p)->type == TOK_SHR) {
+        char op[4] = {0};
+        if (p_cur(p)->type == TOK_SHL) { op[0] = '<'; op[1] = '<'; }
+        else { op[0] = '>'; op[1] = '>'; }
+        p_advance(p);
+        ASTNode *right = parse_addition(p);
+        ASTNode *n = make_node(AST_BINOP, p_cur(p)->line);
+        snprintf(n->data.binop.op, sizeof(n->data.binop.op), "%s", op);
+        n->data.binop.left = left;
+        n->data.binop.right = right;
+        left = n;
+    }
+    return left;
+}
+
+static ASTNode* parse_bitand(Parser *p) {
+    ASTNode *left = parse_shift(p);
+    while (p_cur(p)->type == TOK_AMP) {
+        p_advance(p);
+        ASTNode *right = parse_shift(p);
+        ASTNode *n = make_node(AST_BINOP, p_cur(p)->line);
+        snprintf(n->data.binop.op, sizeof(n->data.binop.op), "&");
+        n->data.binop.left = left;
+        n->data.binop.right = right;
+        left = n;
+    }
+    return left;
+}
+
+static ASTNode* parse_bitxor(Parser *p) {
+    ASTNode *left = parse_bitand(p);
+    while (p_cur(p)->type == TOK_CARET) {
+        p_advance(p);
+        ASTNode *right = parse_bitand(p);
+        ASTNode *n = make_node(AST_BINOP, p_cur(p)->line);
+        snprintf(n->data.binop.op, sizeof(n->data.binop.op), "^");
+        n->data.binop.left = left;
+        n->data.binop.right = right;
+        left = n;
+    }
+    return left;
+}
+
+static ASTNode* parse_bitor(Parser *p) {
+    ASTNode *left = parse_bitxor(p);
+    while (p_cur(p)->type == TOK_BITOR) {
+        p_advance(p);
+        ASTNode *right = parse_bitxor(p);
+        ASTNode *n = make_node(AST_BINOP, p_cur(p)->line);
+        snprintf(n->data.binop.op, sizeof(n->data.binop.op), "|");
+        n->data.binop.left = left;
+        n->data.binop.right = right;
+        left = n;
+    }
+    return left;
+}
+
+static ASTNode* parse_comparison(Parser *p) {
+    ASTNode *left = parse_bitor(p);
     TokType tt = p_cur(p)->type;
     if (tt == TOK_LT || tt == TOK_GT || tt == TOK_LE || tt == TOK_GE || tt == TOK_EQ || tt == TOK_NE) {
         char op[4] = {0};

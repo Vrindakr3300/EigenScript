@@ -1420,7 +1420,7 @@ Value* builtin_mktemp(Value *arg) {
  * Use this to release large temporary results (e.g. tokenize_with_names output)
  * when the arena is not active. No-op on arena-allocated values. */
 Value* builtin_free_val(Value *arg) {
-    if (arg && !g_arena.active) free_value(arg);
+    if (arg && !g_arena.active) val_decref(arg);
     return make_null();
 }
 
