@@ -241,5 +241,6 @@ int main(int argc, char **argv) {
     free_ast(ast);
     free_tokenlist(&tl);
     free(source);
+    arena_destroy();
     return 0;
 }

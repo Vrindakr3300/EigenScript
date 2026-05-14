@@ -426,6 +426,11 @@ Requires full build. Transformer model inference and training.
 | `close_channel` | `close_channel of channel` | Close the channel. Wakes all blocked senders/receivers. |
 | `channel_closed` | `channel_closed of channel` | Returns 1 if closed, 0 otherwise. |
 
+**Thread safety:** Values sent through channels are shared by reference, not
+copied. Mutable containers (dicts, lists) must not be mutated concurrently by
+sender and receiver. Transfer ownership or send immutable values (numbers,
+strings).
+
 ## Spatial Queries
 
 | Name | Signature | Description |

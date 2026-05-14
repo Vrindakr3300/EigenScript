@@ -16,11 +16,24 @@ All notable changes to EigenScript are documented here.
 ### Performance
 - **Environment hash index**: FNV-1a hash table for O(1) variable lookup in
   `env_get`/`env_set`/`env_set_local`, replacing linear scan.
+- **Dict hash index**: Dicts now use the same FNV-1a hash table for O(1) key
+  lookup in `dict_get`/`dict_set`/`dict_remove`, replacing O(n) linear scan.
 - **Loop condition fast path**: `eval_num_fast` extended with comparison
   operators (`<`, `>`, `<=`, `>=`, `==`, `!=`). Loop conditions like
   `while x < limit:` now evaluate with zero allocation.
+- **Relaxed atomic refcounting**: `val_incref` uses `RELAXED` ordering,
+  `val_decref` uses `ACQ_REL` (was `SEQ_CST`). Eliminates unnecessary full
+  memory barriers on every refcount operation.
+- **Allocation origin fix**: `list_append` and `env_set_local` now use the
+  owning structure's arena flag (not `g_arena.active`) to decide allocation
+  strategy, eliminating the `is_arena_ptr()` linear scan on every
+  `free_value`.
 - **Memory leak fixes**: Safe `val_decref` on fresh Values from loop
-  conditions, list comprehension filters, and match patterns.
+  conditions, list comprehension filters, and match patterns. Closure
+  environments are freed when all referencing closures are destroyed (atomic
+  `env_refcount`). Thread `call_env` is freed after thread body completes.
+  Arena overflow allocations are tracked and freed on `arena_reset`.
+  `arena_destroy` frees all arena blocks at program exit.
 
 ### Builtins
 - `sign_extend of [val, bits]` — sign-extend a value from a given bit width

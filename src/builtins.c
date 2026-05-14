@@ -2491,7 +2491,6 @@ typedef struct {
 static void *thread_entry(void *arg) {
     ThreadHandle *h = (ThreadHandle *)arg;
     arena_init();
-    Env *env = env_new(h->parent_env);
     Value *fn = h->fn;
     if (fn->type == VAL_FN) {
         Env *call_env = env_new(fn->data.fn.closure);
@@ -2512,12 +2511,12 @@ static void *thread_entry(void *arg) {
         }
         h->result = result;
         if (result) val_incref(result);
+        env_free(call_env);
     } else if (fn->type == VAL_BUILTIN) {
         h->result = fn->data.builtin(h->fn_arg ? h->fn_arg : make_null());
         if (h->result) val_incref(h->result);
     }
     h->done = 1;
-    (void)env;
     return NULL;
 }
 
@@ -2604,6 +2603,10 @@ Value* builtin_channel(Value *arg) {
     return d;
 }
 
+/* Thread safety: values sent through channels are shared by reference
+ * (incref'd, not deep-copied). Mutable containers (dicts, lists) must
+ * not be mutated concurrently by sender and receiver — transfer
+ * ownership or use immutable values. */
 Value* builtin_send(Value *arg) {
     if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) {
         runtime_error(0, "send requires [channel, value]");

@@ -47,4 +47,27 @@ hey is make_greeter of "Hey"
 assert_eq of [hello of "World", "Hello, World!", "closure f-string hello"]
 assert_eq of [hey of "EigenScript", "Hey, EigenScript!", "closure f-string hey"]
 
+# Mutual closures — two functions capturing each other's env
+define make_pair as:
+    define get_a(x) as:
+        return x + 1
+    define get_b(x) as:
+        return get_a of x + 10
+    return [get_a, get_b]
+
+pair is make_pair of null
+fn_a is pair[0]
+fn_b is pair[1]
+assert_eq of [fn_a of 5, 6, "mutual closure fn_a"]
+assert_eq of [fn_b of 5, 16, "mutual closure fn_b calls fn_a"]
+
+# Closures in a loop — verify env_refcount tracks correctly
+closures is []
+for i in range of 5:
+    define cap(x) as:
+        return x + i
+    append of [closures, cap]
+assert_eq of [closures[0] of 0, 0, "loop closure 0"]
+assert_eq of [closures[4] of 0, 4, "loop closure 4"]
+
 test_summary of null

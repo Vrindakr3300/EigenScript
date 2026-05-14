@@ -75,6 +75,10 @@ void arena_init(void) {
     g_arena.string_count = 0;
     g_arena.string_capacity = 0;
     g_arena.mark_string_count = 0;
+    g_arena.fallbacks = NULL;
+    g_arena.fallback_count = 0;
+    g_arena.fallback_capacity = 0;
+    g_arena.mark_fallback_count = 0;
 }
 
 void* arena_alloc(size_t size) {
@@ -84,7 +88,15 @@ void* arena_alloc(size_t size) {
         g_arena.current_block++;
         if (g_arena.current_block >= g_arena.block_count) {
             if (g_arena.block_count >= ARENA_MAX_BLOCKS) {
-                return xcalloc(1, size);
+                void *p = xcalloc(1, size);
+                /* Track overflow alloc so arena_reset can free it */
+                if (g_arena.fallback_count >= g_arena.fallback_capacity) {
+                    int new_cap = g_arena.fallback_capacity < 64 ? 64 : g_arena.fallback_capacity * 2;
+                    g_arena.fallbacks = xrealloc_array(g_arena.fallbacks, new_cap, sizeof(char*));
+                    g_arena.fallback_capacity = new_cap;
+                }
+                g_arena.fallbacks[g_arena.fallback_count++] = p;
+                return p;
             }
             g_arena.blocks[g_arena.block_count] = xmalloc(ARENA_BLOCK_SIZE);
             g_arena.block_count++;
@@ -112,6 +124,7 @@ void arena_mark_pos(void) {
     g_arena.mark_block = g_arena.current_block;
     g_arena.mark_offset = g_arena.offset;
     g_arena.mark_string_count = g_arena.string_count;
+    g_arena.mark_fallback_count = g_arena.fallback_count;
     g_arena.active = 1;
 }
 
@@ -120,10 +133,26 @@ void arena_reset_to_mark(void) {
         free(g_arena.strings[i]);
     g_arena.string_count = g_arena.mark_string_count;
 
+    for (int i = g_arena.mark_fallback_count; i < g_arena.fallback_count; i++)
+        free(g_arena.fallbacks[i]);
+    g_arena.fallback_count = g_arena.mark_fallback_count;
+
     g_arena.current_block = g_arena.mark_block;
     g_arena.offset = g_arena.mark_offset;
 
     g_arena.active = 0;
+}
+
+void arena_destroy(void) {
+    for (int i = 0; i < g_arena.string_count; i++)
+        free(g_arena.strings[i]);
+    free(g_arena.strings);
+    for (int i = 0; i < g_arena.fallback_count; i++)
+        free(g_arena.fallbacks[i]);
+    free(g_arena.fallbacks);
+    for (int i = 0; i < g_arena.block_count; i++)
+        free(g_arena.blocks[i]);
+    memset(&g_arena, 0, sizeof(g_arena));
 }
 
 void free_weight_val(Value *v) {

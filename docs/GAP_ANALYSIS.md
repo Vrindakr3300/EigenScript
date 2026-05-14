@@ -18,8 +18,8 @@ The survey is grounded in the current state of `src/`, `lib/`, `docs/`, and
 
 **Runtime**
 - Tree-walking interpreter in C, dynamically typed
-- Single-threaded, synchronous evaluation
-- Reference-counted GC plus arena allocator (`arena_mark` / `arena_reset`)
+- Multi-threaded via `spawn`/`thread_join`/channels
+- Hybrid memory: atomic reference counting, arena bump allocator, numeric freelist
 - Native binary, zero runtime dependencies
 
 **Standard library highlights** (25 modules in 0.8.1; 49 modules in current 0.9.3, all pure EigenScript)

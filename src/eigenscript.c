@@ -132,21 +132,19 @@ const char* val_type_name(ValType t) {
 
 /* Arena allocator and free_weight_val are in arena.c */
 
+/* Forward declarations for hash helpers (used by dict and env). */
+static uint32_t env_hash_name(const char *name);
+static void env_hash_init(EnvHash *ht, int cap);
+static void env_hash_insert(EnvHash *ht, uint32_t h, int idx);
+static void env_hash_rebuild(EnvHash *ht, char **names, int count);
+static int env_hash_find(const EnvHash *ht, const char *name, uint32_t h, char **names);
+
 /* ================================================================
  * VALUE CONSTRUCTORS
  * ================================================================ */
 
 /* Recursively free a heap-allocated Value tree.
- * Only safe when arena is NOT active (values are individually calloc'd).
- * Skips arena-allocated values. */
-static int is_arena_ptr(void *ptr) {
-    for (int i = 0; i < g_arena.block_count; i++) {
-        char *start = g_arena.blocks[i];
-        if ((char*)ptr >= start && (char*)ptr < start + ARENA_BLOCK_SIZE) return 1;
-    }
-    return 0;
-}
-
+ * Skips arena-allocated values (v->arena flag). */
 #define NUM_FREELIST_CAP 4096
 static __thread Value *g_num_freelist = NULL;
 static __thread int g_num_freelist_count = 0;
@@ -158,7 +156,7 @@ static __thread int g_num_freelist_count = 0;
  * tracked by refcount elsewhere stay alive. Arena-owned memory is
  * skipped — it gets reclaimed by arena_reset. */
 void free_value(Value *v) {
-    if (!v || v->arena || is_arena_ptr(v)) return;
+    if (!v || v->arena) return;
     if (v->type == VAL_NUM) {
         /* Route freed NUMs to freelist for reuse by make_num */
         if (g_num_freelist_count < NUM_FREELIST_CAP) {
@@ -173,12 +171,12 @@ void free_value(Value *v) {
     switch (v->type) {
         case VAL_STR:
         case VAL_JSON_RAW:
-            if (v->data.str && !is_arena_ptr(v->data.str)) free(v->data.str);
+            if (v->data.str) free(v->data.str);
             break;
         case VAL_LIST:
             for (int i = 0; i < v->data.list.count; i++)
                 val_decref(v->data.list.items[i]);
-            if (v->data.list.items && !is_arena_ptr(v->data.list.items))
+            if (v->data.list.items)
                 free(v->data.list.items);
             break;
         case VAL_DICT:
@@ -188,12 +186,24 @@ void free_value(Value *v) {
             }
             free(v->data.dict.keys);
             free(v->data.dict.vals);
+            free(v->data.dict.hash.hashes);
+            free(v->data.dict.hash.indices);
             break;
         case VAL_FN:
             free(v->data.fn.name);
             for (int i = 0; i < v->data.fn.param_count; i++)
                 free(v->data.fn.params[i]);
             free(v->data.fn.params);
+            {
+                Env *clo = v->data.fn.closure;
+                v->data.fn.closure = NULL;  /* break cycle before decrement */
+                if (clo) {
+                    if (__atomic_sub_fetch(&clo->env_refcount, 1, __ATOMIC_ACQ_REL) <= 0 && clo->captured) {
+                        clo->captured = 0;
+                        env_free(clo);
+                    }
+                }
+            }
             break;
         case VAL_BUFFER:
             free(v->data.buffer.data);
@@ -317,6 +327,7 @@ Value* make_fn(const char *name, char **params, int param_count, ASTNode **body,
     v->data.fn.body = body;
     v->data.fn.body_count = body_count;
     v->data.fn.closure = closure;
+    if (closure) __atomic_add_fetch(&closure->env_refcount, 1, __ATOMIC_RELAXED);
     v->refcount = 1;
     v->arena = 0;
     return v;
@@ -339,6 +350,7 @@ Value* make_dict(int capacity) {
     v->data.dict.vals = xcalloc(capacity, sizeof(Value*));
     v->data.dict.count = 0;
     v->data.dict.capacity = capacity;
+    env_hash_init(&v->data.dict.hash, ENV_HASH_INIT_CAP);
     v->refcount = 1;
     v->arena = 0;
     return v;
@@ -346,20 +358,19 @@ Value* make_dict(int capacity) {
 
 void dict_set(Value *dict, const char *key, Value *val) {
     if (!dict || dict->type != VAL_DICT) return;
-    /* Check if key exists */
-    for (int i = 0; i < dict->data.dict.count; i++) {
-        if (strcmp(dict->data.dict.keys[i], key) == 0) {
-            Value *promoted = promote_if_arena(val);
-            if (promoted != val) {
-                val_decref(dict->data.dict.vals[i]);
-                dict->data.dict.vals[i] = promoted;
-            } else {
-                val_incref(val);
-                val_decref(dict->data.dict.vals[i]);
-                dict->data.dict.vals[i] = val;
-            }
-            return;
+    uint32_t h = env_hash_name(key);
+    int idx = env_hash_find(&dict->data.dict.hash, key, h, dict->data.dict.keys);
+    if (idx >= 0) {
+        Value *promoted = promote_if_arena(val);
+        if (promoted != val) {
+            val_decref(dict->data.dict.vals[idx]);
+            dict->data.dict.vals[idx] = promoted;
+        } else {
+            val_incref(val);
+            val_decref(dict->data.dict.vals[idx]);
+            dict->data.dict.vals[idx] = val;
         }
+        return;
     }
     /* Grow if needed */
     if (dict->data.dict.count >= dict->data.dict.capacity) {
@@ -373,15 +384,17 @@ void dict_set(Value *dict, const char *key, Value *val) {
     dict->data.dict.vals[dict->data.dict.count] = promoted;
     if (promoted == val) val_incref(val);
     dict->data.dict.count++;
+    if (dict->data.dict.count * 10 > (dict->data.dict.hash.mask + 1) * 7)
+        env_hash_rebuild(&dict->data.dict.hash, dict->data.dict.keys, dict->data.dict.count);
+    else
+        env_hash_insert(&dict->data.dict.hash, h, dict->data.dict.count - 1);
 }
 
 Value* dict_get(Value *dict, const char *key) {
     if (!dict || dict->type != VAL_DICT) return NULL;
-    for (int i = 0; i < dict->data.dict.count; i++) {
-        if (strcmp(dict->data.dict.keys[i], key) == 0)
-            return dict->data.dict.vals[i];
-    }
-    return NULL;
+    uint32_t h = env_hash_name(key);
+    int idx = env_hash_find(&dict->data.dict.hash, key, h, dict->data.dict.keys);
+    return (idx >= 0) ? dict->data.dict.vals[idx] : NULL;
 }
 
 int dict_has(Value *dict, const char *key) {
@@ -390,26 +403,25 @@ int dict_has(Value *dict, const char *key) {
 
 void dict_remove(Value *dict, const char *key) {
     if (!dict || dict->type != VAL_DICT) return;
-    for (int i = 0; i < dict->data.dict.count; i++) {
-        if (strcmp(dict->data.dict.keys[i], key) == 0) {
-            free(dict->data.dict.keys[i]);
-            val_decref(dict->data.dict.vals[i]);
-            /* Shift remaining */
-            for (int j = i; j < dict->data.dict.count - 1; j++) {
-                dict->data.dict.keys[j] = dict->data.dict.keys[j+1];
-                dict->data.dict.vals[j] = dict->data.dict.vals[j+1];
-            }
-            dict->data.dict.count--;
-            return;
-        }
+    uint32_t h = env_hash_name(key);
+    int idx = env_hash_find(&dict->data.dict.hash, key, h, dict->data.dict.keys);
+    if (idx < 0) return;
+    free(dict->data.dict.keys[idx]);
+    val_decref(dict->data.dict.vals[idx]);
+    /* Shift remaining */
+    for (int j = idx; j < dict->data.dict.count - 1; j++) {
+        dict->data.dict.keys[j] = dict->data.dict.keys[j+1];
+        dict->data.dict.vals[j] = dict->data.dict.vals[j+1];
     }
+    dict->data.dict.count--;
+    env_hash_rebuild(&dict->data.dict.hash, dict->data.dict.keys, dict->data.dict.count);
 }
 
 void list_append(Value *list, Value *item) {
     if (!list || list->type != VAL_LIST) return;
     if (list->data.list.count >= list->data.list.capacity) {
         int new_cap = list->data.list.capacity * 2;
-        if (g_arena.active) {
+        if (list->arena) {
             /* Cannot realloc arena memory — allocate new array and copy */
             Value **new_items = arena_alloc(safe_size_mul(new_cap, sizeof(Value*)));
             memcpy(new_items, list->data.list.items, list->data.list.count * sizeof(Value*));
@@ -562,6 +574,7 @@ Env* env_new(Env *parent) {
     e->capacity = ENV_INIT_CAP;
     e->heap_allocated = 1;
     e->captured = 0;
+    e->env_refcount = 0;
     e->names  = xcalloc(ENV_INIT_CAP, sizeof(char *));
     e->values = xcalloc(ENV_INIT_CAP, sizeof(Value *));
     env_hash_init(&e->hash, ENV_HASH_INIT_CAP);
@@ -609,7 +622,7 @@ void env_set_local(Env *env, const char *name, Value *val) {
         int new_cap = env->capacity * 2;
         size_t nsz = new_cap * sizeof(char *);
         size_t vsz = new_cap * sizeof(Value *);
-        if (g_arena.active && !env->heap_allocated) {
+        if (!env->heap_allocated) {
             char **nn  = arena_alloc(nsz);
             Value **nv = arena_alloc(vsz);
             memcpy(nn, env->names, env->count * sizeof(char *));
@@ -627,7 +640,7 @@ void env_set_local(Env *env, const char *name, Value *val) {
         env->capacity = new_cap;
     }
     char *name_copy = xstrdup(name);
-    if (g_arena.active && !env->heap_allocated) arena_track_string(name_copy);
+    if (!env->heap_allocated) arena_track_string(name_copy);
     env->names[env->count] = name_copy;
     Value *promoted = promote_if_arena(val);
     env->values[env->count] = promoted;
@@ -642,7 +655,8 @@ void env_set_local(Env *env, const char *name, Value *val) {
 }
 
 void env_free(Env *env) {
-    if (!env || !env->heap_allocated || env->captured) return;
+    if (!env || !env->heap_allocated) return;
+    if (env->captured && __atomic_load_n(&env->env_refcount, __ATOMIC_ACQUIRE) > 0) return;
     for (int i = 0; i < env->count; i++) {
         free(env->names[i]);
         if (env->values[i] && !env->values[i]->arena)

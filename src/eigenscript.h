@@ -173,6 +173,7 @@ struct Env {
     Env *parent;
     int heap_allocated;
     int captured;
+    int env_refcount;   /* number of closures referencing this env */
     EnvHash hash;
 };
 
@@ -184,7 +185,7 @@ struct Value {
         struct { Value **items; int count; int capacity; } list;
         struct { char *name; char **params; int param_count; ASTNode **body; int body_count; Env *closure; } fn;
         BuiltinFn builtin;
-        struct { char **keys; Value **vals; int count; int capacity; } dict;
+        struct { char **keys; Value **vals; int count; int capacity; EnvHash hash; } dict;
         struct { double *data; int count; } buffer;
     } data;
     double entropy;
@@ -214,6 +215,10 @@ typedef struct {
     int string_count;
     int string_capacity;
     int mark_string_count;
+    char **fallbacks;       /* heap allocations from arena overflow */
+    int fallback_count;
+    int fallback_capacity;
+    int mark_fallback_count;
 } Arena;
 
 extern __thread Arena g_arena;
@@ -250,6 +255,7 @@ char  *strbuf_finish(strbuf *b);
 void   strbuf_free(strbuf *b);
 
 void arena_init(void);
+void arena_destroy(void);
 void* arena_alloc(size_t size);
 void arena_track_string(char *s);
 void arena_mark_pos(void);
@@ -272,7 +278,11 @@ Value* dict_get(Value *dict, const char *key);
 void list_append(Value *list, Value *item);
 void free_value(Value *v);
 
-/* ---- Reference counting (atomic for thread safety) ---- */
+/* ---- Reference counting (atomic for thread safety) ----
+ * Relaxed increment: caller already holds a reference, so no ordering needed.
+ * Acquire-release decrement: release ensures writes are visible before the
+ * refcount store; acquire ensures the thread that sees 0 observes all prior
+ * writes before calling free_value. */
 /* Numeric invariant: EigenScript has no NaN or Infinity.
  * All numeric operations route through this guard.
  * NaN -> 0; values escaping the finite number line saturate at
@@ -285,11 +295,11 @@ static inline double num_guard(double x) {
 }
 
 static inline void val_incref(Value *v) {
-    if (v && !v->arena) __atomic_add_fetch(&v->refcount, 1, __ATOMIC_SEQ_CST);
+    if (v && !v->arena) __atomic_add_fetch(&v->refcount, 1, __ATOMIC_RELAXED);
 }
 static inline void val_decref(Value *v) {
     if (v && !v->arena) {
-        if (__atomic_sub_fetch(&v->refcount, 1, __ATOMIC_SEQ_CST) <= 0) {
+        if (__atomic_sub_fetch(&v->refcount, 1, __ATOMIC_ACQ_REL) <= 0) {
             free_value(v);
         }
     }

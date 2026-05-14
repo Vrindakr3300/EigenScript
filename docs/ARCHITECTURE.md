@@ -99,12 +99,43 @@ provides statement-scoped opt-out.
 
 ## Memory
 
-The arena allocator (`arena.c`) provides fast bump allocation for transient
-computation. Scripts use `arena_mark`/`arena_reset` to reclaim memory in
-bounded-computation loops (e.g., gradient computation).
+EigenScript uses a hybrid memory model: reference counting, arena bump
+allocation, a numeric freelist, and scratch stacks.
 
-Long-lived values (variables, function definitions) are allocated with
-standard `malloc` and are not affected by arena resets.
+**Reference counting.** Every heap-allocated `Value` has an atomic refcount
+(`__ATOMIC_RELAXED` increment, `__ATOMIC_ACQ_REL` decrement). When the
+refcount reaches zero, `free_value` tears down the value and its children.
+Arena-allocated values (`v->arena == 1`) skip refcounting entirely — they
+are reclaimed in bulk by `arena_reset`.
+
+**Arena allocator.** The arena (`arena.c`) provides fast bump allocation in
+16 MB blocks (up to 64 blocks). Scripts use `arena_mark`/`arena_reset` to
+reclaim transient memory in bounded-computation loops (e.g., gradient
+updates). If the block limit is exceeded, the arena falls back to `xcalloc`
+and tracks the fallback pointers so `arena_reset` can free them. At program
+exit, `arena_destroy` frees all blocks.
+
+**Allocation invariant.** A heap-owned value (`arena == 0`) has all interior
+pointers (strings, item arrays) on the heap. `list_append` and
+`env_set_local` use the owning structure's allocation origin — not the
+global `g_arena.active` flag — to decide where to allocate growth.
+
+**Numeric freelist.** Freed `VAL_NUM` values are placed in a per-thread
+freelist (up to 4096 entries) and reused by `make_num`, avoiding
+malloc/free churn in arithmetic-heavy loops.
+
+**Dict hash table.** Dicts use the same FNV-1a open-addressing hash
+(`EnvHash`) as environments, giving O(1) key lookup, insert, and update.
+
+**Closure environments.** Environments captured by closures
+(`env->captured = 1`) track a reference count (`env_refcount`, atomic).
+When the last closure referencing an env is freed, the env becomes
+eligible for cleanup. Cycles (function stored in its own closure env) are
+broken by nulling `fn.closure` before decrementing the env refcount.
+
+**Thread safety.** Values sent through channels are shared by reference
+(incref'd, not deep-copied). Mutable containers (dicts, lists) must not be
+mutated concurrently by sender and receiver.
 
 ## Extensions
 
