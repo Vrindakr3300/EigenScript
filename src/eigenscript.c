@@ -295,6 +295,17 @@ Value* make_str(const char *s) {
     return v;
 }
 
+Value* make_str_owned(char *s) {
+    int from_arena = g_arena.active;
+    Value *v = from_arena ? arena_alloc(sizeof(Value)) : xcalloc(1, sizeof(Value));
+    v->type = VAL_STR;
+    v->data.str = s;
+    if (from_arena) arena_track_string(s);
+    v->refcount = 1;
+    v->arena = from_arena;
+    return v;
+}
+
 static Value g_null_singleton = { .type = VAL_NULL, .refcount = 1000000, .arena = 1 };
 
 Value* make_null(void) {
@@ -667,6 +678,17 @@ void env_free(Env *env) {
     free(env->hash.hashes);
     free(env->hash.indices);
     free(env);
+}
+
+void env_clear(Env *env) {
+    if (!env) return;
+    for (int i = 0; i < env->count; i++) {
+        free(env->names[i]);
+        if (env->values[i] && !env->values[i]->arena)
+            val_decref(env->values[i]);
+    }
+    env->count = 0;
+    memset(env->hash.hashes, 0, (env->hash.mask + 1) * sizeof(uint32_t));
 }
 
 Value* env_get(Env *env, const char *name) {

@@ -366,6 +366,7 @@ Value* builtin_append(Value *arg) {
 
 Value* builtin_report(Value *arg) {
     if (!arg) return make_str("equilibrium");
+    observer_ensure_fresh(arg);
     double dh = arg->dH;
     double h = arg->entropy;
     double prev_dh = arg->prev_dH;

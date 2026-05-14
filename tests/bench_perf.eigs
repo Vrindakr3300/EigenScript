@@ -1,0 +1,41 @@
+# EigenScript performance benchmark
+
+# --- Bench 1: For-loop sum (tests env reuse) ---
+t0 is monotonic_ms of null
+total is 0
+for i in range of 50000:
+  total is total + i
+t1 is monotonic_ms of null
+print of f"for-loop 50k:  {t1 - t0}ms  (sum={total})"
+
+# --- Bench 2: While-loop numeric (tests lazy observer) ---
+t0 is monotonic_ms of null
+unobserved:
+  x is 0
+  loop while x < 100000:
+    x is x + 1
+t1 is monotonic_ms of null
+print of f"while 100k:    {t1 - t0}ms  (x={x})"
+
+# --- Bench 3: String concat ---
+t0 is monotonic_ms of null
+s is ""
+for i in range of 2000:
+  s is s + "x"
+t1 is monotonic_ms of null
+print of f"strcat 2k:     {t1 - t0}ms  (len={len of s})"
+
+# --- Bench 4: List comprehension ---
+t0 is monotonic_ms of null
+squares is [i * i for i in range of 20000]
+t1 is monotonic_ms of null
+print of f"listcomp 20k:  {t1 - t0}ms  (len={len of squares})"
+
+# --- Bench 5: Observer interrogation ---
+t0 is monotonic_ms of null
+val is 1.0
+for i in range of 10000:
+  val is val * 1.001
+  r is report of val
+t1 is monotonic_ms of null
+print of f"observe 10k:   {t1 - t0}ms"

@@ -81,8 +81,37 @@ static void update_observer(Value *v) {
     v->entropy = new_entropy;
     v->last_entropy = new_entropy;
     v->obs_age++;
+    v->dirty = 0;
 }
 
+/* Lazily recompute entropy when a consumer reads observer state. */
+static void ensure_observer_fresh(Value *v) {
+    if (v && v->dirty) {
+        update_observer(v);
+    }
+}
+
+/* Non-static wrapper for builtins.c */
+void observer_ensure_fresh(Value *v) {
+    ensure_observer_fresh(v);
+}
+
+/* Mark a value as needing entropy recomputation. Copies tracking
+ * state from the previous value at this binding (if any). */
+static void mark_observer_dirty(Value *val, Value *old) {
+    if (!val) return;
+    if (old) {
+        /* If the old value was never observed, compute its entropy now
+         * so that dH tracking stays correct across assignment chains. */
+        ensure_observer_fresh(old);
+        val->last_entropy = old->entropy;
+        val->obs_age = old->obs_age;
+        val->dH = old->dH;
+        val->prev_dH = old->prev_dH;
+        val->entropy = old->entropy;
+    }
+    val->dirty = 1;
+}
 
 /* Recursion-depth guard. Each user-visible recursion level typically
  * consumes 3-6 eval_node frames (wrapper + _impl + sub-expressions).
@@ -302,7 +331,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             if (eval_num_fast(node->data.assign.expr, env, &result)) {
                 old->data.num = num_guard(result);
                 if (g_unobserved_depth == 0) {
-                    update_observer(old);
+                    old->dirty = 1;
                     env_set(env, "__observer__", old);
                 }
                 return old;
@@ -315,12 +344,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         }
         Value *val = eval_node(node->data.assign.expr, env);
         old = env_get(env, node->data.assign.name);
-        if (old) {
-            val->last_entropy = old->entropy;
-            val->obs_age = old->obs_age;
-            val->dH = old->dH;
-        }
-        update_observer(val);
+        mark_observer_dirty(val, old);
         env_set(env, node->data.assign.name, val);
         env_set(env, "__observer__", val);
         return val;
@@ -381,15 +405,23 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
 
         /* String concatenation */
         if (strcmp(op, "+") == 0 && (left->type == VAL_STR || right->type == VAL_STR)) {
+            if (left->type == VAL_STR && right->type == VAL_STR) {
+                const char *ls = left->data.str;
+                const char *rs = right->data.str;
+                size_t llen = strlen(ls), rlen = strlen(rs);
+                char *buf = xmalloc(llen + rlen + 1);
+                memcpy(buf, ls, llen);
+                memcpy(buf + llen, rs, rlen + 1);
+                return make_str_owned(buf);
+            }
             char *ls = value_to_string(left);
             char *rs = value_to_string(right);
             size_t llen = strlen(ls), rlen = strlen(rs);
-            char *result = xmalloc(llen + rlen + 1);
-            memcpy(result, ls, llen);
-            memcpy(result + llen, rs, rlen + 1);
-            Value *v = make_str(result);
-            free(ls); free(rs); free(result);
-            return v;
+            char *buf = xmalloc(llen + rlen + 1);
+            memcpy(buf, ls, llen);
+            memcpy(buf + llen, rs, rlen + 1);
+            free(ls); free(rs);
+            return make_str_owned(buf);
         }
 
         /* Equality/inequality for non-numeric types */
@@ -480,7 +512,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         if (left_val->type == VAL_BUILTIN) {
             Value *result = left_val->data.builtin(right_val);
             if (use_scratch) scratch_list_end();
-            update_observer(result);
+            if (result) result->dirty = 1;
             env_set(env, "__observer__", result);
             return result;
         }
@@ -516,7 +548,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                 result = eval_node(left_val->data.fn.body[i], call_env);
                 if (g_returning) {
                     g_returning = 0;
-                    update_observer(g_return_val);
+                    if (g_return_val) g_return_val->dirty = 1;
                     env_set(env, "__observer__", g_return_val);
                     env_free(call_env);
                     return g_return_val ? g_return_val : make_null();
@@ -527,7 +559,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                     break;
                 }
             }
-            update_observer(result);
+            if (result) result->dirty = 1;
             env_set(env, "__observer__", result);
             env_free(call_env);
             return result;
@@ -579,6 +611,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
              * expensive in scopes with many variables. */
             if (g_unobserved_depth == 0) {
                 Value *obs = env_get(env, "__observer__");
+                ensure_observer_fresh(obs);
                 if (obs && fabs(obs->dH) < g_obs_dh_zero && obs->entropy >= g_obs_h_low) {
                     stall_count++;
                     if (stall_count >= 100) {
@@ -604,27 +637,26 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             return make_null();
         }
         Value *result = make_null();
-        if (iter->type == VAL_BUFFER) {
-            for (int i = 0; i < iter->data.buffer.count; i++) {
-                Env *loop_env = env_new(env);
-                env_set_local(loop_env, node->data.forloop.var, make_num(iter->data.buffer.data[i]));
-                result = eval_block(node->data.forloop.body, node->data.forloop.body_count, loop_env);
-                if (g_returning) { env_free(loop_env); return result; }
-                if (g_breaking) { g_breaking = 0; env_free(loop_env); break; }
-                if (g_continuing) { g_continuing = 0; }
-                env_free(loop_env);
+        int iter_count = (iter->type == VAL_BUFFER)
+                         ? iter->data.buffer.count
+                         : iter->data.list.count;
+        Env *loop_env = env_new(env);
+        for (int i = 0; i < iter_count; i++) {
+            if (loop_env->captured) {
+                loop_env = env_new(env);
+            } else if (i > 0) {
+                env_clear(loop_env);
             }
-        } else {
-            for (int i = 0; i < iter->data.list.count; i++) {
-                Env *loop_env = env_new(env);
-                env_set_local(loop_env, node->data.forloop.var, iter->data.list.items[i]);
-                result = eval_block(node->data.forloop.body, node->data.forloop.body_count, loop_env);
-                if (g_returning) { env_free(loop_env); return result; }
-                if (g_breaking) { g_breaking = 0; env_free(loop_env); break; }
-                if (g_continuing) { g_continuing = 0; }
-                env_free(loop_env);
-            }
+            Value *elem = (iter->type == VAL_BUFFER)
+                          ? make_num(iter->data.buffer.data[i])
+                          : iter->data.list.items[i];
+            env_set_local(loop_env, node->data.forloop.var, elem);
+            result = eval_block(node->data.forloop.body, node->data.forloop.body_count, loop_env);
+            if (g_returning) { env_free(loop_env); return result; }
+            if (g_breaking) { g_breaking = 0; break; }
+            if (g_continuing) { g_continuing = 0; }
         }
+        env_free(loop_env);
         return result;
     }
 
@@ -925,8 +957,13 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         if (!iter || (iter->type != VAL_LIST && iter->type != VAL_BUFFER)) return make_list(0);
         int iter_count = (iter->type == VAL_BUFFER) ? iter->data.buffer.count : iter->data.list.count;
         Value *result = make_list(iter_count);
+        Env *loop_env = env_new(env);
         for (int i = 0; i < iter_count; i++) {
-            Env *loop_env = env_new(env);
+            if (loop_env->captured) {
+                loop_env = env_new(env);
+            } else if (i > 0) {
+                env_clear(loop_env);
+            }
             Value *elem = (iter->type == VAL_BUFFER) ? make_num(iter->data.buffer.data[i]) : iter->data.list.items[i];
             env_set_local(loop_env, node->data.listcomp.var, elem);
             if (node->data.listcomp.filter) {
@@ -935,15 +972,12 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                 ASTType ft = node->data.listcomp.filter->type;
                 if (ft == AST_BINOP || ft == AST_UNARY || ft == AST_RELATION)
                     val_decref(cond);
-                if (!truthy) {
-                    env_free(loop_env);
-                    continue;
-                }
+                if (!truthy) continue;
             }
             Value *val = eval_node(node->data.listcomp.expr, loop_env);
             list_append(result, val);
-            env_free(loop_env);
         }
+        env_free(loop_env);
         return result;
     }
 
@@ -969,6 +1003,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
 
     case AST_INTERROGATE: {
         Value *target = eval_node(node->data.interrogate.expr, env);
+        ensure_observer_fresh(target);
         switch (node->data.interrogate.kind) {
             case 0:
                 if (target->type == VAL_NUM) return make_num(target->data.num);
@@ -1000,6 +1035,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
 
     case AST_PREDICATE: {
         Value *last = env_get(env, "__observer__");
+        ensure_observer_fresh(last);
         double h = last ? last->entropy : 0.0;
         double dh = last ? last->dH : 0.0;
         switch (node->data.predicate.kind) {

@@ -26,42 +26,78 @@ static void tok_add(TokenList *tl, TokType type, double num, const char *str, in
 }
 
 static TokType keyword_type(const char *word) {
-    if (strcmp(word, "is") == 0) return TOK_IS;
-    if (strcmp(word, "of") == 0) return TOK_OF;
-    if (strcmp(word, "define") == 0) return TOK_DEFINE;
-    if (strcmp(word, "as") == 0) return TOK_AS;
-    if (strcmp(word, "if") == 0) return TOK_IF;
-    if (strcmp(word, "else") == 0) return TOK_ELSE;
-    if (strcmp(word, "elif") == 0) return TOK_ELIF;
-    if (strcmp(word, "loop") == 0) return TOK_LOOP;
-    if (strcmp(word, "while") == 0) return TOK_WHILE;
-    if (strcmp(word, "return") == 0) return TOK_RETURN;
-    if (strcmp(word, "and") == 0) return TOK_AND;
-    if (strcmp(word, "or") == 0) return TOK_OR;
-    if (strcmp(word, "not") == 0) return TOK_NOT;
-    if (strcmp(word, "for") == 0) return TOK_FOR;
-    if (strcmp(word, "in") == 0) return TOK_IN;
-    if (strcmp(word, "null") == 0) return TOK_NULL;
-    if (strcmp(word, "what") == 0) return TOK_WHAT;
-    if (strcmp(word, "who") == 0) return TOK_WHO;
-    if (strcmp(word, "when") == 0) return TOK_WHEN;
-    if (strcmp(word, "where") == 0) return TOK_WHERE;
-    if (strcmp(word, "why") == 0) return TOK_WHY;
-    if (strcmp(word, "how") == 0) return TOK_HOW;
-    if (strcmp(word, "converged") == 0) return TOK_CONVERGED;
-    if (strcmp(word, "stable") == 0) return TOK_STABLE;
-    if (strcmp(word, "improving") == 0) return TOK_IMPROVING;
-    if (strcmp(word, "oscillating") == 0) return TOK_OSCILLATING;
-    if (strcmp(word, "diverging") == 0) return TOK_DIVERGING;
-    if (strcmp(word, "equilibrium") == 0) return TOK_EQUILIBRIUM;
-    if (strcmp(word, "try") == 0) return TOK_TRY;
-    if (strcmp(word, "catch") == 0) return TOK_CATCH;
-    if (strcmp(word, "break") == 0) return TOK_BREAK;
-    if (strcmp(word, "continue") == 0) return TOK_CONTINUE;
-    if (strcmp(word, "import") == 0) return TOK_IMPORT;
-    if (strcmp(word, "match") == 0) return TOK_MATCH;
-    if (strcmp(word, "case") == 0) return TOK_CASE;
-    if (strcmp(word, "unobserved") == 0) return TOK_UNOBSERVED;
+    switch (word[0]) {
+    case 'a':
+        if (strcmp(word, "as") == 0) return TOK_AS;
+        if (strcmp(word, "and") == 0) return TOK_AND;
+        break;
+    case 'b':
+        if (strcmp(word, "break") == 0) return TOK_BREAK;
+        break;
+    case 'c':
+        if (strcmp(word, "case") == 0) return TOK_CASE;
+        if (strcmp(word, "catch") == 0) return TOK_CATCH;
+        if (strcmp(word, "continue") == 0) return TOK_CONTINUE;
+        if (strcmp(word, "converged") == 0) return TOK_CONVERGED;
+        break;
+    case 'd':
+        if (strcmp(word, "define") == 0) return TOK_DEFINE;
+        if (strcmp(word, "diverging") == 0) return TOK_DIVERGING;
+        break;
+    case 'e':
+        if (strcmp(word, "else") == 0) return TOK_ELSE;
+        if (strcmp(word, "elif") == 0) return TOK_ELIF;
+        if (strcmp(word, "equilibrium") == 0) return TOK_EQUILIBRIUM;
+        break;
+    case 'f':
+        if (strcmp(word, "for") == 0) return TOK_FOR;
+        break;
+    case 'h':
+        if (strcmp(word, "how") == 0) return TOK_HOW;
+        break;
+    case 'i':
+        if (strcmp(word, "if") == 0) return TOK_IF;
+        if (strcmp(word, "is") == 0) return TOK_IS;
+        if (strcmp(word, "in") == 0) return TOK_IN;
+        if (strcmp(word, "import") == 0) return TOK_IMPORT;
+        if (strcmp(word, "improving") == 0) return TOK_IMPROVING;
+        break;
+    case 'l':
+        if (strcmp(word, "loop") == 0) return TOK_LOOP;
+        break;
+    case 'm':
+        if (strcmp(word, "match") == 0) return TOK_MATCH;
+        break;
+    case 'n':
+        if (strcmp(word, "not") == 0) return TOK_NOT;
+        if (strcmp(word, "null") == 0) return TOK_NULL;
+        break;
+    case 'o':
+        if (strcmp(word, "of") == 0) return TOK_OF;
+        if (strcmp(word, "or") == 0) return TOK_OR;
+        if (strcmp(word, "oscillating") == 0) return TOK_OSCILLATING;
+        break;
+    case 'r':
+        if (strcmp(word, "return") == 0) return TOK_RETURN;
+        break;
+    case 's':
+        if (strcmp(word, "stable") == 0) return TOK_STABLE;
+        break;
+    case 't':
+        if (strcmp(word, "try") == 0) return TOK_TRY;
+        break;
+    case 'u':
+        if (strcmp(word, "unobserved") == 0) return TOK_UNOBSERVED;
+        break;
+    case 'w':
+        if (strcmp(word, "while") == 0) return TOK_WHILE;
+        if (strcmp(word, "what") == 0) return TOK_WHAT;
+        if (strcmp(word, "who") == 0) return TOK_WHO;
+        if (strcmp(word, "when") == 0) return TOK_WHEN;
+        if (strcmp(word, "where") == 0) return TOK_WHERE;
+        if (strcmp(word, "why") == 0) return TOK_WHY;
+        break;
+    }
     return TOK_IDENT;
 }
 

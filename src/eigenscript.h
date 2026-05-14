@@ -195,6 +195,7 @@ struct Value {
     double prev_dH;
     int refcount;       /* reference counting GC: 0 = unmanaged, >0 = tracked */
     unsigned char arena; /* 1 if arena-allocated (don't free) */
+    unsigned char dirty; /* 1 = observer entropy needs recomputation */
 };
 
 /* ---- Arena allocator ---- */
@@ -268,6 +269,7 @@ Value* make_num(double n);
 Value* promote_if_arena(Value *v);
 void recycle_intermediate(Value *v);
 Value* make_str(const char *s);
+Value* make_str_owned(char *s);
 Value* make_null(void);
 Value* make_list(int capacity);
 Value* make_fn(const char *name, char **params, int param_count, ASTNode **body, int body_count, Env *closure);
@@ -312,6 +314,7 @@ void env_set(Env *env, const char *name, Value *val);
 Value* env_get(Env *env, const char *name);
 void env_set_local(Env *env, const char *name, Value *val);
 void env_free(Env *env);
+void env_clear(Env *env);
 
 /* ---- Parser / Evaluator ---- */
 
@@ -324,6 +327,7 @@ Value* eval_block(ASTNode **stmts, int count, Env *env);
 
 int is_truthy(Value *v);
 char* value_to_string(Value *v);
+void observer_ensure_fresh(Value *v);
 void eigs_json_escape_string(strbuf *out, const char *s);
 
 /* ---- Registration ---- */
