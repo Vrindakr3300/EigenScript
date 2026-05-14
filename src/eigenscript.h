@@ -353,6 +353,7 @@ extern __thread char g_error_msg[4096];
 extern __thread int g_has_error;
 extern __thread int g_breaking;
 extern __thread int g_continuing;
+extern __thread Value *g_last_observer;
 extern char g_script_dir[4096];
 
 /* ---- Observer thresholds (tunable via set_observer_thresholds) ---- */

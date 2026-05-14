@@ -80,7 +80,6 @@ static void update_observer(Value *v) {
     v->dH = new_entropy - v->last_entropy;
     v->entropy = new_entropy;
     v->last_entropy = new_entropy;
-    v->obs_age++;
     v->dirty = 0;
 }
 
@@ -105,12 +104,17 @@ static void mark_observer_dirty(Value *val, Value *old) {
          * so that dH tracking stays correct across assignment chains. */
         ensure_observer_fresh(old);
         val->last_entropy = old->entropy;
-        val->obs_age = old->obs_age;
+        val->obs_age = old->obs_age + 1;
         val->dH = old->dH;
         val->prev_dH = old->prev_dH;
         val->entropy = old->entropy;
+        val->dirty = 1;
+    } else {
+        /* First assignment: compute entropy eagerly so subsequent
+         * fast-path mutations have a correct last_entropy baseline. */
+        update_observer(val);
+        val->obs_age = 1;
     }
-    val->dirty = 1;
 }
 
 /* Recursion-depth guard. Each user-visible recursion level typically
@@ -120,6 +124,7 @@ static void mark_observer_dirty(Value *val, Value *old) {
  * runtime error rather than a SIGSEGV. */
 #define EIGS_MAX_EVAL_DEPTH 500
 static __thread int g_eval_depth = 0;
+__thread Value *g_last_observer = NULL;
 
 /* Unobserved-block depth. Nonzero means assignments inside this region
  * skip update_observer and attempt in-place numeric mutation. The
@@ -329,10 +334,21 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         if (old && old->type == VAL_NUM && !old->arena && old->refcount <= 2) {
             double result;
             if (eval_num_fast(node->data.assign.expr, env, &result)) {
-                old->data.num = num_guard(result);
                 if (g_unobserved_depth == 0) {
-                    old->dirty = 1;
-                    env_set(env, "__observer__", old);
+                    /* Eagerly update observer for in-place NUM mutation.
+                     * compute_entropy for NUM is O(1) — a few FP ops. */
+                    double prev_ent = old->last_entropy;
+                    old->data.num = num_guard(result);
+                    double new_ent = compute_entropy(old);
+                    old->prev_dH = old->dH;
+                    old->dH = new_ent - prev_ent;
+                    old->entropy = new_ent;
+                    old->last_entropy = new_ent;
+                    old->obs_age++;
+                    old->dirty = 0;
+                    g_last_observer = old;
+                } else {
+                    old->data.num = num_guard(result);
                 }
                 return old;
             }
@@ -346,7 +362,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         old = env_get(env, node->data.assign.name);
         mark_observer_dirty(val, old);
         env_set(env, node->data.assign.name, val);
-        env_set(env, "__observer__", val);
+        g_last_observer = val;
         return val;
     }
 
@@ -513,7 +529,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             Value *result = left_val->data.builtin(right_val);
             if (use_scratch) scratch_list_end();
             if (result) result->dirty = 1;
-            env_set(env, "__observer__", result);
+            g_last_observer = result;
             return result;
         }
 
@@ -549,7 +565,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                 if (g_returning) {
                     g_returning = 0;
                     if (g_return_val) g_return_val->dirty = 1;
-                    env_set(env, "__observer__", g_return_val);
+                    g_last_observer = g_return_val;
                     env_free(call_env);
                     return g_return_val ? g_return_val : make_null();
                 }
@@ -560,7 +576,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                 }
             }
             if (result) result->dirty = 1;
-            env_set(env, "__observer__", result);
+            g_last_observer = result;
             env_free(call_env);
             return result;
         }
@@ -610,7 +626,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
              * observer state is stale there and the env_get scan is
              * expensive in scopes with many variables. */
             if (g_unobserved_depth == 0) {
-                Value *obs = env_get(env, "__observer__");
+                Value *obs = g_last_observer;
                 ensure_observer_fresh(obs);
                 if (obs && fabs(obs->dH) < g_obs_dh_zero && obs->entropy >= g_obs_h_low) {
                     stall_count++;
@@ -1034,7 +1050,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
     }
 
     case AST_PREDICATE: {
-        Value *last = env_get(env, "__observer__");
+        Value *last = g_last_observer;
         ensure_observer_fresh(last);
         double h = last ? last->entropy : 0.0;
         double dh = last ? last->dH : 0.0;
