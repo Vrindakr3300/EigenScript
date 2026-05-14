@@ -329,9 +329,11 @@ static ASTNode* parse_primary(Parser *p) {
         /* Scan forward: if we see IDENT [, IDENT]* ) => then it's a lambda */
         if (p_cur(p)->type == TOK_IDENT || p_cur(p)->type == TOK_RPAREN) {
             int scan = p->pos;
-            while (p->tl->tokens[scan].type == TOK_IDENT || p->tl->tokens[scan].type == TOK_COMMA)
+            while (scan < p->tl->count &&
+                   (p->tl->tokens[scan].type == TOK_IDENT || p->tl->tokens[scan].type == TOK_COMMA))
                 scan++;
-            if (p->tl->tokens[scan].type == TOK_RPAREN && p->tl->tokens[scan+1].type == TOK_ARROW)
+            if (scan + 1 < p->tl->count &&
+                p->tl->tokens[scan].type == TOK_RPAREN && p->tl->tokens[scan+1].type == TOK_ARROW)
                 is_lambda = 1;
         }
         p->pos = saved;

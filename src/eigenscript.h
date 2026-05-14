@@ -153,6 +153,16 @@ typedef Value* (*BuiltinFn)(Value* arg);
 
 typedef struct Env Env;
 
+/* Hash index for O(1) variable lookup.  Sits alongside the linear
+ * names/values arrays so iteration order and env_free are unchanged. */
+#define ENV_HASH_INIT_CAP 32  /* must be power of 2 */
+
+typedef struct {
+    uint32_t *hashes;   /* hash of name (0 = empty slot) */
+    int      *indices;  /* index into Env::names/values, or -1 */
+    int       mask;     /* capacity - 1 (for & masking) */
+} EnvHash;
+
 struct Env {
     char **names;
     Value **values;
@@ -161,6 +171,7 @@ struct Env {
     Env *parent;
     int heap_allocated;
     int captured;
+    EnvHash hash;
 };
 
 struct Value {

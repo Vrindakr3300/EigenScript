@@ -559,7 +559,12 @@ static void eigs_json_encode_value(Value *v, strbuf *out) {
                     case '\n': strbuf_append_n(out, "\\n", 2); break;
                     case '\r': strbuf_append_n(out, "\\r", 2); break;
                     case '\t': strbuf_append_n(out, "\\t", 2); break;
-                    default: strbuf_append_char(out, *c); break;
+                    default:
+                        if ((unsigned char)*c < 0x20)
+                            strbuf_append_fmt(out, "\\u%04x", (unsigned char)*c);
+                        else
+                            strbuf_append_char(out, *c);
+                        break;
                 }
             }
             strbuf_append_char(out, '"');
@@ -586,7 +591,12 @@ static void eigs_json_encode_value(Value *v, strbuf *out) {
                         case '\n': strbuf_append_n(out, "\\n", 2); break;
                         case '\r': strbuf_append_n(out, "\\r", 2); break;
                         case '\t': strbuf_append_n(out, "\\t", 2); break;
-                        default: strbuf_append_char(out, *c); break;
+                        default:
+                            if ((unsigned char)*c < 0x20)
+                                strbuf_append_fmt(out, "\\u%04x", (unsigned char)*c);
+                            else
+                                strbuf_append_char(out, *c);
+                            break;
                     }
                 }
                 strbuf_append_char(out, '"');
@@ -1852,6 +1862,34 @@ Value* builtin_read_bytes(Value *arg) {
     return result;
 }
 
+/* read_bytes_buf of path — read binary file, return VAL_BUFFER of byte values.
+ * Zero per-element allocation; O(1) indexed access. */
+Value* builtin_read_bytes_buf(Value *arg) {
+    if (!arg || arg->type != VAL_STR) return make_null();
+    FILE *f = fopen(arg->data.str, "rb");
+    if (!f) return make_null();
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len < 0 || len > 10 * 1024 * 1024) { /* 10 MB cap */
+        fclose(f);
+        return make_null();
+    }
+    unsigned char *buf = xmalloc(len);
+    if (!buf) { fclose(f); return make_null(); }
+    size_t nread = fread(buf, 1, len, f);
+    fclose(f);
+    Value *v = xcalloc(1, sizeof(Value));
+    v->type = VAL_BUFFER;
+    v->data.buffer.count = (int)nread;
+    v->data.buffer.data = xcalloc(nread > 0 ? nread : 1, sizeof(double));
+    v->refcount = 1;
+    for (size_t i = 0; i < nread; i++)
+        v->data.buffer.data[i] = (double)buf[i];
+    free(buf);
+    return v;
+}
+
 Value* builtin_read_text(Value *arg) {
     if (!arg || arg->type != VAL_STR) return make_str("");
     FILE *f = fopen(arg->data.str, "r");
@@ -2931,6 +2969,7 @@ void register_builtins(Env *env) {
     env_set_local(env, "file_exists", make_builtin(builtin_file_exists));
     env_set_local(env, "env_get", make_builtin(builtin_env_get));
     env_set_local(env, "read_bytes", make_builtin(builtin_read_bytes));
+    env_set_local(env, "read_bytes_buf", make_builtin(builtin_read_bytes_buf));
     env_set_local(env, "read_text", make_builtin(builtin_read_text));
     env_set_local(env, "write_text", make_builtin(builtin_write_text));
     env_set_local(env, "exec_capture", make_builtin(builtin_exec_capture));

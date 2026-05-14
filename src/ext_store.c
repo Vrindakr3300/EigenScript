@@ -686,14 +686,15 @@ static Value* builtin_store_close(Value *arg) {
         fprintf(stderr, "Error: store_close requires a store handle\n");
         return make_null();
     }
-    /* Release handle before freeing */
+    /* Release handle BEFORE freeing memory to prevent use-after-free
+     * if another thread calls get_store() concurrently. */
     Value *id_val = (arg && arg->type == VAL_DICT) ? dict_get(arg, "_store_id") : NULL;
     int hid = (id_val && id_val->type == VAL_NUM) ? (int)id_val->data.num : -1;
+    handle_release(hid);
     store->dirty = 1; /* Force flush */
     store_flush_catalog(store);
     fclose(store->fp);
     free(store);
-    handle_release(hid);
     /* Invalidate handle */
     if (arg && arg->type == VAL_DICT) {
         dict_set(arg, "_store_id", make_null());

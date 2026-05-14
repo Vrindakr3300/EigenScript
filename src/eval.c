@@ -232,9 +232,13 @@ static int eval_num_fast(ASTNode *node, Env *env, double *out) {
                     case '^': *out = (double)((int64_t)l ^ (int64_t)r); ok = 1; break;
                 }
             } else if (op[0] == '<' && op[1] == '<') {
-                *out = (double)((int64_t)l << (int64_t)r); ok = 1;
+                int64_t shift = (int64_t)r;
+                if (shift >= 0 && shift < 64) { *out = (double)((int64_t)l << shift); ok = 1; }
+                else { *out = 0.0; ok = 1; }
             } else if (op[0] == '>' && op[1] == '>') {
-                *out = (double)((uint64_t)(int64_t)l >> (int64_t)r); ok = 1;
+                int64_t shift = (int64_t)r;
+                if (shift >= 0 && shift < 64) { *out = (double)((uint64_t)(int64_t)l >> shift); ok = 1; }
+                else { *out = 0.0; ok = 1; }
             }
             break;
         }
@@ -356,8 +360,8 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                     case '>': return make_num(lv > rv ? 1 : 0);
                 }
             }
-            if (strcmp(op, "<<") == 0) return make_num((double)(li << ri));
-            if (strcmp(op, ">>") == 0) return make_num((double)((uint64_t)li >> ri));
+            if (strcmp(op, "<<") == 0) return make_num((ri >= 0 && ri < 64) ? (double)(li << ri) : 0.0);
+            if (strcmp(op, ">>") == 0) return make_num((ri >= 0 && ri < 64) ? (double)((uint64_t)li >> ri) : 0.0);
             if (strcmp(op, "<=") == 0) return make_num(lv <= rv ? 1 : 0);
             if (strcmp(op, ">=") == 0) return make_num(lv >= rv ? 1 : 0);
             if (strcmp(op, "!=") == 0) return make_num(lv != rv ? 1 : 0);
@@ -552,15 +556,20 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             if (g_returning) return result;
             if (g_breaking) { g_breaking = 0; break; }
             if (g_continuing) { g_continuing = 0; }
-            Value *obs = env_get(env, "__observer__");
-            if (obs && fabs(obs->dH) < g_obs_dh_zero && obs->entropy >= g_obs_h_low) {
-                stall_count++;
-                if (stall_count >= 100) {
-                    exit_reason = "stalled";
-                    break;
+            /* Skip observer stall check inside unobserved blocks —
+             * observer state is stale there and the env_get scan is
+             * expensive in scopes with many variables. */
+            if (g_unobserved_depth == 0) {
+                Value *obs = env_get(env, "__observer__");
+                if (obs && fabs(obs->dH) < g_obs_dh_zero && obs->entropy >= g_obs_h_low) {
+                    stall_count++;
+                    if (stall_count >= 100) {
+                        exit_reason = "stalled";
+                        break;
+                    }
+                } else {
+                    stall_count = 0;
                 }
-            } else {
-                stall_count = 0;
             }
         }
         if (max_iter <= 0) exit_reason = "limit";
@@ -629,8 +638,8 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
 
     case AST_DOT_ASSIGN: {
         Value *target = eval_node(node->data.dot_assign.target, env);
-        if (target->type != VAL_DICT) {
-            runtime_error(node->line, "cannot assign .%s on %s", node->data.dot_assign.key, val_type_name(target->type));
+        if (!target || target->type != VAL_DICT) {
+            runtime_error(node->line, "cannot assign .%s on %s", node->data.dot_assign.key, target ? val_type_name(target->type) : "null");
             return make_null();
         }
         /* Fast path: mutate existing NUM dict value in-place */
@@ -651,6 +660,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
 
     case AST_INDEX_ASSIGN: {
         Value *target = eval_node(node->data.index_assign.target, env);
+        if (!target) { runtime_error(node->line, "cannot index-assign on null"); return make_null(); }
         /* Fast path for buffer[idx] = numeric_expr — zero allocation */
         if (target->type == VAL_BUFFER) {
             double idx_d, val_d;
@@ -877,7 +887,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
 
     case AST_LISTCOMP: {
         Value *iter = eval_node(node->data.listcomp.iter, env);
-        if (iter->type != VAL_LIST) return make_list(0);
+        if (!iter || iter->type != VAL_LIST) return make_list(0);
         Value *result = make_list(iter->data.list.count);
         for (int i = 0; i < iter->data.list.count; i++) {
             Env *loop_env = env_new(env);

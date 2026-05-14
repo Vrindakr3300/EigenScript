@@ -95,6 +95,19 @@ static Uint32 (*p_SDL_GetTicks)(void);
 static void (*p_SDL_Delay)(Uint32);
 static int (*p_SDL_RenderSetClipRect)(SDL_Renderer*, const SDL_Rect*);
 
+/* Texture function pointers (for framebuffer blit) */
+typedef void SDL_Texture;
+#define MY_SDL_PIXELFORMAT_ARGB8888 0x16362004u
+#define MY_SDL_TEXTUREACCESS_STREAMING 1
+static SDL_Texture* (*p_SDL_CreateTexture)(SDL_Renderer*, Uint32, int, int, int);
+static void (*p_SDL_DestroyTexture)(SDL_Texture*);
+static int (*p_SDL_UpdateTexture)(SDL_Texture*, const SDL_Rect*, const void*, int);
+static int (*p_SDL_RenderCopy)(SDL_Renderer*, SDL_Texture*, const SDL_Rect*, const SDL_Rect*);
+
+/* Framebuffer texture cache */
+static SDL_Texture *g_fb_texture = NULL;
+static int g_fb_w = 0, g_fb_h = 0;
+
 /* Audio function pointers */
 static int (*p_SDL_OpenAudioDevice)(const char*, int, const SDL_AudioSpec*, SDL_AudioSpec*, int);
 static void (*p_SDL_CloseAudioDevice)(int);
@@ -130,6 +143,10 @@ static int load_sdl2(void) {
     #undef LOAD
     /* Optional symbols — NULL is fine */
     p_SDL_RenderSetClipRect = dlsym(g_sdl_lib, "SDL_RenderSetClipRect");
+    p_SDL_CreateTexture = dlsym(g_sdl_lib, "SDL_CreateTexture");
+    p_SDL_DestroyTexture = dlsym(g_sdl_lib, "SDL_DestroyTexture");
+    p_SDL_UpdateTexture = dlsym(g_sdl_lib, "SDL_UpdateTexture");
+    p_SDL_RenderCopy = dlsym(g_sdl_lib, "SDL_RenderCopy");
     p_SDL_OpenAudioDevice = dlsym(g_sdl_lib, "SDL_OpenAudioDevice");
     p_SDL_CloseAudioDevice = dlsym(g_sdl_lib, "SDL_CloseAudioDevice");
     p_SDL_QueueAudio = dlsym(g_sdl_lib, "SDL_QueueAudio");
@@ -220,6 +237,7 @@ Value* builtin_gfx_open(Value *arg) {
 /* gfx_close of null */
 Value* builtin_gfx_close(Value *arg) {
     (void)arg;
+    if (g_fb_texture && p_SDL_DestroyTexture) { p_SDL_DestroyTexture(g_fb_texture); g_fb_texture = NULL; g_fb_w = 0; g_fb_h = 0; }
     if (g_audio_device) { p_SDL_CloseAudioDevice(g_audio_device); g_audio_device = 0; }
     if (g_renderer) { p_SDL_DestroyRenderer(g_renderer); g_renderer = NULL; }
     if (g_window) { p_SDL_DestroyWindow(g_window); g_window = NULL; }
@@ -865,6 +883,255 @@ Value* builtin_audio_envelope(Value *arg) {
     return out;
 }
 
+/* gfx_fb of [buffer, width, height, x, y, scale]
+ * Blit a framebuffer (VAL_BUFFER of width*height palette indices 0-3) to the
+ * renderer as a scaled texture.  One C call replaces width*height draw calls.
+ * Palette: 0 → white (0xFF), 1 → light (0xAA), 2 → dark (0x55), 3 → black (0x00). */
+Value* builtin_gfx_fb(Value *arg) {
+    if (!g_renderer || !p_SDL_CreateTexture || !p_SDL_UpdateTexture || !p_SDL_RenderCopy)
+        return make_null();
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 6)
+        return make_null();
+    Value *buf  = arg->data.list.items[0];
+    int    w    = (int)arg->data.list.items[1]->data.num;
+    int    h    = (int)arg->data.list.items[2]->data.num;
+    int    dx   = (int)arg->data.list.items[3]->data.num;
+    int    dy   = (int)arg->data.list.items[4]->data.num;
+    int    sc   = (int)arg->data.list.items[5]->data.num;
+    if (!buf || buf->type != VAL_BUFFER || w <= 0 || h <= 0 || sc <= 0)
+        return make_null();
+    if (buf->data.buffer.count < w * h)
+        return make_null();
+
+    /* Recreate texture if size changed */
+    if (!g_fb_texture || g_fb_w != w || g_fb_h != h) {
+        if (g_fb_texture) p_SDL_DestroyTexture(g_fb_texture);
+        g_fb_texture = p_SDL_CreateTexture(g_renderer,
+            MY_SDL_PIXELFORMAT_ARGB8888, MY_SDL_TEXTUREACCESS_STREAMING, w, h);
+        if (!g_fb_texture) return make_null();
+        g_fb_w = w;
+        g_fb_h = h;
+    }
+
+    /* GB shade palette: index → ARGB */
+    static const Uint32 palette[4] = {
+        0xFFFFFFFF, /* 0 = white  */
+        0xFFAAAAAA, /* 1 = light  */
+        0xFF555555, /* 2 = dark   */
+        0xFF000000  /* 3 = black  */
+    };
+
+    /* Convert buffer → ARGB pixel array */
+    int total = w * h;
+    Uint32 *pixels = xmalloc_array(total, sizeof(Uint32));
+    double *src = buf->data.buffer.data;
+    for (int i = 0; i < total; i++) {
+        int idx = (int)src[i];
+        pixels[i] = palette[idx & 3];
+    }
+
+    p_SDL_UpdateTexture(g_fb_texture, NULL, pixels, w * (int)sizeof(Uint32));
+    free(pixels);
+
+    SDL_Rect dst = { dx, dy, w * sc, h * sc };
+    p_SDL_RenderCopy(g_renderer, g_fb_texture, NULL, &dst);
+    return make_null();
+}
+
+/* ================================================================
+ * ppu_render_frame of [mem_buf, fb_buf]
+ * Full Game Boy PPU rendering in C — all 144 scanlines, BG + window + sprites.
+ * mem_buf: VAL_BUFFER of 65536 (Game Boy memory map)
+ * fb_buf:  VAL_BUFFER of 23040 (160x144 framebuffer, palette indices 0-3)
+ * Reads LCDC, scroll, palette, VRAM, OAM registers directly from mem_buf.
+ * ================================================================ */
+Value* builtin_ppu_render_frame(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2)
+        return make_null();
+    Value *mem_v = arg->data.list.items[0];
+    Value *fb_v  = arg->data.list.items[1];
+    if (!mem_v || mem_v->type != VAL_BUFFER || mem_v->data.buffer.count < 65536)
+        return make_null();
+    if (!fb_v || fb_v->type != VAL_BUFFER || fb_v->data.buffer.count < 23040)
+        return make_null();
+
+    double *mem = mem_v->data.buffer.data;
+    double *fb  = fb_v->data.buffer.data;
+
+    int lcdc = (int)mem[0xFF40];
+    if (!(lcdc & 0x80)) {
+        /* LCD off — blank */
+        for (int i = 0; i < 23040; i++) fb[i] = 0;
+        return make_null();
+    }
+
+    int scy = (int)mem[0xFF42];
+    int scx = (int)mem[0xFF43];
+    int bgp_raw = (int)mem[0xFF47];
+    int obp0_raw = (int)mem[0xFF48];
+    int obp1_raw = (int)mem[0xFF49];
+    int wy = (int)mem[0xFF4A];
+    int wx = (int)mem[0xFF4B];
+
+    /* Decode palettes */
+    int bgp[4]  = { bgp_raw & 3, (bgp_raw >> 2) & 3, (bgp_raw >> 4) & 3, (bgp_raw >> 6) & 3 };
+    int obp0[4] = { obp0_raw & 3, (obp0_raw >> 2) & 3, (obp0_raw >> 4) & 3, (obp0_raw >> 6) & 3 };
+    int obp1[4] = { obp1_raw & 3, (obp1_raw >> 2) & 3, (obp1_raw >> 4) & 3, (obp1_raw >> 6) & 3 };
+
+    int bg_map_base  = (lcdc & 0x08) ? 0x9C00 : 0x9800;
+    int win_map_base = (lcdc & 0x40) ? 0x9C00 : 0x9800;
+    int unsigned_mode = (lcdc & 0x10) != 0;
+    int sprite_h = (lcdc & 0x04) ? 16 : 8;
+    int bg_en  = lcdc & 0x01;
+    int spr_en = lcdc & 0x02;
+    int win_en = lcdc & 0x20;
+
+    /* Per-scanline BG priority for sprite compositing */
+    uint8_t bg_pri[160];
+
+    for (int ly = 0; ly < 144; ly++) {
+        int base = ly * 160;
+
+        /* ---- Background ---- */
+        if (bg_en) {
+            int bg_y = (ly + scy) & 0xFF;
+            int tile_row = bg_y & 7;
+            int map_row = (bg_y >> 3) * 32;
+            int prev_tile_x = -1;
+            int tile_lo = 0, tile_hi = 0;
+
+            for (int px = 0; px < 160; px++) {
+                int bg_x = (px + scx) & 0xFF;
+                int tile_x = bg_x >> 3;
+
+                if (tile_x != prev_tile_x) {
+                    prev_tile_x = tile_x;
+                    int tile_num = (int)mem[bg_map_base + map_row + tile_x];
+                    int tile_addr;
+                    if (unsigned_mode)
+                        tile_addr = 0x8000 + tile_num * 16 + tile_row * 2;
+                    else
+                        tile_addr = (tile_num >= 128)
+                            ? 0x8800 + (tile_num - 128) * 16 + tile_row * 2
+                            : 0x9000 + tile_num * 16 + tile_row * 2;
+                    tile_lo = (int)mem[tile_addr];
+                    tile_hi = (int)mem[tile_addr + 1];
+                }
+
+                int bit = 7 - (bg_x & 7);
+                int cid = ((tile_hi >> bit) & 1) << 1 | ((tile_lo >> bit) & 1);
+                fb[base + px] = bgp[cid];
+                bg_pri[px] = (uint8_t)cid;
+            }
+        } else {
+            for (int px = 0; px < 160; px++) {
+                fb[base + px] = 0;
+                bg_pri[px] = 0;
+            }
+        }
+
+        /* ---- Window ---- */
+        if (win_en && ly >= wy && wx <= 166) {
+            int win_y = ly - wy;
+            int win_row = win_y & 7;
+            int win_map_row = (win_y >> 3) * 32;
+            int start_x = wx - 7;
+            if (start_x < 0) start_x = 0;
+            int prev_wtx = -1;
+            int wtile_lo = 0, wtile_hi = 0;
+
+            for (int sx = start_x; sx < 160; sx++) {
+                int win_x = sx - (wx - 7);
+                int wtx = win_x >> 3;
+                if (wtx != prev_wtx) {
+                    prev_wtx = wtx;
+                    int wtn = (int)mem[win_map_base + win_map_row + wtx];
+                    int wta;
+                    if (unsigned_mode)
+                        wta = 0x8000 + wtn * 16 + win_row * 2;
+                    else
+                        wta = (wtn >= 128)
+                            ? 0x8800 + (wtn - 128) * 16 + win_row * 2
+                            : 0x9000 + wtn * 16 + win_row * 2;
+                    wtile_lo = (int)mem[wta];
+                    wtile_hi = (int)mem[wta + 1];
+                }
+                int wbit = 7 - (win_x & 7);
+                int wcid = ((wtile_hi >> wbit) & 1) << 1 | ((wtile_lo >> wbit) & 1);
+                fb[base + sx] = bgp[wcid];
+                bg_pri[sx] = (uint8_t)wcid;
+            }
+        }
+
+        /* ---- Sprites ---- */
+        if (spr_en) {
+            /* Collect sprites on this scanline (max 10) */
+            typedef struct { int sx, sy, tile, flags, oam_idx; } SprEntry;
+            SprEntry sprites[10];
+            int spr_count = 0;
+
+            for (int i = 0; i < 40 && spr_count < 10; i++) {
+                int oam = 0xFE00 + i * 4;
+                int sy = (int)mem[oam] - 16;
+                int sx = (int)mem[oam + 1] - 8;
+                if (ly >= sy && ly < sy + sprite_h) {
+                    sprites[spr_count].sx = sx;
+                    sprites[spr_count].sy = sy;
+                    sprites[spr_count].tile = (int)mem[oam + 2];
+                    sprites[spr_count].flags = (int)mem[oam + 3];
+                    sprites[spr_count].oam_idx = i;
+                    spr_count++;
+                }
+            }
+
+            /* Sort by X (insertion sort, stable) */
+            for (int i = 1; i < spr_count; i++) {
+                SprEntry tmp = sprites[i];
+                int j = i;
+                while (j > 0 && sprites[j-1].sx > tmp.sx) {
+                    sprites[j] = sprites[j-1];
+                    j--;
+                }
+                sprites[j] = tmp;
+            }
+
+            /* Render in reverse (higher priority overwrites) */
+            for (int si = spr_count - 1; si >= 0; si--) {
+                int sx = sprites[si].sx;
+                int sy = sprites[si].sy;
+                int tile = sprites[si].tile;
+                int flags = sprites[si].flags;
+                int bg_over = flags & 0x80;
+                int y_flip  = flags & 0x40;
+                int x_flip  = flags & 0x20;
+                int *spal = (flags & 0x10) ? obp1 : obp0;
+
+                int row = ly - sy;
+                if (y_flip) row = (sprite_h - 1) - row;
+                if (sprite_h == 16) {
+                    tile &= 0xFE;
+                    if (row >= 8) { tile++; row -= 8; }
+                }
+
+                int taddr = 0x8000 + tile * 16 + row * 2;
+                int slo = (int)mem[taddr];
+                int shi = (int)mem[taddr + 1];
+
+                for (int col = 0; col < 8; col++) {
+                    int scr_x = sx + col;
+                    if (scr_x < 0 || scr_x >= 160) continue;
+                    int bit = x_flip ? col : (7 - col);
+                    int cid = ((shi >> bit) & 1) << 1 | ((slo >> bit) & 1);
+                    if (cid == 0) continue; /* transparent */
+                    if (bg_over && bg_pri[scr_x] != 0) continue;
+                    fb[base + scr_x] = spal[cid];
+                }
+            }
+        }
+    }
+    return make_null();
+}
+
 void register_gfx_builtins(Env *env) {
     env_set_local(env, "gfx_open", make_builtin(builtin_gfx_open));
     env_set_local(env, "gfx_close", make_builtin(builtin_gfx_close));
@@ -881,6 +1148,8 @@ void register_gfx_builtins(Env *env) {
     env_set_local(env, "gfx_delay", make_builtin(builtin_gfx_delay));
     env_set_local(env, "gfx_title", make_builtin(builtin_gfx_title));
     env_set_local(env, "gfx_text", make_builtin(builtin_gfx_text));
+    env_set_local(env, "gfx_fb", make_builtin(builtin_gfx_fb));
+    env_set_local(env, "ppu_render_frame", make_builtin(builtin_ppu_render_frame));
 
     /* Audio builtins */
     env_set_local(env, "audio_open", make_builtin(builtin_audio_open));

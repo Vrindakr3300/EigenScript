@@ -8,6 +8,10 @@
 /* Parse-error counter owned by eigenscript.c. */
 extern __thread int g_parse_errors;
 
+/* Recursion depth guard for nested f-string tokenization. */
+static __thread int g_tokenize_depth = 0;
+#define MAX_TOKENIZE_DEPTH 64
+
 static void tok_add(TokenList *tl, TokType type, double num, const char *str, int line, int col) {
     if (tl->count >= tl->capacity) {
         tl->capacity *= 2;
@@ -66,6 +70,14 @@ TokenList tokenize(const char *source) {
     tl.capacity = MAX_TOKENS;
     tl.tokens = xmalloc_array(tl.capacity, sizeof(Token));
     tl.count = 0;
+
+    if (g_tokenize_depth >= MAX_TOKENIZE_DEPTH) {
+        fprintf(stderr, "Error: f-string nesting too deep (max %d levels)\n", MAX_TOKENIZE_DEPTH);
+        g_parse_errors++;
+        tok_add(&tl, TOK_EOF, 0, NULL, 1, 0);
+        return tl;
+    }
+    g_tokenize_depth++;
 
     int indent_stack[MAX_INDENT];
     int indent_top = 0;
@@ -347,6 +359,7 @@ TokenList tokenize(const char *source) {
     }
     tok_add(&tl, TOK_EOF, 0, NULL, line, col);
 
+    g_tokenize_depth--;
     return tl;
 }
 

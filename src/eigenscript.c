@@ -496,6 +496,53 @@ char* value_to_string(Value *v) {
  * ENVIRONMENT
  * ================================================================ */
 
+/* FNV-1a hash — fast, good distribution for short identifier strings.
+ * Returns non-zero (zero is reserved as "empty slot" sentinel). */
+static uint32_t env_hash_name(const char *name) {
+    uint32_t h = 2166136261u;
+    for (const char *p = name; *p; p++)
+        h = (h ^ (uint8_t)*p) * 16777619u;
+    return h | 1;  /* ensure non-zero */
+}
+
+static void env_hash_init(EnvHash *ht, int cap) {
+    ht->mask = cap - 1;
+    ht->hashes  = xcalloc(cap, sizeof(uint32_t));
+    ht->indices = xmalloc_array(cap, sizeof(int));
+    for (int i = 0; i < cap; i++) ht->indices[i] = -1;
+}
+
+static void env_hash_insert(EnvHash *ht, uint32_t h, int idx) {
+    int slot = h & ht->mask;
+    while (ht->hashes[slot]) {
+        slot = (slot + 1) & ht->mask;
+    }
+    ht->hashes[slot] = h;
+    ht->indices[slot] = idx;
+}
+
+static void env_hash_rebuild(EnvHash *ht, char **names, int count) {
+    int new_cap = (ht->mask + 1) * 2;
+    if (new_cap < ENV_HASH_INIT_CAP) new_cap = ENV_HASH_INIT_CAP;
+    free(ht->hashes);
+    free(ht->indices);
+    env_hash_init(ht, new_cap);
+    for (int i = 0; i < count; i++)
+        env_hash_insert(ht, env_hash_name(names[i]), i);
+}
+
+/* Lookup name in hash table. Returns index into names/values or -1. */
+static int env_hash_find(const EnvHash *ht, const char *name, uint32_t h, char **names) {
+    if (!ht->hashes) return -1;
+    int slot = h & ht->mask;
+    while (ht->hashes[slot]) {
+        if (ht->hashes[slot] == h && strcmp(names[ht->indices[slot]], name) == 0)
+            return ht->indices[slot];
+        slot = (slot + 1) & ht->mask;
+    }
+    return -1;
+}
+
 Env* env_new(Env *parent) {
     Env *e = xcalloc(1, sizeof(Env));
     e->parent = parent;
@@ -505,26 +552,26 @@ Env* env_new(Env *parent) {
     e->captured = 0;
     e->names  = xcalloc(ENV_INIT_CAP, sizeof(char *));
     e->values = xcalloc(ENV_INIT_CAP, sizeof(Value *));
+    env_hash_init(&e->hash, ENV_HASH_INIT_CAP);
     return e;
 }
 
 void env_set(Env *env, const char *name, Value *val) {
+    uint32_t h = env_hash_name(name);
     Env *e = env;
     while (e) {
-        for (int i = 0; i < e->count; i++) {
-            if (strcmp(e->names[i], name) == 0) {
-                Value *promoted = promote_if_arena(val);
-                if (promoted != val) {
-                    /* Arena value promoted to heap — env takes ownership */
-                    val_decref(e->values[i]);
-                    e->values[i] = promoted;
-                } else {
-                    val_incref(val);
-                    val_decref(e->values[i]);
-                    e->values[i] = val;
-                }
-                return;
+        int idx = env_hash_find(&e->hash, name, h, e->names);
+        if (idx >= 0) {
+            Value *promoted = promote_if_arena(val);
+            if (promoted != val) {
+                val_decref(e->values[idx]);
+                e->values[idx] = promoted;
+            } else {
+                val_incref(val);
+                val_decref(e->values[idx]);
+                e->values[idx] = val;
             }
+            return;
         }
         e = e->parent;
     }
@@ -532,19 +579,19 @@ void env_set(Env *env, const char *name, Value *val) {
 }
 
 void env_set_local(Env *env, const char *name, Value *val) {
-    for (int i = 0; i < env->count; i++) {
-        if (strcmp(env->names[i], name) == 0) {
-            Value *promoted = promote_if_arena(val);
-            if (promoted != val) {
-                val_decref(env->values[i]);
-                env->values[i] = promoted;
-            } else {
-                val_incref(val);
-                val_decref(env->values[i]);
-                env->values[i] = val;
-            }
-            return;
+    uint32_t h = env_hash_name(name);
+    int idx = env_hash_find(&env->hash, name, h, env->names);
+    if (idx >= 0) {
+        Value *promoted = promote_if_arena(val);
+        if (promoted != val) {
+            val_decref(env->values[idx]);
+            env->values[idx] = promoted;
+        } else {
+            val_incref(val);
+            val_decref(env->values[idx]);
+            env->values[idx] = val;
         }
+        return;
     }
     if (env->count >= env->capacity) {
         int new_cap = env->capacity * 2;
@@ -573,8 +620,13 @@ void env_set_local(Env *env, const char *name, Value *val) {
     Value *promoted = promote_if_arena(val);
     env->values[env->count] = promoted;
     if (promoted == val) val_incref(val);
-    /* promoted values start at refcount 1 — env takes ownership */
     env->count++;
+
+    /* Insert into hash; rebuild if load factor > 70% */
+    if (env->count * 10 > (env->hash.mask + 1) * 7)
+        env_hash_rebuild(&env->hash, env->names, env->count);
+    else
+        env_hash_insert(&env->hash, h, env->count - 1);
 }
 
 void env_free(Env *env) {
@@ -586,16 +638,17 @@ void env_free(Env *env) {
     }
     free(env->names);
     free(env->values);
+    free(env->hash.hashes);
+    free(env->hash.indices);
     free(env);
 }
 
 Value* env_get(Env *env, const char *name) {
+    uint32_t h = env_hash_name(name);
     Env *e = env;
     while (e) {
-        for (int i = 0; i < e->count; i++) {
-            if (strcmp(e->names[i], name) == 0)
-                return e->values[i];
-        }
+        int idx = env_hash_find(&e->hash, name, h, e->names);
+        if (idx >= 0) return e->values[idx];
         e = e->parent;
     }
     return NULL;

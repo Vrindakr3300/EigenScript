@@ -51,6 +51,8 @@ void* health_thread(void *arg) {
             break;
         }
         if (g_init_complete) { close(conn); break; }
+        struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+        setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         char buf[1024];
         recv(conn, buf, sizeof(buf), 0);
         const char *resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK";
@@ -373,7 +375,7 @@ static void send_file(int fd, const char *filepath) {
         fseek(sf, 0, SEEK_END);
         long fsize = ftell(sf);
         fclose(sf);
-        if (fsize > HTTP_MAX_STATIC_SIZE) {
+        if (fsize < 0 || fsize > HTTP_MAX_STATIC_SIZE) {
             send_response(fd, 413, "Payload Too Large", "text/plain", "File too large", 14);
             return;
         }
@@ -458,7 +460,11 @@ static void handle_request(int fd) {
         if (hend) {
             header_end = (int)(hend - reqbuf) + 4;
 
+            /* Search only within headers (before \r\n\r\n), not in body */
+            char saved = reqbuf[header_end];
+            reqbuf[header_end] = '\0';
             char *cl = strcasestr(reqbuf, "Content-Length:");
+            reqbuf[header_end] = saved;
             if (cl) {
                 /* atoi silently accepts negative and non-numeric input; a
                  * negative Content-Length would make body_received trivially
@@ -484,7 +490,10 @@ static void handle_request(int fd) {
     reqbuf[total] = '\0';
 
     char method[16] = {0}, path[2048] = {0}, version[16] = {0};
-    sscanf(reqbuf, "%15s %2047s %15s", method, path, version);
+    if (sscanf(reqbuf, "%15s %2047s %15s", method, path, version) != 3) {
+        send_response(fd, 400, "Bad Request", "text/plain", "Invalid request line", 20);
+        free(reqbuf); close(fd); return;
+    }
 
     char *body = NULL;
     if (header_end > 0 && header_end < total) {
