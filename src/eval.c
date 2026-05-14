@@ -222,11 +222,11 @@ static int eval_num_fast(ASTNode *node, Env *env, double *out) {
             if (!eval_num_fast(node->data.binop.right, env, &r)) break;
             if (op[1] == '\0') {
                 switch (op[0]) {
-                    case '+': *out = l + r; ok = 1; break;
-                    case '-': *out = l - r; ok = 1; break;
-                    case '*': *out = l * r; ok = 1; break;
-                    case '/': if (r != 0) { *out = l / r; ok = 1; } break;
-                    case '%': if (r != 0) { *out = fmod(l, r); ok = 1; } break;
+                    case '+': *out = num_guard(l + r); ok = 1; break;
+                    case '-': *out = num_guard(l - r); ok = 1; break;
+                    case '*': *out = num_guard(l * r); ok = 1; break;
+                    case '/': if (r != 0) { *out = num_guard(l / r); ok = 1; } break;
+                    case '%': if (r != 0) { *out = num_guard(fmod(l, r)); ok = 1; } break;
                     case '&': *out = (double)((int64_t)l & (int64_t)r); ok = 1; break;
                     case '|': *out = (double)((int64_t)l | (int64_t)r); ok = 1; break;
                     case '^': *out = (double)((int64_t)l ^ (int64_t)r); ok = 1; break;
@@ -352,15 +352,15 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
 
             if (op[1] == '\0') {
                 switch (op[0]) {
-                    case '+': return make_num(lv + rv);
-                    case '-': return make_num(lv - rv);
-                    case '*': return make_num(lv * rv);
+                    case '+': return make_num(num_guard(lv + rv));
+                    case '-': return make_num(num_guard(lv - rv));
+                    case '*': return make_num(num_guard(lv * rv));
                     case '/':
                         if (rv == 0) { fprintf(stderr, "Warning line %d: division by zero\n", node->line); return make_num(0); }
-                        return make_num(lv / rv);
+                        return make_num(num_guard(lv / rv));
                     case '%':
                         if (rv == 0) { fprintf(stderr, "Warning line %d: division by zero\n", node->line); return make_num(0); }
-                        return make_num(fmod(lv, rv));
+                        return make_num(num_guard(fmod(lv, rv)));
                     case '&': return make_num((double)(li & ri));
                     case '|': return make_num((double)(li | ri));
                     case '^': return make_num((double)(li ^ ri));

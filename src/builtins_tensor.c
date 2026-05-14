@@ -134,11 +134,11 @@ static void tensor_flatten_recursive(Value *v, double *out, int *idx) {
 
 /* ---- Element-wise binary op on two tensors (or scalar broadcast) ---- */
 typedef double (*BinOpFn)(double, double);
-static double op_add(double a, double b) { return a + b; }
-static double op_sub(double a, double b) { return a - b; }
-static double op_mul(double a, double b) { return a * b; }
-static double op_div(double a, double b) { return (b == 0.0) ? 0.0 : a / b; }
-static double op_pow(double a, double b) { return pow(a, b); }
+static double op_add(double a, double b) { return num_guard(a + b); }
+static double op_sub(double a, double b) { return num_guard(a - b); }
+static double op_mul(double a, double b) { return num_guard(a * b); }
+static double op_div(double a, double b) { return (b == 0.0) ? 0.0 : num_guard(a / b); }
+static double op_pow(double a, double b) { return num_guard(pow(a, b)); }
 
 static Value* tensor_elementwise(Value *a, Value *b, BinOpFn fn) {
     /* scalar op scalar */
@@ -213,9 +213,9 @@ static Value* tensor_unary(Value *v, UnaryOpFn fn) {
     return make_num(0.0);
 }
 
-static double op_sqrt(double x) { return sqrt(x); }
-static double op_exp(double x) { return exp(x); }
-static double op_log_safe(double x) { return log(x > 1e-10 ? x : 1e-10); }
+static double op_sqrt(double x) { return (x < 0) ? 0.0 : sqrt(x); }
+static double op_exp(double x) { return num_guard(exp(x)); }
+static double op_log_safe(double x) { return num_guard(log(x > 1e-10 ? x : 1e-10)); }
 static double op_neg(double x) { return -x; }
 
 /* ==== BUILTIN: sqrt ==== */

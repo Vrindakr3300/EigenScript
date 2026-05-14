@@ -1127,12 +1127,18 @@ Value* builtin_tan(Value *arg) {
 
 Value* builtin_asin(Value *arg) {
     if (!arg || arg->type != VAL_NUM) return make_num(0);
-    return make_num(asin(arg->data.num));
+    double x = arg->data.num;
+    if (x < -1.0) x = -1.0;
+    if (x > 1.0) x = 1.0;
+    return make_num(asin(x));
 }
 
 Value* builtin_acos(Value *arg) {
     if (!arg || arg->type != VAL_NUM) return make_num(0);
-    return make_num(acos(arg->data.num));
+    double x = arg->data.num;
+    if (x < -1.0) x = -1.0;
+    if (x > 1.0) x = 1.0;
+    return make_num(acos(x));
 }
 
 Value* builtin_atan(Value *arg) {

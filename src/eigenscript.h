@@ -273,6 +273,17 @@ void list_append(Value *list, Value *item);
 void free_value(Value *v);
 
 /* ---- Reference counting (atomic for thread safety) ---- */
+/* Numeric invariant: EigenScript has no NaN or Infinity.
+ * All numeric operations route through this guard.
+ * NaN → 0, +-Inf → 0. The Zeno principle: values that would
+ * escape the number line fold back to zero. */
+static inline double num_guard(double x) {
+    if (x != x) return 0.0;            /* NaN */
+    if (x > 1e308) return 1e308;       /* +Inf or overflow */
+    if (x < -1e308) return -1e308;     /* -Inf or underflow */
+    return x;
+}
+
 static inline void val_incref(Value *v) {
     if (v && !v->arena) __atomic_add_fetch(&v->refcount, 1, __ATOMIC_SEQ_CST);
 }
