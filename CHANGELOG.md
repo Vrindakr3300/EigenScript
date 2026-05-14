@@ -4,6 +4,40 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Language
+- **Compound assignment operators**: `+=`, `-=`, `*=`, `/=`, `%=`, `&=`,
+  `|=`, `^=`, `<<=`, `>>=`. Desugared in the parser to existing AST nodes —
+  `eval_num_fast` handles them for free. Works on variables, dot-access,
+  and index-access.
+- **Buffer iteration**: `for x in buffer:` and `[expr for x in buffer]` now
+  work. `what`/`who` interrogation handles buffers. VAL_BUFFER is now a
+  first-class iterable type.
+
+### Performance
+- **Environment hash index**: FNV-1a hash table for O(1) variable lookup in
+  `env_get`/`env_set`/`env_set_local`, replacing linear scan.
+- **Loop condition fast path**: `eval_num_fast` extended with comparison
+  operators (`<`, `>`, `<=`, `>=`, `==`, `!=`). Loop conditions like
+  `while x < limit:` now evaluate with zero allocation.
+- **Memory leak fixes**: Safe `val_decref` on fresh Values from loop
+  conditions, list comprehension filters, and match patterns.
+
+### Builtins
+- `sign_extend of [val, bits]` — sign-extend a value from a given bit width
+- `sort of list` — in-place qsort on numeric lists
+- `read_bytes_buf of path` — read binary file as VAL_BUFFER (zero per-element alloc)
+- `gfx_fb of [buf, w, h, x, y, scale]` — blit a buffer as a scaled texture
+- `ppu_render_frame of [mem_buf, fb_buf]` — full Game Boy PPU rendering in C
+
+### Hardening
+- Shift-amount bounds checks (`<<`, `>>`) — out-of-range yields 0, not UB
+- Null guards on dot-assign, index-assign, and list comprehension targets
+- JSON control-character escaping for bytes < 0x20
+- F-string recursion depth limit (max 64 levels)
+- Parser bounds checks for lambda lookahead
+- HTTP Content-Length search scoped to headers only
+- Store handle release before free (use-after-free fix)
+
 ## [0.9.3.4] — 2026-04-25
 
 ### UI Toolkit

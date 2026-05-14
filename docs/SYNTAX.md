@@ -12,6 +12,29 @@ name is "hello"
 data is [1, 2, 3, 4, 5]
 ```
 
+### Compound Assignment
+
+All arithmetic, bitwise, and shift operators have compound forms:
+
+```eigenscript
+x += 3          # x is x + 3
+x -= 1          # x is x - 1
+x *= 2          # x is x * 2
+flags |= 0x80   # flags is flags | 0x80
+flags &= 0x0F   # flags is flags & 0x0F
+val <<= 4       # val is val << 4
+```
+
+These work on variables, dot-access, and index-access:
+
+```eigenscript
+obj.score += 10
+arr[i] *= 2
+buf[0] ^= 0xFF
+```
+
+Available: `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+
 ## Functions
 
 ### Named Parameters (recommended)

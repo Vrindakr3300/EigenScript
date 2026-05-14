@@ -43,6 +43,7 @@ audio (`audio_open`, `audio_close`, `audio_pause`, `audio_play`,
 | `get_at` | `get_at of [list, index]` | Get element at index |
 | `copy_into` | `copy_into of [dest, src, offset]` | Copy src elements into dest starting at offset |
 | `num_copy` | `num_copy of value` | Create independent copy of numeric value |
+| `sort` | `sort of list` | Sort list in-place by numeric value (qsort). Returns the list |
 
 ### Strings
 
@@ -75,17 +76,36 @@ lazy quantifiers.
 
 ### Bitwise
 
-Operate on 32-bit two's-complement integers. Shift amounts are masked
-to `[0,31]`; non-numeric arguments yield 0.
+Native operators `&`, `|`, `^`, `~`, `<<`, `>>` are preferred. The
+builtin-call forms below are retained for backward compatibility.
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `bit_and` | `bit_and of [a, b]` | Bitwise AND |
-| `bit_or` | `bit_or of [a, b]` | Bitwise OR |
-| `bit_xor` | `bit_xor of [a, b]` | Bitwise XOR |
-| `bit_not` | `bit_not of x` | Bitwise NOT |
-| `bit_shl` | `bit_shl of [a, b]` | Left shift |
-| `bit_shr` | `bit_shr of [a, b]` | Unsigned right shift |
+| `bit_and` | `bit_and of [a, b]` | Bitwise AND (prefer `a & b`) |
+| `bit_or` | `bit_or of [a, b]` | Bitwise OR (prefer `a \| b`) |
+| `bit_xor` | `bit_xor of [a, b]` | Bitwise XOR (prefer `a ^ b`) |
+| `bit_not` | `bit_not of x` | Bitwise NOT (prefer `~x`) |
+| `bit_shl` | `bit_shl of [a, b]` | Left shift (prefer `a << b`) |
+| `bit_shr` | `bit_shr of [a, b]` | Unsigned right shift (prefer `a >> b`) |
+| `sign_extend` | `sign_extend of [val, bits]` | Sign-extend val from given bit width. E.g. `sign_extend of [0xFF, 8]` returns -1 |
+
+### Buffers
+
+Compact typed arrays of doubles with O(1) indexed access. Iterable with
+`for x in buf:` and list comprehensions.
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `buffer` | `buffer of count` | Create zero-filled buffer of given size |
+| `buf_get` | `buf_get of [buf, index]` | Read element (0 on out-of-bounds) |
+| `buf_set` | `buf_set of [buf, index, value]` | Write element |
+| `buf_len` | `buf_len of buf` | Return buffer element count |
+| `buf_from_list` | `buf_from_list of list` | Convert numeric list to buffer |
+| `buf_copy` | `buf_copy of [src, src_off, dst, dst_off, count]` | Bulk copy between buffers |
+| `read_bytes_buf` | `read_bytes_buf of path` | Read binary file as buffer (10MB cap) |
+
+Buffers also support direct indexing (`buf[i]`, `buf[i] is val`) and
+compound assignment (`buf[i] += val`).
 
 ### JSON
 
@@ -360,6 +380,8 @@ libSDL2 at runtime — no SDL2 headers needed at build time.
 | `gfx_ticks` | `gfx_ticks of null` | Milliseconds since `SDL_Init` |
 | `gfx_delay` | `gfx_delay of ms` | Sleep for ms (SDL-coordinated) |
 | `gfx_title` | `gfx_title of "text"` | Update window title |
+| `gfx_fb` | `gfx_fb of [buf, w, h, x, y, scale]` | Blit buffer (palette indices 0-3) as scaled texture |
+| `ppu_render_frame` | `ppu_render_frame of [mem_buf, fb_buf]` | Full Game Boy PPU render (BG/window/sprites) into framebuffer |
 
 ## Optional: Database Extension
 
