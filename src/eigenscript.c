@@ -207,6 +207,7 @@ void free_value(Value *v) {
             for (int i = 0; i < v->data.fn.param_count; i++)
                 free(v->data.fn.params[i]);
             free(v->data.fn.params);
+            free(v->data.fn.param_hashes);
             for (int i = 0; i < v->data.fn.body_count; i++)
                 free_ast(v->data.fn.body[i]);
             free(v->data.fn.body);
@@ -348,9 +349,12 @@ Value* make_fn(const char *name, char **params, int param_count, ASTNode **body,
     v->type = VAL_FN;
     v->data.fn.name = xstrdup(name);
     v->data.fn.params = xmalloc_array(param_count, sizeof(char*));
+    v->data.fn.param_hashes = xmalloc_array(param_count, sizeof(uint32_t));
     v->data.fn.param_count = param_count;
-    for (int i = 0; i < param_count; i++)
+    for (int i = 0; i < param_count; i++) {
         v->data.fn.params[i] = xstrdup(params[i]);
+        v->data.fn.param_hashes[i] = env_hash_name(params[i]);
+    }
     v->data.fn.body = clone_ast_array(body, body_count);
     v->data.fn.body_count = body_count;
     v->data.fn.closure = closure;
@@ -383,9 +387,9 @@ Value* make_dict(int capacity) {
     return v;
 }
 
-void dict_set(Value *dict, const char *key, Value *val) {
+void dict_set_hashed(Value *dict, const char *key, uint32_t h, Value *val) {
     if (!dict || dict->type != VAL_DICT) return;
-    uint32_t h = env_hash_name(key);
+    if (h == 0) h = env_hash_name(key);
     int idx = env_hash_find(&dict->data.dict.hash, key, h, dict->data.dict.keys);
     if (idx >= 0) {
         Value *promoted = promote_if_arena(val);
@@ -417,11 +421,19 @@ void dict_set(Value *dict, const char *key, Value *val) {
         env_hash_insert(&dict->data.dict.hash, h, dict->data.dict.count - 1);
 }
 
-Value* dict_get(Value *dict, const char *key) {
+void dict_set(Value *dict, const char *key, Value *val) {
+    dict_set_hashed(dict, key, env_hash_name(key), val);
+}
+
+Value* dict_get_hashed(Value *dict, const char *key, uint32_t h) {
     if (!dict || dict->type != VAL_DICT) return NULL;
-    uint32_t h = env_hash_name(key);
+    if (h == 0) h = env_hash_name(key);
     int idx = env_hash_find(&dict->data.dict.hash, key, h, dict->data.dict.keys);
     return (idx >= 0) ? dict->data.dict.vals[idx] : NULL;
+}
+
+Value* dict_get(Value *dict, const char *key) {
+    return dict_get_hashed(dict, key, env_hash_name(key));
 }
 
 int dict_has(Value *dict, const char *key) {
@@ -556,6 +568,10 @@ static uint32_t env_hash_name(const char *name) {
     return h | 1;  /* ensure non-zero */
 }
 
+uint32_t env_name_hash(const char *name) {
+    return env_hash_name(name);
+}
+
 static void env_hash_init(EnvHash *ht, int cap) {
     ht->mask = cap - 1;
     ht->hashes  = xcalloc(cap, sizeof(uint32_t));
@@ -631,8 +647,8 @@ Env* env_new(Env *parent) {
     return e;
 }
 
-void env_set(Env *env, const char *name, Value *val) {
-    uint32_t h = env_hash_name(name);
+void env_set_hashed(Env *env, const char *name, uint32_t h, Value *val) {
+    if (h == 0) h = env_hash_name(name);
     Env *e = env;
     while (e) {
         int idx = env_hash_find(&e->hash, name, h, e->names);
@@ -650,11 +666,15 @@ void env_set(Env *env, const char *name, Value *val) {
         }
         e = e->parent;
     }
-    env_set_local(env, name, val);
+    env_set_local_hashed(env, name, h, val);
 }
 
-void env_set_local(Env *env, const char *name, Value *val) {
-    uint32_t h = env_hash_name(name);
+void env_set(Env *env, const char *name, Value *val) {
+    env_set_hashed(env, name, env_hash_name(name), val);
+}
+
+void env_set_local_hashed(Env *env, const char *name, uint32_t h, Value *val) {
+    if (h == 0) h = env_hash_name(name);
     int idx = env_hash_find(&env->hash, name, h, env->names);
     if (idx >= 0) {
         Value *promoted = promote_if_arena(val);
@@ -702,6 +722,10 @@ void env_set_local(Env *env, const char *name, Value *val) {
         env_hash_insert(&env->hash, h, env->count - 1);
 }
 
+void env_set_local(Env *env, const char *name, Value *val) {
+    env_set_local_hashed(env, name, env_hash_name(name), val);
+}
+
 void env_free(Env *env) {
     if (!env || !env->heap_allocated) return;
     if (env->captured && __atomic_load_n(&env->env_refcount, __ATOMIC_ACQUIRE) > 0) return;
@@ -737,8 +761,8 @@ void env_clear(Env *env) {
     memset(env->hash.hashes, 0, (env->hash.mask + 1) * sizeof(uint32_t));
 }
 
-Value* env_get(Env *env, const char *name) {
-    uint32_t h = env_hash_name(name);
+Value* env_get_hashed(Env *env, const char *name, uint32_t h) {
+    if (h == 0) h = env_hash_name(name);
     Env *e = env;
     while (e) {
         int idx = env_hash_find(&e->hash, name, h, e->names);
@@ -746,6 +770,10 @@ Value* env_get(Env *env, const char *name) {
         e = e->parent;
     }
     return NULL;
+}
+
+Value* env_get(Env *env, const char *name) {
+    return env_get_hashed(env, name, env_hash_name(name));
 }
 
 /* ================================================================
