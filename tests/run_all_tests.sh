@@ -1250,15 +1250,15 @@ fi
 echo ""
 
 # [58] GC / free_value paths and misc coverage gaps
-echo "[58] GC & Free Paths (30 checks)"
+echo "[58] GC & Free Paths (34 checks)"
 GC_OUTPUT=$(./eigenscript ../tests/test_gc.eigs 2>&1)
 if echo "$GC_OUTPUT" | grep -q "All gc tests passed"; then
-    TOTAL=$((TOTAL + 30))
-    PASS=$((PASS + 30))
-    echo "  PASS: all 30 GC/free checks"
+    TOTAL=$((TOTAL + 34))
+    PASS=$((PASS + 34))
+    echo "  PASS: all 34 GC/free checks"
 else
-    TOTAL=$((TOTAL + 30))
-    FAIL=$((FAIL + 30))
+    TOTAL=$((TOTAL + 34))
+    FAIL=$((FAIL + 34))
     echo "  FAIL: GC tests"
     echo "$GC_OUTPUT" | grep -iE "assert|error|FAIL" | head -5
 fi

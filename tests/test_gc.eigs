@@ -250,6 +250,37 @@ who_list is who is [1, 2]
 check of ["GC29 who of list", who_list == "list"]
 
 # ----------------------------------------------------------------
+# 12) Scratch-list lifetime for single-param user functions
+# ----------------------------------------------------------------
+held_list is null
+
+define hold_list(xs) as:
+    held_list is xs
+    return xs[0]
+
+first_held_result is hold_list of [1, 2, 3]
+first_held_list is held_list
+second_held_result is hold_list of [4, 5, 6]
+check of ["GC30 escaped single-param list remains stable",
+    first_held_result == 1 and second_held_result == 4 and first_held_list[0] == 1]
+
+sorted_literal_a is sort of [3, 2, 1]
+sorted_literal_b is sort of [9, 8, 7]
+check of ["GC31 builtin result list does not expose scratch storage",
+    sorted_literal_a[0] == 1 and sorted_literal_a[2] == 3 and sorted_literal_b[0] == 7]
+
+coalesced_literal_a is coalesce of [11, 22]
+coalesced_literal_b is coalesce of [33, 44]
+check of ["GC32 builtin result num does not expose scratch storage",
+    coalesced_literal_a == 11 and coalesced_literal_b == 33]
+
+alias_source is 1
+alias_snapshot is alias_source
+alias_source is alias_source + 1
+check of ["GC33 numeric assignment does not mutate aliased binding",
+    alias_snapshot == 1 and alias_source == 2]
+
+# ----------------------------------------------------------------
 # Summary
 # ----------------------------------------------------------------
 total is pass_count + fail_count
