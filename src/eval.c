@@ -224,6 +224,8 @@ static int expr_result_is_owned(ASTNode *node) {
         case AST_DICT:
         case AST_LISTCOMP:
         case AST_LAMBDA:
+        case AST_FUNC:
+        case AST_IMPORT:
         case AST_IF:
         case AST_LOOP:
         case AST_FOR:
@@ -913,7 +915,9 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         ASTNode **body = xmalloc(sizeof(ASTNode*));
         body[0] = ret;
         Value *fn = make_fn("", node->data.lambda.params,
-                           node->data.lambda.param_count, body, 1, env);
+                            node->data.lambda.param_count, body, 1, env);
+        free(ret);
+        free(body);
         env->captured = 1;
         return fn;
     }
@@ -1073,8 +1077,11 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         g_parse_errors = saved_errors;
         Env *saved_load_env = g_load_env;
         g_load_env = mod_env;
-        eval_node(ast, mod_env);
+        Value *ignored = eval_node(ast, mod_env);
         g_load_env = saved_load_env;
+        if (ast && ast->type == AST_PROGRAM && ast->data.program.count > 0)
+            release_eval_temp(ast->data.program.stmts[ast->data.program.count - 1], ignored);
+        free_ast(ast);
         free_tokenlist(&tl);
         free(source);
 

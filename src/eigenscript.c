@@ -207,6 +207,9 @@ void free_value(Value *v) {
             for (int i = 0; i < v->data.fn.param_count; i++)
                 free(v->data.fn.params[i]);
             free(v->data.fn.params);
+            for (int i = 0; i < v->data.fn.body_count; i++)
+                free_ast(v->data.fn.body[i]);
+            free(v->data.fn.body);
             {
                 Env *clo = v->data.fn.closure;
                 v->data.fn.closure = NULL;  /* break cycle before decrement */
@@ -348,7 +351,7 @@ Value* make_fn(const char *name, char **params, int param_count, ASTNode **body,
     v->data.fn.param_count = param_count;
     for (int i = 0; i < param_count; i++)
         v->data.fn.params[i] = xstrdup(params[i]);
-    v->data.fn.body = body;
+    v->data.fn.body = clone_ast_array(body, body_count);
     v->data.fn.body_count = body_count;
     v->data.fn.closure = closure;
     if (closure) __atomic_add_fetch(&closure->env_refcount, 1, __ATOMIC_RELAXED);

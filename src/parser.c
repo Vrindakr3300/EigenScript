@@ -68,9 +68,6 @@ ASTNode* make_node(ASTType type, int line) {
 }
 
 /* Recursively free an AST tree. */
-/* Currently unreferenced: the tree-walker keeps AST nodes alive for the
- * lifetime of any function defined in them. Retained for future use and
- * because freeing ASTs with partial parses has edge cases. */
 void free_ast(ASTNode *node) {
     if (!node) return;
     switch (node->type) {
@@ -129,7 +126,7 @@ void free_ast(ASTNode *node) {
             for (int i = 0; i < node->data.lambda.param_count; i++)
                 free(node->data.lambda.params[i]);
             free(node->data.lambda.params);
-            /* Don't free body — it's shared with the return wrapper created at eval time */
+            free_ast(node->data.lambda.body);
             break;
         case AST_MATCH:
             free_ast(node->data.match.expr);
@@ -155,7 +152,13 @@ void free_ast(ASTNode *node) {
             free_ast(node->data.dot.target);
             free(node->data.dot.key);
             break;
+        case AST_DOT_ASSIGN:
+            free_ast(node->data.dot_assign.target);
+            free(node->data.dot_assign.key);
+            free_ast(node->data.dot_assign.expr);
+            break;
         case AST_BLOCK:
+        case AST_UNOBSERVED:
             for (int i = 0; i < node->data.block.count; i++) free_ast(node->data.block.stmts[i]);
             if (node->data.block.stmts) free(node->data.block.stmts);
             break;
@@ -166,6 +169,11 @@ void free_ast(ASTNode *node) {
         case AST_INDEX:
             free_ast(node->data.index.target);
             free_ast(node->data.index.index);
+            break;
+        case AST_INDEX_ASSIGN:
+            free_ast(node->data.index_assign.target);
+            free_ast(node->data.index_assign.index);
+            free_ast(node->data.index_assign.expr);
             break;
         case AST_LISTCOMP:
             free_ast(node->data.listcomp.expr);
@@ -186,11 +194,175 @@ void free_ast(ASTNode *node) {
         case AST_INTERROGATE:
             free_ast(node->data.interrogate.expr);
             break;
+        case AST_IMPORT:
+            free(node->data.import.module_name);
+            break;
         default:
-            /* AST_NUM, AST_NULL, AST_PREDICATE — no owned memory */
+            /* AST_NUM, AST_NULL, AST_PREDICATE, AST_BREAK, AST_CONTINUE — no owned memory */
             break;
     }
     free(node);
+}
+
+static char **clone_string_array(char **items, int count) {
+    if (!items || count <= 0) return NULL;
+    char **copy = xcalloc_array(count, sizeof(char *));
+    for (int i = 0; i < count; i++)
+        copy[i] = xstrdup(items[i] ? items[i] : "");
+    return copy;
+}
+
+ASTNode **clone_ast_array(ASTNode **nodes, int count) {
+    if (!nodes || count <= 0) return NULL;
+    ASTNode **copy = xcalloc_array(count, sizeof(ASTNode *));
+    for (int i = 0; i < count; i++)
+        copy[i] = clone_ast(nodes[i]);
+    return copy;
+}
+
+ASTNode *clone_ast(ASTNode *node) {
+    if (!node) return NULL;
+    ASTNode *n = make_node_col(node->type, node->line, node->col);
+    switch (node->type) {
+        case AST_NUM:
+            n->data.num = node->data.num;
+            break;
+        case AST_STR:
+            n->data.str = xstrdup(node->data.str ? node->data.str : "");
+            break;
+        case AST_IDENT:
+            n->data.ident.name = xstrdup(node->data.ident.name ? node->data.ident.name : "");
+            break;
+        case AST_BINOP:
+            memcpy(n->data.binop.op, node->data.binop.op, sizeof(n->data.binop.op));
+            n->data.binop.left = clone_ast(node->data.binop.left);
+            n->data.binop.right = clone_ast(node->data.binop.right);
+            break;
+        case AST_UNARY:
+            memcpy(n->data.unary.op, node->data.unary.op, sizeof(n->data.unary.op));
+            n->data.unary.operand = clone_ast(node->data.unary.operand);
+            break;
+        case AST_ASSIGN:
+            n->data.assign.name = xstrdup(node->data.assign.name ? node->data.assign.name : "");
+            n->data.assign.expr = clone_ast(node->data.assign.expr);
+            break;
+        case AST_RELATION:
+            n->data.relation.left = clone_ast(node->data.relation.left);
+            n->data.relation.right = clone_ast(node->data.relation.right);
+            break;
+        case AST_IF:
+            n->data.cond.cond = clone_ast(node->data.cond.cond);
+            n->data.cond.if_body = clone_ast_array(node->data.cond.if_body, node->data.cond.if_count);
+            n->data.cond.if_count = node->data.cond.if_count;
+            n->data.cond.else_body = clone_ast_array(node->data.cond.else_body, node->data.cond.else_count);
+            n->data.cond.else_count = node->data.cond.else_count;
+            break;
+        case AST_LOOP:
+            n->data.loop.cond = clone_ast(node->data.loop.cond);
+            n->data.loop.body = clone_ast_array(node->data.loop.body, node->data.loop.body_count);
+            n->data.loop.body_count = node->data.loop.body_count;
+            break;
+        case AST_FUNC:
+            n->data.func.name = xstrdup(node->data.func.name ? node->data.func.name : "");
+            n->data.func.params = clone_string_array(node->data.func.params, node->data.func.param_count);
+            n->data.func.param_count = node->data.func.param_count;
+            n->data.func.body = clone_ast_array(node->data.func.body, node->data.func.body_count);
+            n->data.func.body_count = node->data.func.body_count;
+            break;
+        case AST_RETURN:
+            n->data.ret.expr = clone_ast(node->data.ret.expr);
+            break;
+        case AST_TRY:
+            n->data.trycatch.try_body = clone_ast_array(node->data.trycatch.try_body, node->data.trycatch.try_count);
+            n->data.trycatch.try_count = node->data.trycatch.try_count;
+            n->data.trycatch.err_name = xstrdup(node->data.trycatch.err_name ? node->data.trycatch.err_name : "");
+            n->data.trycatch.catch_body = clone_ast_array(node->data.trycatch.catch_body, node->data.trycatch.catch_count);
+            n->data.trycatch.catch_count = node->data.trycatch.catch_count;
+            break;
+        case AST_LAMBDA:
+            n->data.lambda.params = clone_string_array(node->data.lambda.params, node->data.lambda.param_count);
+            n->data.lambda.param_count = node->data.lambda.param_count;
+            n->data.lambda.body = clone_ast(node->data.lambda.body);
+            break;
+        case AST_MATCH:
+            n->data.match.expr = clone_ast(node->data.match.expr);
+            n->data.match.case_count = node->data.match.case_count;
+            if (n->data.match.case_count > 0) {
+                n->data.match.patterns = xcalloc_array(n->data.match.case_count, sizeof(ASTNode *));
+                n->data.match.bodies = xcalloc_array(n->data.match.case_count, sizeof(ASTNode **));
+                n->data.match.body_counts = xcalloc_array(n->data.match.case_count, sizeof(int));
+                for (int i = 0; i < n->data.match.case_count; i++) {
+                    n->data.match.patterns[i] = clone_ast(node->data.match.patterns[i]);
+                    n->data.match.body_counts[i] = node->data.match.body_counts[i];
+                    n->data.match.bodies[i] = clone_ast_array(node->data.match.bodies[i],
+                                                              node->data.match.body_counts[i]);
+                }
+            }
+            break;
+        case AST_DICT:
+            n->data.dict.count = node->data.dict.count;
+            n->data.dict.keys = clone_ast_array(node->data.dict.keys, node->data.dict.count);
+            n->data.dict.vals = clone_ast_array(node->data.dict.vals, node->data.dict.count);
+            break;
+        case AST_DOT:
+            n->data.dot.target = clone_ast(node->data.dot.target);
+            n->data.dot.key = xstrdup(node->data.dot.key ? node->data.dot.key : "");
+            break;
+        case AST_DOT_ASSIGN:
+            n->data.dot_assign.target = clone_ast(node->data.dot_assign.target);
+            n->data.dot_assign.key = xstrdup(node->data.dot_assign.key ? node->data.dot_assign.key : "");
+            n->data.dot_assign.expr = clone_ast(node->data.dot_assign.expr);
+            break;
+        case AST_BLOCK:
+        case AST_UNOBSERVED:
+            n->data.block.stmts = clone_ast_array(node->data.block.stmts, node->data.block.count);
+            n->data.block.count = node->data.block.count;
+            break;
+        case AST_LIST:
+            n->data.list.elems = clone_ast_array(node->data.list.elems, node->data.list.count);
+            n->data.list.count = node->data.list.count;
+            break;
+        case AST_INDEX:
+            n->data.index.target = clone_ast(node->data.index.target);
+            n->data.index.index = clone_ast(node->data.index.index);
+            break;
+        case AST_INDEX_ASSIGN:
+            n->data.index_assign.target = clone_ast(node->data.index_assign.target);
+            n->data.index_assign.index = clone_ast(node->data.index_assign.index);
+            n->data.index_assign.expr = clone_ast(node->data.index_assign.expr);
+            break;
+        case AST_LISTCOMP:
+            n->data.listcomp.expr = clone_ast(node->data.listcomp.expr);
+            n->data.listcomp.var = xstrdup(node->data.listcomp.var ? node->data.listcomp.var : "");
+            n->data.listcomp.iter = clone_ast(node->data.listcomp.iter);
+            n->data.listcomp.filter = clone_ast(node->data.listcomp.filter);
+            break;
+        case AST_FOR:
+            n->data.forloop.var = xstrdup(node->data.forloop.var ? node->data.forloop.var : "");
+            n->data.forloop.iter = clone_ast(node->data.forloop.iter);
+            n->data.forloop.body = clone_ast_array(node->data.forloop.body, node->data.forloop.body_count);
+            n->data.forloop.body_count = node->data.forloop.body_count;
+            break;
+        case AST_PROGRAM:
+            n->data.program.stmts = clone_ast_array(node->data.program.stmts, node->data.program.count);
+            n->data.program.count = node->data.program.count;
+            break;
+        case AST_INTERROGATE:
+            n->data.interrogate.kind = node->data.interrogate.kind;
+            n->data.interrogate.expr = clone_ast(node->data.interrogate.expr);
+            break;
+        case AST_PREDICATE:
+            n->data.predicate.kind = node->data.predicate.kind;
+            break;
+        case AST_IMPORT:
+            n->data.import.module_name = xstrdup(node->data.import.module_name ? node->data.import.module_name : "");
+            break;
+        case AST_NULL:
+        case AST_BREAK:
+        case AST_CONTINUE:
+            break;
+    }
+    return n;
 }
 
 static int is_compound_assign(TokType t) {
@@ -757,6 +929,7 @@ static ASTNode* parse_statement(Parser *p) {
         }
         if (param_count == 0) {
             /* No explicit params: default to single param "n" */
+            free(params);
             params = xmalloc(sizeof(char*));
             params[0] = xstrdup("n");
             param_count = 1;
@@ -970,7 +1143,7 @@ static ASTNode* parse_statement(Parser *p) {
             if (compound) {
                 /* Desugar obj.f += expr → obj.f is obj.f + expr */
                 ASTNode *read = make_node(AST_DOT, t->line);
-                read->data.dot.target = target->data.dot.target;
+                read->data.dot.target = clone_ast(target->data.dot.target);
                 read->data.dot.key = xstrdup(target->data.dot.key);
                 ASTNode *binop = make_node(AST_BINOP, t->line);
                 memcpy(binop->data.binop.op, cop, 4);
@@ -982,6 +1155,8 @@ static ASTNode* parse_statement(Parser *p) {
             n->data.dot_assign.target = target->data.dot.target;
             n->data.dot_assign.key = xstrdup(target->data.dot.key);
             n->data.dot_assign.expr = rhs;
+            free(target->data.dot.key);
+            free(target);
             return n;
         }
         /* Index-assignment: grid[0][1] is value, items[i] is value */
@@ -994,8 +1169,8 @@ static ASTNode* parse_statement(Parser *p) {
             if (compound) {
                 /* Desugar a[i] += expr → a[i] is a[i] + expr */
                 ASTNode *read = make_node(AST_INDEX, t->line);
-                read->data.index.target = target->data.index.target;
-                read->data.index.index = target->data.index.index;
+                read->data.index.target = clone_ast(target->data.index.target);
+                read->data.index.index = clone_ast(target->data.index.index);
                 ASTNode *binop = make_node(AST_BINOP, t->line);
                 memcpy(binop->data.binop.op, cop, 4);
                 binop->data.binop.left = read;
@@ -1006,6 +1181,7 @@ static ASTNode* parse_statement(Parser *p) {
             n->data.index_assign.target = target->data.index.target;
             n->data.index_assign.index = target->data.index.index;
             n->data.index_assign.expr = rhs;
+            free(target);
             return n;
         }
         /* Not a dot-assignment — restore and fall through */

@@ -1818,6 +1818,7 @@ Value* builtin_load_file(Value *arg) {
     ASTNode *ast = parse(&tl);
     Env *target = g_load_env ? g_load_env : g_global_env;
     Value *result = eval_node(ast, target);
+    free_ast(ast);
     free(source);
     free_tokenlist(&tl);
     return result ? result : make_null();

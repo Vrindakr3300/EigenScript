@@ -321,6 +321,8 @@ void env_clear(Env *env);
 TokenList tokenize(const char *source);
 void free_tokenlist(TokenList *tl);
 ASTNode* parse(TokenList *tl);
+ASTNode* clone_ast(ASTNode *node);
+ASTNode** clone_ast_array(ASTNode **nodes, int count);
 void free_ast(ASTNode *node);
 Value* eval_node(ASTNode *node, Env *env);
 Value* eval_block(ASTNode **stmts, int count, Env *env);
