@@ -108,11 +108,13 @@ typedef enum {
 } ASTType;
 
 typedef struct ASTNode ASTNode;
+typedef struct Env Env;
 
 struct ASTNode {
     ASTType type;
     int line;
     int col;    /* 0-based column offset */
+    uint32_t name_hash; /* cached hash for identifier/name-bearing nodes */
     union {
         double num;
         char *str;
@@ -153,8 +155,6 @@ typedef enum {
 typedef struct Value Value;
 typedef Value* (*BuiltinFn)(Value* arg);
 
-typedef struct Env Env;
-
 /* Hash index for O(1) variable lookup.  Sits alongside the linear
  * names/values arrays so iteration order and env_free are unchanged. */
 #define ENV_HASH_INIT_CAP 32  /* must be power of 2 */
@@ -183,7 +183,7 @@ struct Value {
         double num;
         char *str;
         struct { Value **items; int count; int capacity; } list;
-        struct { char *name; char **params; int param_count; ASTNode **body; int body_count; Env *closure; } fn;
+        struct { char *name; char **params; uint32_t *param_hashes; int param_count; ASTNode **body; int body_count; Env *closure; } fn;
         BuiltinFn builtin;
         struct { char **keys; Value **vals; int count; int capacity; EnvHash hash; } dict;
         struct { double *data; int count; } buffer;
@@ -313,6 +313,12 @@ Env* env_new(Env *parent);
 void env_set(Env *env, const char *name, Value *val);
 Value* env_get(Env *env, const char *name);
 void env_set_local(Env *env, const char *name, Value *val);
+uint32_t env_name_hash(const char *name);
+void env_set_hashed(Env *env, const char *name, uint32_t h, Value *val);
+Value* env_get_hashed(Env *env, const char *name, uint32_t h);
+void env_set_local_hashed(Env *env, const char *name, uint32_t h, Value *val);
+void dict_set_hashed(Value *dict, const char *key, uint32_t h, Value *val);
+Value* dict_get_hashed(Value *dict, const char *key, uint32_t h);
 void env_free(Env *env);
 void env_clear(Env *env);
 

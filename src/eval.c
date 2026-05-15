@@ -258,9 +258,9 @@ static Value *own_builtin_result(Value *result, Value *arg, ASTNode *arg_expr) {
     return result;
 }
 
-static void env_set_eval_result(Env *env, const char *name, Value *val, ASTNode *expr) {
+static void env_set_eval_result(Env *env, const char *name, uint32_t name_hash, Value *val, ASTNode *expr) {
     int release_temp = expr_result_is_owned(expr);
-    env_set(env, name, val);
+    env_set_hashed(env, name, name_hash, val);
     if (release_temp)
         val_decref(val);
 }
@@ -307,7 +307,7 @@ static int eval_num_fast(ASTNode *node, Env *env, double *out) {
             ok = 1;
             break;
         case AST_IDENT: {
-            Value *v = env_get(env, node->data.ident.name);
+            Value *v = env_get_hashed(env, node->data.ident.name, node->name_hash);
             if (v && v->type == VAL_NUM) { *out = v->data.num; ok = 1; }
             break;
         }
@@ -317,7 +317,7 @@ static int eval_num_fast(ASTNode *node, Env *env, double *out) {
                 node->data.dot.target->type != AST_INDEX) break;
             Value *target = eval_node(node->data.dot.target, env);
             if (target && target->type == VAL_DICT) {
-                Value *v = dict_get(target, node->data.dot.key);
+                Value *v = dict_get_hashed(target, node->data.dot.key, node->name_hash);
                 if (v && v->type == VAL_NUM) { *out = v->data.num; ok = 1; }
             }
             release_eval_temp(node->data.dot.target, target);
@@ -432,7 +432,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         return make_null();
 
     case AST_IDENT: {
-        Value *v = env_get(env, node->data.ident.name);
+        Value *v = env_get_hashed(env, node->data.ident.name, node->name_hash);
         if (!v) {
             runtime_error(node->line, "undefined variable '%s'", node->data.ident.name);
             return make_null();
@@ -444,7 +444,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         /* Fast path: mutate existing NUM slot in-place when RHS is a
          * pure numeric expression.  Avoids make_num allocation entirely.
          * Inside unobserved blocks, also skip observer tracking. */
-        Value *old = env_get(env, node->data.assign.name);
+        Value *old = env_get_hashed(env, node->data.assign.name, node->name_hash);
         if (old && old->type == VAL_NUM && !old->arena && old->refcount <= 1) {
             double result;
             if (eval_num_fast(node->data.assign.expr, env, &result)) {
@@ -479,13 +479,13 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                 recycle_intermediate(val);
                 return old;
             }
-            env_set_eval_result(env, node->data.assign.name, val, node->data.assign.expr);
+            env_set_eval_result(env, node->data.assign.name, node->name_hash, val, node->data.assign.expr);
             return val;
         }
         Value *val = eval_node(node->data.assign.expr, env);
-        old = env_get(env, node->data.assign.name);
+        old = env_get_hashed(env, node->data.assign.name, node->name_hash);
         mark_observer_dirty(val, old);
-        env_set_eval_result(env, node->data.assign.name, val, node->data.assign.expr);
+        env_set_eval_result(env, node->data.assign.name, node->name_hash, val, node->data.assign.expr);
         g_last_observer = val;
         return val;
     }
@@ -724,7 +724,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                 if (bound > right_val->data.list.count)
                     bound = right_val->data.list.count;
                 for (int pi = 0; pi < bound; pi++) {
-                    env_set_local(call_env, left_val->data.fn.params[pi], right_val->data.list.items[pi]);
+                    env_set_local_hashed(call_env, left_val->data.fn.params[pi], left_val->data.fn.param_hashes[pi], right_val->data.list.items[pi]);
                     if (use_scratch)
                         release_eval_temp(rhs->data.list.elems[pi], scratch_eval_items[pi]);
                 }
@@ -747,7 +747,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                     scratch_list_end();
                     right_val = heap_list;
                 }
-                env_set_local(call_env, left_val->data.fn.params[0], right_val);
+                env_set_local_hashed(call_env, left_val->data.fn.params[0], left_val->data.fn.param_hashes[0], right_val);
                 if (!use_scratch)
                     release_eval_temp(rhs, right_val);
                 else
@@ -892,7 +892,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             Value *elem = (iter->type == VAL_BUFFER)
                           ? make_num(iter->data.buffer.data[i])
                           : iter->data.list.items[i];
-            env_set_local(loop_env, node->data.forloop.var, elem);
+            env_set_local_hashed(loop_env, node->data.forloop.var, node->name_hash, elem);
             if (iter->type == VAL_BUFFER)
                 val_decref(elem);
             result = eval_block(node->data.forloop.body, node->data.forloop.body_count, loop_env);
@@ -967,7 +967,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         }
         /* Fast path: mutate existing NUM dict value in-place */
         {
-            Value *old = dict_get(target, node->data.dot_assign.key);
+            Value *old = dict_get_hashed(target, node->data.dot_assign.key, node->name_hash);
             if (old && old->type == VAL_NUM && !old->arena && old->refcount <= 1) {
                 double result;
                 if (eval_num_fast(node->data.dot_assign.expr, env, &result)) {
@@ -977,7 +977,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             }
         }
         Value *val = eval_node(node->data.dot_assign.expr, env);
-        dict_set(target, node->data.dot_assign.key, val);
+        dict_set_hashed(target, node->data.dot_assign.key, node->name_hash, val);
         release_eval_temp(node->data.dot_assign.expr, val);
         return val;
     }
@@ -1094,7 +1094,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             dict_set(mod_dict, mod_env->names[i], mod_env->values[i]);
         }
 
-        env_set(env, name, mod_dict);
+        env_set_hashed(env, name, node->name_hash, mod_dict);
         return mod_dict;
     }
 
@@ -1111,7 +1111,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                            node->data.func.param_count,
                            node->data.func.body, node->data.func.body_count, env);
         env->captured = 1;  /* This env is now a closure — do not free */
-        env_set_local(env, node->data.func.name, fn);
+        env_set_local_hashed(env, node->data.func.name, node->name_hash, fn);
         return fn;
     }
 
@@ -1142,7 +1142,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             /* Error occurred — run catch body with error bound */
             g_has_error = 0;
             Env *catch_env = env_new(env);
-            env_set_local(catch_env, node->data.trycatch.err_name, make_str(g_error_msg));
+            env_set_local_hashed(catch_env, node->data.trycatch.err_name, node->name_hash, make_str(g_error_msg));
             g_error_msg[0] = '\0';
             result = make_null();
             for (int i = 0; i < node->data.trycatch.catch_count; i++) {
@@ -1182,7 +1182,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
     case AST_DOT: {
         Value *target = eval_node(node->data.dot.target, env);
         if (target->type == VAL_DICT) {
-            Value *val = dict_get(target, node->data.dot.key);
+            Value *val = dict_get_hashed(target, node->data.dot.key, node->name_hash);
             return val ? val : make_null();
         }
         runtime_error(node->line, "cannot access .%s on %s", node->data.dot.key, val_type_name(target->type));
@@ -1260,7 +1260,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                 env_clear(loop_env);
             }
             Value *elem = (iter->type == VAL_BUFFER) ? make_num(iter->data.buffer.data[i]) : iter->data.list.items[i];
-            env_set_local(loop_env, node->data.listcomp.var, elem);
+            env_set_local_hashed(loop_env, node->data.listcomp.var, node->name_hash, elem);
             if (iter->type == VAL_BUFFER)
                 val_decref(elem);
             if (node->data.listcomp.filter) {

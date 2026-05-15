@@ -67,6 +67,11 @@ ASTNode* make_node(ASTType type, int line) {
     return make_node_col(type, line, 0);
 }
 
+static void set_name_hash(ASTNode *node, const char *name) {
+    if (node)
+        node->name_hash = env_name_hash(name ? name : "");
+}
+
 /* Recursively free an AST tree. */
 void free_ast(ASTNode *node) {
     if (!node) return;
@@ -223,6 +228,7 @@ ASTNode **clone_ast_array(ASTNode **nodes, int count) {
 ASTNode *clone_ast(ASTNode *node) {
     if (!node) return NULL;
     ASTNode *n = make_node_col(node->type, node->line, node->col);
+    n->name_hash = node->name_hash;
     switch (node->type) {
         case AST_NUM:
             n->data.num = node->data.num;
@@ -431,6 +437,7 @@ static ASTNode* parse_primary(Parser *p) {
         }
         ASTNode *n = make_node(AST_IDENT, p_cur(p)->line);
         n->data.ident.name = xstrdup(t->str_val);
+        set_name_hash(n, n->data.ident.name);
         while (p_cur(p)->type == TOK_LBRACKET) {
             p_advance(p);
             ASTNode *idx = parse_expression(p);
@@ -492,6 +499,7 @@ static ASTNode* parse_primary(Parser *p) {
         p_advance(p);
         ASTNode *n = make_node(AST_IDENT, p_cur(p)->line);
         n->data.ident.name = xstrdup(t->str_val);
+        set_name_hash(n, n->data.ident.name);
         while (p_cur(p)->type == TOK_LBRACKET || p_cur(p)->type == TOK_DOT) {
             if (p_cur(p)->type == TOK_DOT) {
                 p_advance(p);
@@ -500,6 +508,7 @@ static ASTNode* parse_primary(Parser *p) {
                 ASTNode *dot = make_node(AST_DOT, p_cur(p)->line);
                 dot->data.dot.target = n;
                 dot->data.dot.key = xstrdup(key_tok->str_val);
+                set_name_hash(dot, dot->data.dot.key);
                 n = dot;
             } else {
                 p_advance(p);
@@ -597,6 +606,7 @@ static ASTNode* parse_primary(Parser *p) {
             ASTNode *n = make_node(AST_LISTCOMP, p_cur(p)->line);
             n->data.listcomp.expr = first;
             n->data.listcomp.var = xstrdup(var_tok->str_val);
+            set_name_hash(n, n->data.listcomp.var);
             n->data.listcomp.iter = iter;
             n->data.listcomp.filter = filter;
             return n;
@@ -672,6 +682,7 @@ static ASTNode* parse_primary(Parser *p) {
                 ASTNode *dot = make_node(AST_DOT, p_cur(p)->line);
                 dot->data.dot.target = n;
                 dot->data.dot.key = xstrdup(key_tok->str_val);
+                set_name_hash(dot, dot->data.dot.key);
                 n = dot;
             } else {
                 p_advance(p);
@@ -942,6 +953,7 @@ static ASTNode* parse_statement(Parser *p) {
         ASTNode **body = parse_block(p, &body_count);
         ASTNode *n = make_node(AST_FUNC, p_cur(p)->line);
         n->data.func.name = xstrdup((name_tok && name_tok->str_val) ? name_tok->str_val : "");
+        set_name_hash(n, n->data.func.name);
         n->data.func.params = params;
         n->data.func.param_count = param_count;
         n->data.func.body = body;
@@ -972,6 +984,7 @@ static ASTNode* parse_statement(Parser *p) {
         n->data.trycatch.try_body = try_body;
         n->data.trycatch.try_count = try_count;
         n->data.trycatch.err_name = xstrdup(err_name);
+        set_name_hash(n, n->data.trycatch.err_name);
         n->data.trycatch.catch_body = catch_body;
         n->data.trycatch.catch_count = catch_count;
         return n;
@@ -1095,6 +1108,7 @@ static ASTNode* parse_statement(Parser *p) {
         ASTNode **body = parse_block(p, &body_count);
         ASTNode *n = make_node(AST_FOR, p_cur(p)->line);
         n->data.forloop.var = xstrdup((var_tok && var_tok->str_val) ? var_tok->str_val : "");
+        set_name_hash(n, n->data.forloop.var);
         n->data.forloop.iter = iter;
         n->data.forloop.body = body;
         n->data.forloop.body_count = body_count;
@@ -1116,6 +1130,7 @@ static ASTNode* parse_statement(Parser *p) {
         p_expect(p, TOK_IDENT);
         ASTNode *n = make_node(AST_IMPORT, t->line);
         n->data.import.module_name = xstrdup(name_tok->str_val);
+        set_name_hash(n, n->data.import.module_name);
         return n;
     }
 
@@ -1145,6 +1160,7 @@ static ASTNode* parse_statement(Parser *p) {
                 ASTNode *read = make_node(AST_DOT, t->line);
                 read->data.dot.target = clone_ast(target->data.dot.target);
                 read->data.dot.key = xstrdup(target->data.dot.key);
+                read->name_hash = target->name_hash;
                 ASTNode *binop = make_node(AST_BINOP, t->line);
                 memcpy(binop->data.binop.op, cop, 4);
                 binop->data.binop.left = read;
@@ -1154,6 +1170,7 @@ static ASTNode* parse_statement(Parser *p) {
             ASTNode *n = make_node(AST_DOT_ASSIGN, t->line);
             n->data.dot_assign.target = target->data.dot.target;
             n->data.dot_assign.key = xstrdup(target->data.dot.key);
+            n->name_hash = target->name_hash;
             n->data.dot_assign.expr = rhs;
             free(target->data.dot.key);
             free(target);
@@ -1200,6 +1217,7 @@ static ASTNode* parse_statement(Parser *p) {
             /* Desugar x += expr → x is x + expr */
             ASTNode *ident = make_node(AST_IDENT, t->line);
             ident->data.ident.name = xstrdup(name_tok->str_val);
+            set_name_hash(ident, ident->data.ident.name);
             ASTNode *binop = make_node(AST_BINOP, t->line);
             memcpy(binop->data.binop.op, cop, 4);
             binop->data.binop.left = ident;
@@ -1209,6 +1227,7 @@ static ASTNode* parse_statement(Parser *p) {
         p_match(p, TOK_NEWLINE);
         ASTNode *n = make_node(AST_ASSIGN, p_cur(p)->line);
         n->data.assign.name = xstrdup((name_tok && name_tok->str_val) ? name_tok->str_val : "");
+        set_name_hash(n, n->data.assign.name);
         n->data.assign.expr = expr;
         return n;
     }
