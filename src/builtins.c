@@ -828,6 +828,7 @@ Value* builtin_json_raw(Value *arg) {
     memset(v, 0, sizeof(Value));
     v->type = VAL_JSON_RAW;
     v->data.str = xstrdup(arg->data.str);
+    v->refcount = 1;
     return v;
 }
 
@@ -2318,8 +2319,11 @@ Value* builtin_copy_into(Value *arg) {
     Value *src = arg->data.list.items[2];
     if (!dest || dest->type != VAL_LIST || !src || src->type != VAL_LIST) return make_null();
     if (offset < 0) return make_null();
-    for (int i = 0; i < src->data.list.count && offset + i < dest->data.list.count; i++)
+    for (int i = 0; i < src->data.list.count && offset + i < dest->data.list.count; i++) {
+        val_incref(src->data.list.items[i]);
+        val_decref(dest->data.list.items[offset + i]);
         dest->data.list.items[offset + i] = src->data.list.items[i];
+    }
     return dest;
 }
 
@@ -2393,11 +2397,17 @@ Value* builtin_range(Value *arg) {
 
     Value *result = make_list(count);
     if (step > 0) {
-        for (int i = start; i < end; i += step)
-            list_append(result, make_num((double)i));
+        for (int i = start; i < end; i += step) {
+            Value *v = make_num((double)i);
+            list_append(result, v);
+            val_decref(v);
+        }
     } else {
-        for (int i = start; i > end; i += step)
-            list_append(result, make_num((double)i));
+        for (int i = start; i > end; i += step) {
+            Value *v = make_num((double)i);
+            list_append(result, v);
+            val_decref(v);
+        }
     }
     return result;
 }
@@ -2430,8 +2440,11 @@ Value* builtin_set_at(Value *arg) {
         Value *list = arg->data.list.items[0];
         int idx = (arg->data.list.items[1]->type == VAL_NUM) ? (int)arg->data.list.items[1]->data.num : 0;
         Value *val = arg->data.list.items[2];
-        if (list->type == VAL_LIST && idx >= 0 && idx < list->data.list.count)
+        if (list->type == VAL_LIST && idx >= 0 && idx < list->data.list.count) {
+            val_incref(val);
+            val_decref(list->data.list.items[idx]);
             list->data.list.items[idx] = val;
+        }
         return list;
     }
     if (argc == 4) {
@@ -2442,8 +2455,11 @@ Value* builtin_set_at(Value *arg) {
         Value *val = arg->data.list.items[3];
         if (list->type == VAL_LIST && row >= 0 && row < list->data.list.count) {
             Value *rowv = list->data.list.items[row];
-            if (rowv->type == VAL_LIST && col >= 0 && col < rowv->data.list.count)
+            if (rowv->type == VAL_LIST && col >= 0 && col < rowv->data.list.count) {
+                val_incref(val);
+                val_decref(rowv->data.list.items[col]);
                 rowv->data.list.items[col] = val;
+            }
         }
         return list;
     }
@@ -2458,8 +2474,10 @@ Value* builtin_get_at(Value *arg) {
     if (argc == 2) {
         Value *list = arg->data.list.items[0];
         int idx = (arg->data.list.items[1]->type == VAL_NUM) ? (int)arg->data.list.items[1]->data.num : 0;
-        if (list->type == VAL_LIST && idx >= 0 && idx < list->data.list.count)
+        if (list->type == VAL_LIST && idx >= 0 && idx < list->data.list.count) {
+            val_incref(list->data.list.items[idx]);
             return list->data.list.items[idx];
+        }
         return make_num(0.0);
     }
     if (argc == 3) {
@@ -2468,8 +2486,10 @@ Value* builtin_get_at(Value *arg) {
         int col = (arg->data.list.items[2]->type == VAL_NUM) ? (int)arg->data.list.items[2]->data.num : 0;
         if (list->type == VAL_LIST && row >= 0 && row < list->data.list.count) {
             Value *rowv = list->data.list.items[row];
-            if (rowv->type == VAL_LIST && col >= 0 && col < rowv->data.list.count)
+            if (rowv->type == VAL_LIST && col >= 0 && col < rowv->data.list.count) {
+                val_incref(rowv->data.list.items[col]);
                 return rowv->data.list.items[col];
+            }
         }
         return make_num(0.0);
     }
@@ -2502,13 +2522,10 @@ static void *thread_entry(void *arg) {
         Value *result = make_null();
         g_returning = 0;
         g_return_val = NULL;
-        for (int i = 0; i < fn->data.fn.body_count; i++) {
-            result = eval_node(fn->data.fn.body[i], call_env);
-            if (g_returning) {
-                result = g_return_val;
-                g_returning = 0;
-                break;
-            }
+        result = eval_block(fn->data.fn.body, fn->data.fn.body_count, call_env);
+        if (g_returning) {
+            result = g_return_val;
+            g_returning = 0;
         }
         h->result = result;
         if (result) val_incref(result);
@@ -2900,14 +2917,10 @@ Value* builtin_dispatch(Value *arg) {
         }
         g_returning = 0;
         g_return_val = NULL;
-        Value *result = make_null();
-        for (int i = 0; i < fn->data.fn.body_count; i++) {
-            result = eval_node(fn->data.fn.body[i], call_env);
-            if (g_returning) {
-                result = g_return_val;
-                g_returning = 0;
-                break;
-            }
+        Value *result = eval_block(fn->data.fn.body, fn->data.fn.body_count, call_env);
+        if (g_returning) {
+            result = g_return_val;
+            g_returning = 0;
         }
         env_free(call_env);
         return result ? result : make_null();
@@ -3100,5 +3113,3 @@ void register_builtins(Env *env) {
 
 
 }
-
-

@@ -13,6 +13,7 @@ ASTNode* make_node(ASTType type, int line);
 void runtime_error(int line, const char *fmt, ...);
 const char* val_type_name(ValType t);
 extern __thread int g_try_depth;
+Value* builtin_free_val(Value *arg);
 
 
 
@@ -175,6 +176,100 @@ static void scratch_list_push(Value *scratch, Value *item) {
 static void scratch_list_end(void) {
     if (g_scratch_depth > 0) g_scratch_depth--;
 }
+static int scratch_num_index(Value *v, int depth) {
+    if (!v || depth < 0 || depth >= SCRATCH_STACK_DEPTH) return -1;
+    for (int i = 0; i < SCRATCH_LIST_CAP; i++) {
+        if (v == &g_scratch_stack[depth].nums[i])
+            return i;
+    }
+    return -1;
+}
+static Value *materialize_scratch_result(Value *result, int depth) {
+    if (!result || depth < 0 || depth >= SCRATCH_STACK_DEPTH) return result;
+    if (result == &g_scratch_stack[depth].val) {
+        Value *heap_list = make_list(result->data.list.count);
+        for (int i = 0; i < result->data.list.count; i++) {
+            Value *item = result->data.list.items[i];
+            int copied = 0;
+            if (scratch_num_index(item, depth) >= 0) {
+                item = make_num(item->data.num);
+                copied = 1;
+            }
+            list_append(heap_list, item);
+            if (copied) val_decref(item);
+        }
+        return heap_list;
+    }
+    if (scratch_num_index(result, depth) >= 0)
+        return make_num(result->data.num);
+    for (int i = 0; i < g_scratch_stack[depth].val.data.list.count; i++) {
+        if (result == g_scratch_stack[depth].val.data.list.items[i]) {
+            val_incref(result);
+            return result;
+        }
+    }
+    return result;
+}
+
+static int expr_result_is_owned(ASTNode *node) {
+    if (!node) return 0;
+    switch (node->type) {
+        case AST_NUM:
+        case AST_STR:
+        case AST_BINOP:
+        case AST_UNARY:
+        case AST_RELATION:
+        case AST_INDEX:
+        case AST_LIST:
+        case AST_DICT:
+        case AST_LISTCOMP:
+        case AST_LAMBDA:
+        case AST_IF:
+        case AST_LOOP:
+        case AST_BLOCK:
+        case AST_UNOBSERVED:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int list_contains_value(Value *list, Value *needle) {
+    if (!list || list->type != VAL_LIST || !needle) return 0;
+    for (int i = 0; i < list->data.list.count; i++) {
+        if (list->data.list.items[i] == needle)
+            return 1;
+    }
+    return 0;
+}
+
+static Value *own_builtin_result(Value *result, Value *arg, ASTNode *arg_expr) {
+    if (!result) return result;
+    if (result == arg) {
+        if (!expr_result_is_owned(arg_expr))
+            val_incref(result);
+    } else if (list_contains_value(arg, result)) {
+        val_incref(result);
+    }
+    return result;
+}
+
+static void env_set_eval_result(Env *env, const char *name, Value *val, ASTNode *expr) {
+    int release_temp = expr_result_is_owned(expr);
+    env_set(env, name, val);
+    if (release_temp)
+        val_decref(val);
+}
+
+static void release_eval_temp(ASTNode *expr, Value *val) {
+    if (expr_result_is_owned(expr))
+        val_decref(val);
+}
+
+static void own_block_result_if_needed(ASTNode **stmts, int count, Value *result) {
+    if (count > 0 && !expr_result_is_owned(stmts[count - 1]))
+        val_incref(result);
+}
 
 /* Observer classification thresholds — tunable via set_observer_thresholds.
  * Defaults are very precise. Advanced users studying slow convergence may
@@ -217,9 +312,11 @@ static int eval_num_fast(ASTNode *node, Env *env, double *out) {
                 node->data.dot.target->type != AST_DOT &&
                 node->data.dot.target->type != AST_INDEX) break;
             Value *target = eval_node(node->data.dot.target, env);
-            if (!target || target->type != VAL_DICT) break;
-            Value *v = dict_get(target, node->data.dot.key);
-            if (v && v->type == VAL_NUM) { *out = v->data.num; ok = 1; }
+            if (target && target->type == VAL_DICT) {
+                Value *v = dict_get(target, node->data.dot.key);
+                if (v && v->type == VAL_NUM) { *out = v->data.num; ok = 1; }
+            }
+            release_eval_temp(node->data.dot.target, target);
             break;
         }
         case AST_INDEX: {
@@ -227,19 +324,32 @@ static int eval_num_fast(ASTNode *node, Env *env, double *out) {
                 node->data.index.target->type != AST_DOT &&
                 node->data.index.target->type != AST_INDEX) break;
             Value *target = eval_node(node->data.index.target, env);
-            if (!target) break;
+            if (!target) {
+                release_eval_temp(node->data.index.target, target);
+                break;
+            }
             double idx_d;
-            if (!eval_num_fast(node->data.index.index, env, &idx_d)) break;
+            if (!eval_num_fast(node->data.index.index, env, &idx_d)) {
+                release_eval_temp(node->data.index.target, target);
+                break;
+            }
             int i = (int)idx_d;
             if (target->type == VAL_LIST) {
-                if (i < 0 || i >= target->data.list.count) break;
+                if (i < 0 || i >= target->data.list.count) {
+                    release_eval_temp(node->data.index.target, target);
+                    break;
+                }
                 Value *v = target->data.list.items[i];
                 if (v && v->type == VAL_NUM) { *out = v->data.num; ok = 1; }
             } else if (target->type == VAL_BUFFER) {
-                if (i < 0 || i >= target->data.buffer.count) break;
+                if (i < 0 || i >= target->data.buffer.count) {
+                    release_eval_temp(node->data.index.target, target);
+                    break;
+                }
                 *out = target->data.buffer.data[i];
                 ok = 1;
             }
+            release_eval_temp(node->data.index.target, target);
             break;
         }
         case AST_UNARY: {
@@ -331,7 +441,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
          * pure numeric expression.  Avoids make_num allocation entirely.
          * Inside unobserved blocks, also skip observer tracking. */
         Value *old = env_get(env, node->data.assign.name);
-        if (old && old->type == VAL_NUM && !old->arena && old->refcount <= 2) {
+        if (old && old->type == VAL_NUM && !old->arena && old->refcount <= 1) {
             double result;
             if (eval_num_fast(node->data.assign.expr, env, &result)) {
                 if (g_unobserved_depth == 0) {
@@ -355,13 +465,23 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         }
         if (g_unobserved_depth > 0) {
             Value *val = eval_node(node->data.assign.expr, env);
-            env_set(env, node->data.assign.name, val);
+            /* If the target already holds a NUM and the new value is also
+             * a fresh NUM (refcount 1, not in any env), mutate in-place
+             * and recycle the fresh value.  Catches function-call results
+             * that eval_num_fast can't handle. */
+            if (val && val->type == VAL_NUM && val->refcount == 1 && !val->arena
+                && old && old->type == VAL_NUM && !old->arena && old->refcount <= 1) {
+                old->data.num = val->data.num;
+                recycle_intermediate(val);
+                return old;
+            }
+            env_set_eval_result(env, node->data.assign.name, val, node->data.assign.expr);
             return val;
         }
         Value *val = eval_node(node->data.assign.expr, env);
         old = env_get(env, node->data.assign.name);
         mark_observer_dirty(val, old);
-        env_set(env, node->data.assign.name, val);
+        env_set_eval_result(env, node->data.assign.name, val, node->data.assign.expr);
         g_last_observer = val;
         return val;
     }
@@ -371,15 +491,27 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
 
         if (strcmp(op, "and") == 0) {
             Value *left = eval_node(node->data.binop.left, env);
-            if (!is_truthy(left)) return make_num(0);
+            if (!is_truthy(left)) {
+                release_eval_temp(node->data.binop.left, left);
+                return make_num(0);
+            }
+            release_eval_temp(node->data.binop.left, left);
             Value *right = eval_node(node->data.binop.right, env);
-            return make_num(is_truthy(right) ? 1 : 0);
+            int truthy = is_truthy(right);
+            release_eval_temp(node->data.binop.right, right);
+            return make_num(truthy ? 1 : 0);
         }
         if (strcmp(op, "or") == 0) {
             Value *left = eval_node(node->data.binop.left, env);
-            if (is_truthy(left)) return make_num(1);
+            if (is_truthy(left)) {
+                release_eval_temp(node->data.binop.left, left);
+                return make_num(1);
+            }
+            release_eval_temp(node->data.binop.left, left);
             Value *right = eval_node(node->data.binop.right, env);
-            return make_num(is_truthy(right) ? 1 : 0);
+            int truthy = is_truthy(right);
+            release_eval_temp(node->data.binop.right, right);
+            return make_num(truthy ? 1 : 0);
         }
 
         Value *left = eval_node(node->data.binop.left, env);
@@ -389,6 +521,8 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         if (left->type == VAL_NUM && right->type == VAL_NUM) {
             double lv = left->data.num, rv = right->data.num;
             int64_t li = (int64_t)lv, ri = (int64_t)rv;
+            release_eval_temp(node->data.binop.left, left);
+            release_eval_temp(node->data.binop.right, right);
 
             if (op[1] == '\0') {
                 switch (op[0]) {
@@ -428,6 +562,8 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                 char *buf = xmalloc(llen + rlen + 1);
                 memcpy(buf, ls, llen);
                 memcpy(buf + llen, rs, rlen + 1);
+                release_eval_temp(node->data.binop.left, left);
+                release_eval_temp(node->data.binop.right, right);
                 return make_str_owned(buf);
             }
             char *ls = value_to_string(left);
@@ -437,47 +573,68 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             memcpy(buf, ls, llen);
             memcpy(buf + llen, rs, rlen + 1);
             free(ls); free(rs);
+            release_eval_temp(node->data.binop.left, left);
+            release_eval_temp(node->data.binop.right, right);
             return make_str_owned(buf);
         }
 
         /* Equality/inequality for non-numeric types */
         if (strcmp(op, "=") == 0) {
+            int eq = 0;
             if (left->type == VAL_STR && right->type == VAL_STR)
-                return make_num(strcmp(left->data.str, right->data.str) == 0 ? 1 : 0);
-            if (left->type == VAL_NULL && right->type == VAL_NULL)
-                return make_num(1);
-            return make_num(0);
+                eq = strcmp(left->data.str, right->data.str) == 0;
+            else if (left->type == VAL_NULL && right->type == VAL_NULL)
+                eq = 1;
+            release_eval_temp(node->data.binop.left, left);
+            release_eval_temp(node->data.binop.right, right);
+            return make_num(eq ? 1 : 0);
         }
         if (strcmp(op, "!=") == 0) {
+            int ne = 1;
             if (left->type == VAL_STR && right->type == VAL_STR)
-                return make_num(strcmp(left->data.str, right->data.str) != 0 ? 1 : 0);
-            if (left->type == VAL_NULL && right->type == VAL_NULL)
-                return make_num(0);
-            return make_num(1);
+                ne = strcmp(left->data.str, right->data.str) != 0;
+            else if (left->type == VAL_NULL && right->type == VAL_NULL)
+                ne = 0;
+            release_eval_temp(node->data.binop.left, left);
+            release_eval_temp(node->data.binop.right, right);
+            return make_num(ne ? 1 : 0);
         }
 
         runtime_error(node->line, "cannot apply '%s' to %s and %s",
                 op, val_type_name(left->type), val_type_name(right->type));
+        release_eval_temp(node->data.binop.left, left);
+        release_eval_temp(node->data.binop.right, right);
         return make_null();
     }
 
     case AST_UNARY: {
         Value *operand = eval_node(node->data.unary.operand, env);
         if (strcmp(node->data.unary.op, "-") == 0) {
-            if (operand->type == VAL_NUM)
-                return make_num(-operand->data.num);
+            if (operand->type == VAL_NUM) {
+                double n = operand->data.num;
+                release_eval_temp(node->data.unary.operand, operand);
+                return make_num(-n);
+            }
             runtime_error(node->line, "cannot negate %s", val_type_name(operand->type));
+            release_eval_temp(node->data.unary.operand, operand);
             return make_null();
         }
         if (strcmp(node->data.unary.op, "not") == 0) {
-            return make_num(is_truthy(operand) ? 0 : 1);
+            int truthy = is_truthy(operand);
+            release_eval_temp(node->data.unary.operand, operand);
+            return make_num(truthy ? 0 : 1);
         }
         if (strcmp(node->data.unary.op, "~") == 0) {
-            if (operand->type == VAL_NUM)
-                return make_num((double)(~(int64_t)operand->data.num));
+            if (operand->type == VAL_NUM) {
+                double n = operand->data.num;
+                release_eval_temp(node->data.unary.operand, operand);
+                return make_num((double)(~(int64_t)n));
+            }
             runtime_error(node->line, "cannot bitwise-not %s", val_type_name(operand->type));
+            release_eval_temp(node->data.unary.operand, operand);
             return make_null();
         }
+        release_eval_temp(node->data.unary.operand, operand);
         return make_null();
     }
 
@@ -487,6 +644,8 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
          * This eliminates the dominant memory leak in tight loops. */
         ASTNode *rhs = node->data.relation.right;
         int use_scratch = (rhs->type == AST_LIST && rhs->data.list.count <= SCRATCH_LIST_CAP);
+        int scratch_args_evaled = 0;
+        Value *scratch_eval_items[SCRATCH_LIST_CAP] = {0};
         Value *right_val;
         Value *left_val = eval_node(node->data.relation.left, env);
         if (use_scratch) {
@@ -512,21 +671,41 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                     for (int i = 0; i < rhs->data.list.count; i++)
                         scratch_list_push(right_val, &g_scratch_stack[depth].nums[i]);
                 } else {
-                    for (int i = 0; i < rhs->data.list.count; i++)
-                        scratch_list_push(right_val, eval_node(rhs->data.list.elems[i], env));
+                    for (int i = 0; i < rhs->data.list.count; i++) {
+                        Value *item = eval_node(rhs->data.list.elems[i], env);
+                        scratch_eval_items[i] = item;
+                        scratch_list_push(right_val, item);
+                    }
+                    scratch_args_evaled = 1;
                 }
             } else {
                 /* For user functions: use eval_node (scratch nums unsafe
                  * because env_set_local stores the pointer). */
-                for (int i = 0; i < rhs->data.list.count; i++)
-                    scratch_list_push(right_val, eval_node(rhs->data.list.elems[i], env));
+                for (int i = 0; i < rhs->data.list.count; i++) {
+                    Value *item = eval_node(rhs->data.list.elems[i], env);
+                    scratch_eval_items[i] = item;
+                    scratch_list_push(right_val, item);
+                }
+                scratch_args_evaled = 1;
             }
         } else {
             right_val = eval_node(rhs, env);
         }
 
         if (left_val->type == VAL_BUILTIN) {
+            int scratch_depth = use_scratch ? g_scratch_depth - 1 : -1;
+            int builtin_consumes_arg = (left_val->data.builtin == builtin_free_val);
             Value *result = left_val->data.builtin(right_val);
+            if (use_scratch)
+                result = materialize_scratch_result(result, scratch_depth);
+            else
+                result = own_builtin_result(result, right_val, rhs);
+            if (use_scratch && scratch_args_evaled) {
+                for (int i = 0; i < rhs->data.list.count; i++)
+                    release_eval_temp(rhs->data.list.elems[i], scratch_eval_items[i]);
+            } else if (!use_scratch && result != right_val && !builtin_consumes_arg) {
+                release_eval_temp(rhs, right_val);
+            }
             if (use_scratch) scratch_list_end();
             if (result) result->dirty = 1;
             g_last_observer = result;
@@ -537,44 +716,56 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             Env *call_env = env_new(left_val->data.fn.closure);
             if (left_val->data.fn.param_count > 1 && right_val && right_val->type == VAL_LIST) {
                 /* Multi-param: unpack list into named params */
-                for (int pi = 0; pi < left_val->data.fn.param_count && pi < right_val->data.list.count; pi++)
+                int bound = left_val->data.fn.param_count;
+                if (bound > right_val->data.list.count)
+                    bound = right_val->data.list.count;
+                for (int pi = 0; pi < bound; pi++) {
                     env_set_local(call_env, left_val->data.fn.params[pi], right_val->data.list.items[pi]);
-                /* Release scratch structure but defer item cleanup until after
-                 * env_free — items are currently incref'd by env_set_local. */
+                    if (use_scratch)
+                        release_eval_temp(rhs->data.list.elems[pi], scratch_eval_items[pi]);
+                }
+                if (use_scratch) {
+                    for (int pi = bound; pi < right_val->data.list.count; pi++)
+                        release_eval_temp(rhs->data.list.elems[pi], scratch_eval_items[pi]);
+                }
                 if (use_scratch) scratch_list_end();
+                else release_eval_temp(rhs, right_val);
             } else {
-                /* Single param: the list itself IS the argument — cannot use
-                 * scratch list since the function body may hold a reference.
-                 * Materialize a real heap list from the scratch items. */
+                /* Single param: the list itself is the argument. It may escape
+                 * through return, closure, or assignment, so materialize it
+                 * instead of exposing reusable scratch storage. */
                 if (use_scratch) {
                     Value *heap_list = make_list(right_val->data.list.count);
-                    for (int i = 0; i < right_val->data.list.count; i++)
+                    for (int i = 0; i < right_val->data.list.count; i++) {
                         list_append(heap_list, right_val->data.list.items[i]);
+                        release_eval_temp(rhs->data.list.elems[i], scratch_eval_items[i]);
+                    }
                     scratch_list_end();
                     right_val = heap_list;
                 }
                 env_set_local(call_env, left_val->data.fn.params[0], right_val);
+                if (!use_scratch)
+                    release_eval_temp(rhs, right_val);
+                else
+                    val_decref(right_val);
             }
 
             g_returning = 0;
             g_return_val = NULL;
 
-            Value *result = make_null();
-            for (int i = 0; i < left_val->data.fn.body_count; i++) {
-                result = eval_node(left_val->data.fn.body[i], call_env);
-                if (g_returning) {
-                    g_returning = 0;
-                    if (g_return_val) g_return_val->dirty = 1;
-                    g_last_observer = g_return_val;
-                    env_free(call_env);
-                    return g_return_val ? g_return_val : make_null();
-                }
-                if (g_breaking || g_continuing) {
-                    g_breaking = 0;
-                    g_continuing = 0;
-                    break;
-                }
+            Value *result = eval_block(left_val->data.fn.body, left_val->data.fn.body_count, call_env);
+            if (g_returning) {
+                g_returning = 0;
+                if (g_return_val) g_return_val->dirty = 1;
+                g_last_observer = g_return_val;
+                env_free(call_env);
+                return g_return_val ? g_return_val : make_null();
             }
+            if (g_breaking || g_continuing) {
+                g_breaking = 0;
+                g_continuing = 0;
+            }
+            own_block_result_if_needed(left_val->data.fn.body, left_val->data.fn.body_count, result);
             if (result) result->dirty = 1;
             g_last_observer = result;
             env_free(call_env);
@@ -589,16 +780,28 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
 
     case AST_IF: {
         Value *cond = eval_node(node->data.cond.cond, env);
-        if (is_truthy(cond)) {
-            return eval_block(node->data.cond.if_body, node->data.cond.if_count, env);
+        int truthy = is_truthy(cond);
+        release_eval_temp(node->data.cond.cond, cond);
+        if (truthy) {
+            Value *result = eval_block(node->data.cond.if_body, node->data.cond.if_count, env);
+            if (!g_returning && !g_breaking && !g_continuing)
+                own_block_result_if_needed(node->data.cond.if_body, node->data.cond.if_count, result);
+            return result;
         } else if (node->data.cond.else_body) {
-            return eval_block(node->data.cond.else_body, node->data.cond.else_count, env);
+            Value *result = eval_block(node->data.cond.else_body, node->data.cond.else_count, env);
+            if (!g_returning && !g_breaking && !g_continuing)
+                own_block_result_if_needed(node->data.cond.else_body, node->data.cond.else_count, result);
+            return result;
         }
         return make_null();
     }
 
     case AST_LOOP: {
         Value *result = make_null();
+        ASTNode *last_body_stmt = node->data.loop.body_count > 0
+                                  ? node->data.loop.body[node->data.loop.body_count - 1]
+                                  : NULL;
+        int have_body_result = 0;
         int max_iter = 100000000;
         int stall_count = 0;
         int iterations = 0;
@@ -611,15 +814,18 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             } else {
                 Value *cond = eval_node(node->data.loop.cond, env);
                 int truthy = is_truthy(cond);
-                /* Safe to decref nodes that always allocate fresh Values */
-                ASTType ct = node->data.loop.cond->type;
-                if (ct == AST_BINOP || ct == AST_UNARY || ct == AST_RELATION)
-                    val_decref(cond);
+                release_eval_temp(node->data.loop.cond, cond);
                 if (!truthy) break;
+            }
+            if (have_body_result) {
+                release_eval_temp(last_body_stmt, result);
+                result = make_null();
+                have_body_result = 0;
             }
             iterations++;
             result = eval_block(node->data.loop.body, node->data.loop.body_count, env);
             if (g_returning) return result;
+            have_body_result = 1;
             if (g_breaking) { g_breaking = 0; break; }
             if (g_continuing) { g_continuing = 0; }
             /* Skip observer stall check inside unobserved blocks —
@@ -640,8 +846,14 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             }
         }
         if (max_iter <= 0) exit_reason = "limit";
-        env_set(env, "__loop_exit__", make_str(exit_reason));
-        env_set(env, "__loop_iterations__", make_num(iterations));
+        Value *exit_val = make_str(exit_reason);
+        env_set(env, "__loop_exit__", exit_val);
+        val_decref(exit_val);
+        Value *iter_val = make_num(iterations);
+        env_set(env, "__loop_iterations__", iter_val);
+        val_decref(iter_val);
+        if (have_body_result)
+            own_block_result_if_needed(node->data.loop.body, node->data.loop.body_count, result);
         return result;
     }
 
@@ -650,6 +862,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         if (!iter || (iter->type != VAL_LIST && iter->type != VAL_BUFFER)) {
             runtime_error(node->line, "'for' requires a list or buffer, got %s",
                     iter ? val_type_name(iter->type) : "null");
+            release_eval_temp(node->data.forloop.iter, iter);
             return make_null();
         }
         Value *result = make_null();
@@ -667,12 +880,15 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
                           ? make_num(iter->data.buffer.data[i])
                           : iter->data.list.items[i];
             env_set_local(loop_env, node->data.forloop.var, elem);
+            if (iter->type == VAL_BUFFER)
+                val_decref(elem);
             result = eval_block(node->data.forloop.body, node->data.forloop.body_count, loop_env);
-            if (g_returning) { env_free(loop_env); return result; }
+            if (g_returning) { env_free(loop_env); release_eval_temp(node->data.forloop.iter, iter); return result; }
             if (g_breaking) { g_breaking = 0; break; }
             if (g_continuing) { g_continuing = 0; }
         }
         env_free(loop_env);
+        release_eval_temp(node->data.forloop.iter, iter);
         return result;
     }
 
@@ -728,7 +944,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         /* Fast path: mutate existing NUM dict value in-place */
         {
             Value *old = dict_get(target, node->data.dot_assign.key);
-            if (old && old->type == VAL_NUM && !old->arena) {
+            if (old && old->type == VAL_NUM && !old->arena && old->refcount <= 1) {
                 double result;
                 if (eval_num_fast(node->data.dot_assign.expr, env, &result)) {
                     old->data.num = num_guard(result);
@@ -738,6 +954,7 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         }
         Value *val = eval_node(node->data.dot_assign.expr, env);
         dict_set(target, node->data.dot_assign.key, val);
+        release_eval_temp(node->data.dot_assign.expr, val);
         return val;
     }
 
@@ -759,12 +976,14 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         }
         Value *idx = eval_node(node->data.index_assign.index, env);
         Value *val = eval_node(node->data.index_assign.expr, env);
+        Value *ret = make_null();
         if (target->type == VAL_LIST) {
             int i = (int)idx->data.num;
             if (i >= 0 && i < target->data.list.count) {
                 val_incref(val);
                 val_decref(target->data.list.items[i]);
                 target->data.list.items[i] = val;
+                ret = val;
             } else {
                 runtime_error(node->line, "index %d out of range (list length %d)", i, target->data.list.count);
             }
@@ -772,15 +991,19 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             int i = (int)idx->data.num;
             if (i >= 0 && i < target->data.buffer.count) {
                 target->data.buffer.data[i] = val->type == VAL_NUM ? val->data.num : 0.0;
+                ret = target;
             } else {
                 runtime_error(node->line, "buffer index %d out of range (length %d)", i, target->data.buffer.count);
             }
         } else if (target->type == VAL_DICT && idx->type == VAL_STR) {
             dict_set(target, idx->data.str, val);
+            ret = val;
         } else {
             runtime_error(node->line, "cannot index-assign on %s", val_type_name(target->type));
         }
-        return val;
+        release_eval_temp(node->data.index_assign.index, idx);
+        release_eval_temp(node->data.index_assign.expr, val);
+        return ret;
     }
 
     case AST_IMPORT: {
@@ -867,6 +1090,9 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
 
     case AST_RETURN: {
         Value *val = eval_node(node->data.ret.expr, env);
+        int owned = expr_result_is_owned(node->data.ret.expr);
+        if (!owned)
+            val_incref(val);
         g_returning = 1;
         g_return_val = val;
         return val;
@@ -905,7 +1131,9 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
     case AST_LIST: {
         Value *list = make_list(node->data.list.count);
         for (int i = 0; i < node->data.list.count; i++) {
-            list_append(list, eval_node(node->data.list.elems[i], env));
+            Value *item = eval_node(node->data.list.elems[i], env);
+            list_append(list, item);
+            release_eval_temp(node->data.list.elems[i], item);
         }
         return list;
     }
@@ -918,6 +1146,8 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             char *key_str = value_to_string(key);
             dict_set(d, key_str, val);
             free(key_str);
+            release_eval_temp(node->data.dict.keys[i], key);
+            release_eval_temp(node->data.dict.vals[i], val);
         }
         return d;
     }
@@ -938,39 +1168,61 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         /* Dict indexing: d["key"] */
         if (target->type == VAL_DICT && idx->type == VAL_STR) {
             Value *val = dict_get(target, idx->data.str);
+            if (val) val_incref(val);
+            release_eval_temp(node->data.index.index, idx);
+            release_eval_temp(node->data.index.target, target);
             return val ? val : make_null();
         }
         if (target->type == VAL_LIST && idx->type == VAL_NUM) {
             int i = (int)idx->data.num;
-            if (i >= 0 && i < target->data.list.count)
-                return target->data.list.items[i];
+            release_eval_temp(node->data.index.index, idx);
+            if (i >= 0 && i < target->data.list.count) {
+                Value *val = target->data.list.items[i];
+                val_incref(val);
+                release_eval_temp(node->data.index.target, target);
+                return val;
+            }
+            release_eval_temp(node->data.index.target, target);
             runtime_error(node->line, "index %d out of range (length %d)", i, target->data.list.count);
             return make_null();
         }
         if (target->type == VAL_BUFFER && idx->type == VAL_NUM) {
             int i = (int)idx->data.num;
-            if (i >= 0 && i < target->data.buffer.count)
-                return make_num(target->data.buffer.data[i]);
+            release_eval_temp(node->data.index.index, idx);
+            if (i >= 0 && i < target->data.buffer.count) {
+                double val = target->data.buffer.data[i];
+                release_eval_temp(node->data.index.target, target);
+                return make_num(val);
+            }
+            release_eval_temp(node->data.index.target, target);
             runtime_error(node->line, "buffer index %d out of range (length %d)", i, target->data.buffer.count);
             return make_null();
         }
         if (target->type == VAL_STR && idx->type == VAL_NUM) {
             int i = (int)idx->data.num;
             int len = strlen(target->data.str);
+            release_eval_temp(node->data.index.index, idx);
             if (i >= 0 && i < len) {
                 char buf[2] = {target->data.str[i], '\0'};
+                release_eval_temp(node->data.index.target, target);
                 return make_str(buf);
             }
+            release_eval_temp(node->data.index.target, target);
             runtime_error(node->line, "index %d out of range (length %d)", i, len);
             return make_null();
         }
+        release_eval_temp(node->data.index.index, idx);
+        release_eval_temp(node->data.index.target, target);
         runtime_error(node->line, "cannot index %s", val_type_name(target->type));
         return make_null();
     }
 
     case AST_LISTCOMP: {
         Value *iter = eval_node(node->data.listcomp.iter, env);
-        if (!iter || (iter->type != VAL_LIST && iter->type != VAL_BUFFER)) return make_list(0);
+        if (!iter || (iter->type != VAL_LIST && iter->type != VAL_BUFFER)) {
+            release_eval_temp(node->data.listcomp.iter, iter);
+            return make_list(0);
+        }
         int iter_count = (iter->type == VAL_BUFFER) ? iter->data.buffer.count : iter->data.list.count;
         Value *result = make_list(iter_count);
         Env *loop_env = env_new(env);
@@ -982,18 +1234,20 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
             }
             Value *elem = (iter->type == VAL_BUFFER) ? make_num(iter->data.buffer.data[i]) : iter->data.list.items[i];
             env_set_local(loop_env, node->data.listcomp.var, elem);
+            if (iter->type == VAL_BUFFER)
+                val_decref(elem);
             if (node->data.listcomp.filter) {
                 Value *cond = eval_node(node->data.listcomp.filter, loop_env);
                 int truthy = is_truthy(cond);
-                ASTType ft = node->data.listcomp.filter->type;
-                if (ft == AST_BINOP || ft == AST_UNARY || ft == AST_RELATION)
-                    val_decref(cond);
+                release_eval_temp(node->data.listcomp.filter, cond);
                 if (!truthy) continue;
             }
             Value *val = eval_node(node->data.listcomp.expr, loop_env);
             list_append(result, val);
+            release_eval_temp(node->data.listcomp.expr, val);
         }
         env_free(loop_env);
+        release_eval_temp(node->data.listcomp.iter, iter);
         return result;
     }
 
@@ -1002,18 +1256,27 @@ static Value* eval_node_impl(ASTNode *node, Env *env) {
         for (int i = 0; i < node->data.program.count; i++) {
             result = eval_node(node->data.program.stmts[i], env);
             if (g_returning) return result;
+            if (i + 1 < node->data.program.count) {
+                release_eval_temp(node->data.program.stmts[i], result);
+                result = make_null();
+            }
         }
         return result;
     }
 
     case AST_BLOCK: {
-        return eval_block(node->data.block.stmts, node->data.block.count, env);
+        Value *result = eval_block(node->data.block.stmts, node->data.block.count, env);
+        if (!g_returning && !g_breaking && !g_continuing)
+            own_block_result_if_needed(node->data.block.stmts, node->data.block.count, result);
+        return result;
     }
 
     case AST_UNOBSERVED: {
         g_unobserved_depth++;
         Value *result = eval_block(node->data.block.stmts, node->data.block.count, env);
         g_unobserved_depth--;
+        if (!g_returning && !g_breaking && !g_continuing)
+            own_block_result_if_needed(node->data.block.stmts, node->data.block.count, result);
         return result;
     }
 
@@ -1081,6 +1344,10 @@ Value* eval_block(ASTNode **stmts, int count, Env *env) {
     for (int i = 0; i < count; i++) {
         result = eval_node(stmts[i], env);
         if (g_returning || g_breaking || g_continuing) return result;
+        if (i + 1 < count) {
+            release_eval_temp(stmts[i], result);
+            result = make_null();
+        }
     }
     return result;
 }

@@ -435,14 +435,11 @@ static Value* call_eigs_fn(Value *fn, Value *arg) {
     }
     g_returning = 0;
     g_return_val = NULL;
-    Value *result = make_null();
-    for (int i = 0; i < fn->data.fn.body_count; i++) {
-        result = eval_node(fn->data.fn.body[i], call_env);
-        if (g_returning) {
-            g_returning = 0;
-            env_free(call_env);
-            return g_return_val ? g_return_val : make_null();
-        }
+    Value *result = eval_block(fn->data.fn.body, fn->data.fn.body_count, call_env);
+    if (g_returning) {
+        g_returning = 0;
+        env_free(call_env);
+        return g_return_val ? g_return_val : make_null();
     }
     env_free(call_env);
     return result;
@@ -996,4 +993,3 @@ Value* builtin_tensor_load(Value *arg) {
 
     return result;
 }
-
