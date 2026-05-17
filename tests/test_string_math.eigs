@@ -57,6 +57,22 @@ assert of [tokens[6][1] == 4, "ST6 signed token line"]
 assert of [tokens[6][2] == 2, "ST7 signed token col"]
 assert of [(substr of ["c skip 99\np cnf 2 2\n1 0\n  -2 0\n", tokens[6][3], tokens[6][4] - tokens[6][3]]) == "-2", "ST8 offsets slice token"]
 
+# ---- scan_int_tokens ----
+int_tokens_text is "c skip 99\np cnf 2 2\n1 -2 0\nbad +7 -x 8.5\n"
+int_tokens is scan_int_tokens of [int_tokens_text, "c"]
+assert of [(len of int_tokens) == 11, "SIT1 comment-line skip token count"]
+assert of [int_tokens[0][0] == "p", "SIT2 first token text"]
+assert of [int_tokens[0][5] == 0, "SIT3 p is not integer"]
+assert of [int_tokens[2][5] == 1, "SIT4 header var is integer"]
+assert of [int_tokens[2][6] == 2, "SIT5 header var value"]
+assert of [int_tokens[4][5] == 1, "SIT6 positive lit is integer"]
+assert of [int_tokens[4][6] == 1, "SIT7 positive lit value"]
+assert of [int_tokens[5][6] == -2, "SIT8 negative lit value"]
+assert of [int_tokens[7][5] == 0, "SIT9 bad token invalid"]
+assert of [int_tokens[8][5] == 1, "SIT10 plus token valid"]
+assert of [int_tokens[8][6] == 7, "SIT11 plus token value"]
+assert of [(substr of [int_tokens_text, int_tokens[5][3], int_tokens[5][4] - int_tokens[5][3]]) == "-2", "SIT12 offsets slice integer token"]
+
 # ---- sin/cos/tan ----
 p is pi of null
 assert of [p > 3.14, "PI1 pi > 3.14"]

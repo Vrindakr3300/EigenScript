@@ -606,16 +606,16 @@ rm -f /tmp/eigen_test_wt1.txt /tmp/eigen_test_wt2.txt
 echo ""
 
 # [19] String and math builtins
-echo "[19/19] String & Math Builtins (48 checks)"
+echo "[19/19] String & Math Builtins (60 checks)"
 SM_OUTPUT=$(./eigenscript ../tests/test_string_math.eigs 2>&1)
 
 if echo "$SM_OUTPUT" | grep -q "All string_math tests passed"; then
-    TOTAL=$((TOTAL + 48))
-    PASS=$((PASS + 48))
-    echo "  PASS: all 48 string/math checks"
+    TOTAL=$((TOTAL + 60))
+    PASS=$((PASS + 60))
+    echo "  PASS: all 60 string/math checks"
 else
-    TOTAL=$((TOTAL + 48))
-    FAIL=$((FAIL + 48))
+    TOTAL=$((TOTAL + 60))
+    FAIL=$((FAIL + 60))
     echo "  FAIL: string_math tests (assert failed)"
     echo "$SM_OUTPUT" | grep -i "assert\|error" | head -5
 fi

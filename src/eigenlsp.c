@@ -50,6 +50,7 @@ static const char *builtin_docs[][2] = {
     {"split", "split of [string, delimiter] -- split string into list"},
     {"scan_ints", "scan_ints of text or [text, comment_marker] -- scan whitespace-delimited signed integers"},
     {"scan_tokens", "scan_tokens of text or [text, comment_marker] -- scan whitespace-delimited token spans"},
+    {"scan_int_tokens", "scan_int_tokens of text or [text, comment_marker] -- token spans with integer classification"},
     {"join", "join of [list, separator] -- join list into string"},
     {"trim", "trim of string -- strip whitespace"},
     {"contains", "contains of [string, substring] -- 1 if found"},
