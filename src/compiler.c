@@ -396,10 +396,13 @@ static void compile_node(Compiler *c, ASTNode *node) {
         fn_compiler.enclosing = c;
         fn_compiler.env = c->env;
 
-        /* Add params as locals */
+        /* Store param names in chunk (for make_fn).
+         * Don't add as compiler locals — params are bound in Env at call time,
+         * so the function body resolves them via OP_GET_NAME. */
+        fn_chunk->local_names = xcalloc(node->data.func.param_count, sizeof(char *));
+        fn_chunk->local_count = node->data.func.param_count;
         for (int i = 0; i < node->data.func.param_count; i++) {
-            uint32_t h = env_hash_name(node->data.func.params[i]);
-            add_local(&fn_compiler, node->data.func.params[i], h);
+            fn_chunk->local_names[i] = strdup(node->data.func.params[i]);
         }
 
         compile_block(&fn_compiler, node->data.func.body, node->data.func.body_count);
@@ -426,9 +429,10 @@ static void compile_node(Compiler *c, ASTNode *node) {
         fn_compiler.enclosing = c;
         fn_compiler.env = c->env;
 
+        fn_chunk->local_names = xcalloc(node->data.lambda.param_count, sizeof(char *));
+        fn_chunk->local_count = node->data.lambda.param_count;
         for (int i = 0; i < node->data.lambda.param_count; i++) {
-            uint32_t h = env_hash_name(node->data.lambda.params[i]);
-            add_local(&fn_compiler, node->data.lambda.params[i], h);
+            fn_chunk->local_names[i] = strdup(node->data.lambda.params[i]);
         }
 
         /* Lambda body is a single expression — compile and return it */

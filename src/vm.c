@@ -520,21 +520,20 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->ip = ip;
 
             if (fn_val->data.fn.body_count == -1) {
-                /* Bytecode function — recurse into vm_run */
+                /* Bytecode function */
                 EigsChunk *fn_chunk = (EigsChunk *)fn_val->data.fn.body;
                 Env *call_env = env_new(fn_val->data.fn.closure);
 
-                /* Bind parameters */
-                if (fn_val->data.fn.param_count > 1 && argc > 0) {
-                    /* Multi-param: bind each arg */
-                    int bound = fn_val->data.fn.param_count;
-                    if (bound > argc) bound = argc;
-                    for (int i = 0; i < bound; i++) {
+                /* Bind parameters into the Env AND set up stack locals.
+                 * The function body uses OP_GET_NAME for now (dynamic lookup).
+                 * TODO: optimize to stack-based locals once the basic path works. */
+                int param_count = fn_val->data.fn.param_count;
+                if (param_count > 1 && argc > 0) {
+                    int bound = param_count < (int)argc ? param_count : (int)argc;
+                    for (int i = 0; i < bound; i++)
                         env_set_local(call_env, fn_val->data.fn.params[i],
                                       g_vm.stack[g_vm.sp - argc + i]);
-                    }
-                } else if (fn_val->data.fn.param_count == 1) {
-                    /* Single param: pass entire arg or list */
+                } else if (param_count == 1) {
                     if (argc == 1) {
                         env_set_local(call_env, fn_val->data.fn.params[0],
                                       g_vm.stack[g_vm.sp - 1]);
