@@ -141,7 +141,7 @@ const char* val_type_name(ValType t) {
 /* Arena allocator and free_weight_val are in arena.c */
 
 /* Forward declarations for hash helpers (used by dict and env). */
-static uint32_t env_hash_name(const char *name);
+uint32_t env_hash_name(const char *name);
 static void env_hash_init(EnvHash *ht, int cap);
 static void env_hash_insert(EnvHash *ht, uint32_t h, int idx);
 static void env_hash_rebuild(EnvHash *ht, char **names, int count);
@@ -588,7 +588,7 @@ char* value_to_string(Value *v) {
 
 /* FNV-1a hash — fast, good distribution for short identifier strings.
  * Returns non-zero (zero is reserved as "empty slot" sentinel). */
-static uint32_t env_hash_name(const char *name) {
+uint32_t env_hash_name(const char *name) {
     uint32_t h = 2166136261u;
     for (const char *p = name; *p; p++)
         h = (h ^ (uint8_t)*p) * 16777619u;

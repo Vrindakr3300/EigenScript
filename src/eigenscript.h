@@ -282,6 +282,7 @@ void dict_set(Value *dict, const char *key, Value *val);
 Value* dict_get(Value *dict, const char *key);
 void list_append(Value *list, Value *item);
 Value* call_eigs_fn(Value *fn, Value *arg);
+uint32_t env_hash_name(const char *name);
 void free_value(Value *v);
 
 /* ---- Reference counting (atomic for thread safety) ----

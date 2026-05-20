@@ -1,0 +1,683 @@
+/* ================================================================
+ * EigenScript Bytecode Compiler — AST to bytecode
+ * ================================================================ */
+
+#include "eigenscript.h"
+#include "vm.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ---- Compiler state ---- */
+
+#define MAX_LOCALS 512
+#define MAX_LOOP_DEPTH 32
+#define MAX_BREAK_JUMPS 64
+
+typedef struct {
+    char    *name;
+    uint32_t hash;
+    int      depth;     /* scope depth (0 = function-level) */
+    int      slot;
+    int      captured;
+} Local;
+
+typedef struct {
+    int break_jumps[MAX_BREAK_JUMPS];
+    int break_count;
+    int continue_target;
+    int scope_depth;
+} LoopCtx;
+
+typedef struct Compiler {
+    EigsChunk        *chunk;
+    struct Compiler  *enclosing;
+    Local             locals[MAX_LOCALS];
+    int               local_count;
+    int               scope_depth;
+    LoopCtx           loops[MAX_LOOP_DEPTH];
+    int               loop_depth;
+    Env              *env;          /* for resolving globals at compile time */
+} Compiler;
+
+/* ---- Forward declarations ---- */
+static void compile_node(Compiler *c, ASTNode *node);
+static void compile_block(Compiler *c, ASTNode **stmts, int count);
+
+/* ---- Emit helpers ---- */
+
+static void emit(Compiler *c, uint8_t op, int line) {
+    chunk_emit(c->chunk, op, line);
+}
+
+static void emit_u16(Compiler *c, uint16_t val, int line) {
+    chunk_emit_u16(c->chunk, val, line);
+}
+
+static void emit_op_u16(Compiler *c, uint8_t op, uint16_t arg, int line) {
+    emit(c, op, line);
+    emit_u16(c, arg, line);
+}
+
+static int emit_jump(Compiler *c, uint8_t op, int line) {
+    return chunk_emit_jump(c->chunk, op, line);
+}
+
+static void patch_jump(Compiler *c, int offset) {
+    chunk_patch_jump(c->chunk, offset);
+}
+
+static void emit_loop(Compiler *c, int loop_start, int line) {
+    emit(c, OP_JUMP_BACK, line);
+    int offset = c->chunk->code_len - loop_start + 2;
+    emit_u16(c, (uint16_t)offset, line);
+}
+
+/* ---- Constant helpers ---- */
+
+static int add_string_constant(Compiler *c, const char *str) {
+    Value *v = make_str(str);
+    int idx = chunk_add_constant(c->chunk, v);
+    val_decref(v);
+    return idx;
+}
+
+static int add_num_constant(Compiler *c, double num) {
+    Value *v = make_num(num);
+    int idx = chunk_add_constant(c->chunk, v);
+    val_decref(v);
+    return idx;
+}
+
+/* ---- Local variable tracking ---- */
+
+static int resolve_local(Compiler *c, const char *name, uint32_t hash) {
+    for (int i = c->local_count - 1; i >= 0; i--) {
+        if (c->locals[i].hash == hash && strcmp(c->locals[i].name, name) == 0)
+            return c->locals[i].slot;
+    }
+    return -1;
+}
+
+static int add_local(Compiler *c, const char *name, uint32_t hash) {
+    if (c->local_count >= MAX_LOCALS) return -1;
+    int slot = c->local_count;
+    c->locals[slot].name = (char *)name;
+    c->locals[slot].hash = hash;
+    c->locals[slot].depth = c->scope_depth;
+    c->locals[slot].slot = slot;
+    c->locals[slot].captured = 0;
+    c->local_count++;
+    return slot;
+}
+
+static void begin_scope(Compiler *c) {
+    c->scope_depth++;
+}
+
+static void end_scope(Compiler *c, int line) {
+    while (c->local_count > 0 &&
+           c->locals[c->local_count - 1].depth >= c->scope_depth) {
+        emit(c, OP_POP, line);
+        c->local_count--;
+    }
+    c->scope_depth--;
+}
+
+/* ---- Binary operator mapping ---- */
+
+static uint8_t binop_to_opcode(const char *op) {
+    if (op[0] == '+' && op[1] == 0) return OP_ADD;
+    if (op[0] == '-' && op[1] == 0) return OP_SUB;
+    if (op[0] == '*' && op[1] == 0) return OP_MUL;
+    if (op[0] == '/' && op[1] == 0) return OP_DIV;
+    if (op[0] == '%' && op[1] == 0) return OP_MOD;
+    if (op[0] == '&' && op[1] == 0) return OP_BAND;
+    if (op[0] == '|' && op[1] == 0) return OP_BOR;
+    if (op[0] == '^' && op[1] == 0) return OP_BXOR;
+    if (op[0] == '<' && op[1] == '<') return OP_SHL;
+    if (op[0] == '>' && op[1] == '>') return OP_SHR;
+    if (op[0] == '<' && op[1] == 0) return OP_LT;
+    if (op[0] == '>' && op[1] == 0) return OP_GT;
+    if (op[0] == '<' && op[1] == '=') return OP_LE;
+    if (op[0] == '>' && op[1] == '=') return OP_GE;
+    if (op[0] == '=' && op[1] == 0) return OP_EQ;
+    if (op[0] == '!' && op[1] == '=') return OP_NE;
+    return 0;
+}
+
+/* ---- AST compilation ---- */
+
+static void compile_node(Compiler *c, ASTNode *node) {
+    if (!node) { emit(c, OP_NULL, 0); return; }
+
+    emit_op_u16(c, OP_LINE, (uint16_t)node->line, node->line);
+
+    switch (node->type) {
+
+    case AST_NUM: {
+        double v = node->data.num;
+        if (v == 0.0) { emit(c, OP_NUM_ZERO, node->line); }
+        else if (v == 1.0) { emit(c, OP_NUM_ONE, node->line); }
+        else { emit_op_u16(c, OP_CONST, (uint16_t)add_num_constant(c, v), node->line); }
+        break;
+    }
+
+    case AST_STR: {
+        int idx = add_string_constant(c, node->data.str);
+        emit_op_u16(c, OP_CONST, (uint16_t)idx, node->line);
+        break;
+    }
+
+    case AST_NULL:
+        emit(c, OP_NULL, node->line);
+        break;
+
+    case AST_IDENT: {
+        /* Try local resolution first, fall back to dynamic name lookup */
+        uint32_t h = node->name_hash;
+        if (h == 0) h = env_hash_name(node->data.ident.name);
+        int slot = resolve_local(c, node->data.ident.name, h);
+        if (slot >= 0) {
+            emit_op_u16(c, OP_GET_LOCAL, (uint16_t)slot, node->line);
+        } else {
+            int idx = add_string_constant(c, node->data.ident.name);
+            emit_op_u16(c, OP_GET_NAME, (uint16_t)idx, node->line);
+        }
+        break;
+    }
+
+    case AST_ASSIGN: {
+        compile_node(c, node->data.assign.expr);
+        const char *name = node->data.assign.name;
+        uint32_t h = node->name_hash;
+        if (h == 0) h = env_hash_name(name);
+
+        if (node->data.assign.local_only) {
+            /* local x is expr — always current scope */
+            int slot = resolve_local(c, name, h);
+            if (slot < 0) slot = add_local(c, name, h);
+            if (slot >= 0) {
+                emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
+            } else {
+                int idx = add_string_constant(c, name);
+                emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);
+            }
+        } else {
+            /* x is expr — outward assignment */
+            int slot = resolve_local(c, name, h);
+            if (slot >= 0) {
+                emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
+            } else {
+                int idx = add_string_constant(c, name);
+                emit_op_u16(c, OP_SET_NAME, (uint16_t)idx, node->line);
+            }
+        }
+        /* Observer update */
+        {
+            int name_idx = add_string_constant(c, name);
+            emit_op_u16(c, OP_OBSERVE_ASSIGN, (uint16_t)name_idx, node->line);
+        }
+        break;
+    }
+
+    case AST_BINOP: {
+        const char *op = node->data.binop.op;
+        /* Short-circuit: and / or */
+        if (strcmp(op, "and") == 0) {
+            compile_node(c, node->data.binop.left);
+            int jump = emit_jump(c, OP_JUMP_IF_FALSE_PEEK, node->line);
+            emit(c, OP_POP, node->line);
+            compile_node(c, node->data.binop.right);
+            patch_jump(c, jump);
+            break;
+        }
+        if (strcmp(op, "or") == 0) {
+            compile_node(c, node->data.binop.left);
+            int jump = emit_jump(c, OP_JUMP_IF_TRUE_PEEK, node->line);
+            emit(c, OP_POP, node->line);
+            compile_node(c, node->data.binop.right);
+            patch_jump(c, jump);
+            break;
+        }
+        /* Normal binary op */
+        compile_node(c, node->data.binop.left);
+        compile_node(c, node->data.binop.right);
+        uint8_t opc = binop_to_opcode(op);
+        if (opc) emit(c, opc, node->line);
+        break;
+    }
+
+    case AST_UNARY: {
+        compile_node(c, node->data.unary.operand);
+        if (node->data.unary.op[0] == '-') emit(c, OP_NEG, node->line);
+        else if (strcmp(node->data.unary.op, "not") == 0) emit(c, OP_NOT, node->line);
+        else if (node->data.unary.op[0] == '~') emit(c, OP_BNOT, node->line);
+        break;
+    }
+
+    case AST_PROGRAM: {
+        for (int i = 0; i < node->data.program.count; i++) {
+            compile_node(c, node->data.program.stmts[i]);
+            if (i + 1 < node->data.program.count)
+                emit(c, OP_POP, node->line);
+        }
+        break;
+    }
+
+    case AST_BLOCK: {
+        compile_block(c, node->data.block.stmts, node->data.block.count);
+        break;
+    }
+
+    /* ---- Control flow (Stage 4) ---- */
+
+    case AST_IF: {
+        compile_node(c, node->data.cond.cond);
+        int else_jump = emit_jump(c, OP_JUMP_IF_FALSE, node->line);
+        emit(c, OP_POP, node->line);
+        compile_block(c, node->data.cond.if_body, node->data.cond.if_count);
+        int end_jump = emit_jump(c, OP_JUMP, node->line);
+        patch_jump(c, else_jump);
+        emit(c, OP_POP, node->line);
+        if (node->data.cond.else_body && node->data.cond.else_count > 0) {
+            compile_block(c, node->data.cond.else_body, node->data.cond.else_count);
+        } else {
+            emit(c, OP_NULL, node->line);
+        }
+        patch_jump(c, end_jump);
+        break;
+    }
+
+    case AST_LOOP: {
+        /* Push loop context for break/continue */
+        LoopCtx *lp = NULL;
+        if (c->loop_depth < MAX_LOOP_DEPTH) {
+            lp = &c->loops[c->loop_depth++];
+            lp->break_count = 0;
+            lp->scope_depth = c->scope_depth;
+        }
+
+        int loop_start = c->chunk->code_len;
+        if (lp) lp->continue_target = loop_start;
+
+        compile_node(c, node->data.loop.cond);
+        int exit_jump = emit_jump(c, OP_JUMP_IF_FALSE, node->line);
+        emit(c, OP_POP, node->line);
+
+        compile_block(c, node->data.loop.body, node->data.loop.body_count);
+        emit(c, OP_POP, node->line);
+
+        emit_loop(c, loop_start, node->line);
+
+        patch_jump(c, exit_jump);
+        emit(c, OP_POP, node->line);
+        emit(c, OP_NULL, node->line);
+
+        /* Patch break jumps */
+        if (lp) {
+            for (int i = 0; i < lp->break_count; i++)
+                patch_jump(c, lp->break_jumps[i]);
+            c->loop_depth--;
+        }
+        break;
+    }
+
+    case AST_FOR: {
+        compile_node(c, node->data.forloop.iter);
+        emit(c, OP_ITER_SETUP, node->line);
+
+        LoopCtx *lp = NULL;
+        if (c->loop_depth < MAX_LOOP_DEPTH) {
+            lp = &c->loops[c->loop_depth++];
+            lp->break_count = 0;
+            lp->scope_depth = c->scope_depth;
+        }
+
+        int loop_start = c->chunk->code_len;
+        if (lp) lp->continue_target = loop_start;
+
+        int exit_jump = emit_jump(c, OP_ITER_NEXT, node->line);
+
+        /* Bind loop variable */
+        const char *var = node->data.forloop.var;
+        uint32_t h = env_hash_name(var);
+        begin_scope(c);
+        int slot = add_local(c, var, h);
+        if (slot >= 0)
+            emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
+
+        compile_block(c, node->data.forloop.body, node->data.forloop.body_count);
+        emit(c, OP_POP, node->line);
+        end_scope(c, node->line);
+
+        emit_loop(c, loop_start, node->line);
+
+        patch_jump(c, exit_jump);
+        emit(c, OP_POP, node->line); /* pop iterator state */
+        emit(c, OP_NULL, node->line);
+
+        if (lp) {
+            for (int i = 0; i < lp->break_count; i++)
+                patch_jump(c, lp->break_jumps[i]);
+            c->loop_depth--;
+        }
+        break;
+    }
+
+    case AST_BREAK: {
+        if (c->loop_depth > 0) {
+            LoopCtx *lp = &c->loops[c->loop_depth - 1];
+            if (lp->break_count < MAX_BREAK_JUMPS) {
+                lp->break_jumps[lp->break_count++] = emit_jump(c, OP_JUMP, node->line);
+            }
+        }
+        break;
+    }
+
+    case AST_CONTINUE: {
+        if (c->loop_depth > 0) {
+            LoopCtx *lp = &c->loops[c->loop_depth - 1];
+            emit_loop(c, lp->continue_target, node->line);
+        }
+        break;
+    }
+
+    /* ---- Functions (Stage 5) ---- */
+
+    case AST_FUNC: {
+        /* Compile function body into nested chunk */
+        EigsChunk *fn_chunk = chunk_new(node->data.func.name);
+        fn_chunk->param_count = node->data.func.param_count;
+
+        Compiler fn_compiler;
+        memset(&fn_compiler, 0, sizeof(fn_compiler));
+        fn_compiler.chunk = fn_chunk;
+        fn_compiler.enclosing = c;
+        fn_compiler.env = c->env;
+
+        /* Add params as locals */
+        for (int i = 0; i < node->data.func.param_count; i++) {
+            uint32_t h = env_hash_name(node->data.func.params[i]);
+            add_local(&fn_compiler, node->data.func.params[i], h);
+        }
+
+        compile_block(&fn_compiler, node->data.func.body, node->data.func.body_count);
+
+        /* Ensure function always returns */
+        emit(&fn_compiler, OP_RETURN_NULL, node->line);
+
+        int fn_idx = chunk_add_function(c->chunk, fn_chunk);
+        emit_op_u16(c, OP_CLOSURE, (uint16_t)fn_idx, node->line);
+
+        /* Bind function name in current scope */
+        int name_idx = add_string_constant(c, node->data.func.name);
+        emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)name_idx, node->line);
+        break;
+    }
+
+    case AST_LAMBDA: {
+        EigsChunk *fn_chunk = chunk_new("<lambda>");
+        fn_chunk->param_count = node->data.lambda.param_count;
+
+        Compiler fn_compiler;
+        memset(&fn_compiler, 0, sizeof(fn_compiler));
+        fn_compiler.chunk = fn_chunk;
+        fn_compiler.enclosing = c;
+        fn_compiler.env = c->env;
+
+        for (int i = 0; i < node->data.lambda.param_count; i++) {
+            uint32_t h = env_hash_name(node->data.lambda.params[i]);
+            add_local(&fn_compiler, node->data.lambda.params[i], h);
+        }
+
+        /* Lambda body is a single expression — compile and return it */
+        compile_node(&fn_compiler, node->data.lambda.body);
+        emit(&fn_compiler, OP_RETURN, node->line);
+
+        int fn_idx = chunk_add_function(c->chunk, fn_chunk);
+        emit_op_u16(c, OP_CLOSURE, (uint16_t)fn_idx, node->line);
+        break;
+    }
+
+    case AST_RETURN: {
+        if (node->data.ret.expr) {
+            compile_node(c, node->data.ret.expr);
+            emit(c, OP_RETURN, node->line);
+        } else {
+            emit(c, OP_RETURN_NULL, node->line);
+        }
+        break;
+    }
+
+    case AST_RELATION: {
+        /* Function call: f of [a, b] or f of arg */
+        ASTNode *fn_node = node->data.relation.left;
+        ASTNode *arg_node = node->data.relation.right;
+
+        compile_node(c, fn_node);
+
+        if (arg_node && arg_node->type == AST_LIST) {
+            /* Multi-arg: compile each element as separate stack value */
+            for (int i = 0; i < arg_node->data.list.count; i++)
+                compile_node(c, arg_node->data.list.elems[i]);
+            emit_op_u16(c, OP_CALL, (uint16_t)arg_node->data.list.count, node->line);
+        } else {
+            /* Single arg */
+            compile_node(c, arg_node);
+            emit_op_u16(c, OP_CALL, 1, node->line);
+        }
+        break;
+    }
+
+    /* ---- Data structures (Stage 6) ---- */
+
+    case AST_LIST: {
+        for (int i = 0; i < node->data.list.count; i++)
+            compile_node(c, node->data.list.elems[i]);
+        emit_op_u16(c, OP_LIST, (uint16_t)node->data.list.count, node->line);
+        break;
+    }
+
+    case AST_DICT: {
+        for (int i = 0; i < node->data.dict.count; i++) {
+            compile_node(c, node->data.dict.keys[i]);
+            compile_node(c, node->data.dict.vals[i]);
+        }
+        emit_op_u16(c, OP_DICT, (uint16_t)node->data.dict.count, node->line);
+        break;
+    }
+
+    case AST_INDEX: {
+        compile_node(c, node->data.index.target);
+        compile_node(c, node->data.index.index);
+        emit(c, OP_INDEX_GET, node->line);
+        break;
+    }
+
+    case AST_INDEX_ASSIGN: {
+        compile_node(c, node->data.index_assign.target);
+        compile_node(c, node->data.index_assign.index);
+        compile_node(c, node->data.index_assign.expr);
+        emit(c, OP_INDEX_SET, node->line);
+        break;
+    }
+
+    case AST_DOT: {
+        compile_node(c, node->data.dot.target);
+        int idx = add_string_constant(c, node->data.dot.key);
+        emit_op_u16(c, OP_DOT_GET, (uint16_t)idx, node->line);
+        break;
+    }
+
+    case AST_DOT_ASSIGN: {
+        compile_node(c, node->data.dot_assign.target);
+        compile_node(c, node->data.dot_assign.expr);
+        int idx = add_string_constant(c, node->data.dot_assign.key);
+        emit_op_u16(c, OP_DOT_SET, (uint16_t)idx, node->line);
+        break;
+    }
+
+    case AST_LISTCOMP: {
+        emit(c, OP_LISTCOMP_BEGIN, node->line);
+        compile_node(c, node->data.listcomp.iter);
+        emit(c, OP_ITER_SETUP, node->line);
+
+        int loop_start = c->chunk->code_len;
+        int exit_jump = emit_jump(c, OP_ITER_NEXT, node->line);
+
+        /* Bind loop var */
+        const char *var = node->data.listcomp.var;
+        uint32_t h = env_hash_name(var);
+        begin_scope(c);
+        int slot = add_local(c, var, h);
+        if (slot >= 0)
+            emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
+
+        /* Optional filter */
+        int filter_jump = -1;
+        if (node->data.listcomp.filter) {
+            compile_node(c, node->data.listcomp.filter);
+            filter_jump = emit_jump(c, OP_JUMP_IF_FALSE, node->line);
+            emit(c, OP_POP, node->line);
+        }
+
+        /* Expression to collect */
+        compile_node(c, node->data.listcomp.expr);
+        emit(c, OP_LISTCOMP_APPEND, node->line);
+
+        if (filter_jump >= 0) {
+            int skip = emit_jump(c, OP_JUMP, node->line);
+            patch_jump(c, filter_jump);
+            emit(c, OP_POP, node->line);
+            patch_jump(c, skip);
+        }
+
+        end_scope(c, node->line);
+        emit_loop(c, loop_start, node->line);
+
+        patch_jump(c, exit_jump);
+        emit(c, OP_POP, node->line); /* pop iterator state */
+        /* listcomp accumulator is now TOS */
+        break;
+    }
+
+    /* ---- Error handling / observer (Stage 7) ---- */
+
+    case AST_TRY: {
+        int catch_jump = emit_jump(c, OP_TRY_BEGIN, node->line);
+        compile_block(c, node->data.trycatch.try_body, node->data.trycatch.try_count);
+        emit(c, OP_TRY_END, node->line);
+        int end_jump = emit_jump(c, OP_JUMP, node->line);
+
+        patch_jump(c, catch_jump);
+        /* Error message string is on stack, pushed by VM error handler */
+        if (node->data.trycatch.err_name) {
+            int idx = add_string_constant(c, node->data.trycatch.err_name);
+            emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);
+            emit(c, OP_POP, node->line);
+        }
+        compile_block(c, node->data.trycatch.catch_body, node->data.trycatch.catch_count);
+        patch_jump(c, end_jump);
+        break;
+    }
+
+    case AST_INTERROGATE: {
+        compile_node(c, node->data.interrogate.expr);
+        emit_op_u16(c, OP_INTERROGATE, (uint16_t)node->data.interrogate.kind, node->line);
+        break;
+    }
+
+    case AST_PREDICATE: {
+        emit_op_u16(c, OP_PREDICATE, (uint16_t)node->data.predicate.kind, node->line);
+        break;
+    }
+
+    case AST_UNOBSERVED: {
+        emit(c, OP_UNOBSERVED_BEGIN, node->line);
+        /* Unobserved block body is stored as block.stmts */
+        compile_block(c, node->data.block.stmts, node->data.block.count);
+        emit(c, OP_UNOBSERVED_END, node->line);
+        break;
+    }
+
+    case AST_MATCH: {
+        compile_node(c, node->data.match.expr);
+        int end_jumps[256];
+        int end_count = 0;
+
+        for (int i = 0; i < node->data.match.case_count; i++) {
+            ASTNode *pattern = node->data.match.patterns[i];
+            if (pattern == NULL) {
+                /* Wildcard — always matches */
+                emit(c, OP_POP, node->line); /* discard match expr */
+                compile_block(c, node->data.match.bodies[i], node->data.match.body_counts[i]);
+                if (end_count < 256)
+                    end_jumps[end_count++] = emit_jump(c, OP_JUMP, node->line);
+                break;
+            }
+            emit(c, OP_DUP, node->line);
+            compile_node(c, pattern);
+            emit(c, OP_EQ, node->line);
+            int next_case = emit_jump(c, OP_JUMP_IF_FALSE, node->line);
+            emit(c, OP_POP, node->line); /* pop comparison result */
+            emit(c, OP_POP, node->line); /* pop match expr */
+            compile_block(c, node->data.match.bodies[i], node->data.match.body_counts[i]);
+            if (end_count < 256)
+                end_jumps[end_count++] = emit_jump(c, OP_JUMP, node->line);
+            patch_jump(c, next_case);
+            emit(c, OP_POP, node->line); /* pop comparison result */
+        }
+        /* No match — pop expr, push null */
+        emit(c, OP_POP, node->line);
+        emit(c, OP_NULL, node->line);
+
+        for (int i = 0; i < end_count; i++)
+            patch_jump(c, end_jumps[i]);
+        break;
+    }
+
+    /* ---- Module system (Stage 8) ---- */
+
+    case AST_IMPORT: {
+        int idx = add_string_constant(c, node->data.import.module_name);
+        emit_op_u16(c, OP_IMPORT, (uint16_t)idx, node->line);
+        /* Bind the result dict to the module name */
+        emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);
+        break;
+    }
+
+    default:
+        fprintf(stderr, "compiler: unhandled AST type %d at line %d\n", node->type, node->line);
+        emit(c, OP_NULL, node->line);
+        break;
+    }
+}
+
+static void compile_block(Compiler *c, ASTNode **stmts, int count) {
+    if (count == 0) {
+        emit(c, OP_NULL, 0);
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        compile_node(c, stmts[i]);
+        if (i + 1 < count)
+            emit(c, OP_POP, stmts[i]->line);
+    }
+}
+
+/* ---- Public API ---- */
+
+EigsChunk *compile_ast(ASTNode *ast, Env *env) {
+    EigsChunk *chunk = chunk_new("<module>");
+
+    Compiler compiler;
+    memset(&compiler, 0, sizeof(compiler));
+    compiler.chunk = chunk;
+    compiler.env = env;
+
+    compile_node(&compiler, ast);
+    emit(&compiler, OP_RETURN, ast ? ast->line : 0);
+
+    return chunk;
+}
