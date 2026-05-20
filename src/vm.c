@@ -665,22 +665,17 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(LIST): {
         uint16_t count = read_u16(ip); ip += 2;
+        int base = g_vm.sp - count;
+        if (base < 0) base = 0;
         Value *list = make_list(count);
-        for (int i = count - 1; i >= 0; i--) {
-            /* Items are on stack in order, bottom = first element */
-            Value *item = g_vm.stack[g_vm.sp - count + i];
-            list_append(list, item);
-        }
-        /* Fix order — we appended in reverse stack order, need forward */
-        /* Actually stack has first element deepest, so we need: */
-        Value *list2 = make_list(count);
         for (int i = 0; i < count; i++) {
-            list_append(list2, g_vm.stack[g_vm.sp - count + i]);
+            if (base + i < g_vm.sp)
+                list_append(list, g_vm.stack[base + i]);
         }
-        val_decref(list);
-        for (int i = 0; i < count; i++)
+        /* Pop the elements */
+        for (int i = 0; i < count && g_vm.sp > base; i++)
             val_decref(vm_pop());
-        vm_push(list2);
+        vm_push(list);
         DISPATCH();
     }
 
@@ -689,6 +684,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         Value *dict = make_dict(count);
         /* Stack: key0, val0, key1, val1, ... (bottom to top) */
         int base = g_vm.sp - count * 2;
+        if (base < 0) base = 0; /* guard against stack underflow */
         for (int i = 0; i < count; i++) {
             Value *k = g_vm.stack[base + i * 2];
             Value *v = g_vm.stack[base + i * 2 + 1];
@@ -794,6 +790,10 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     CASE(ITER_NEXT): {
         uint16_t exit_offset = read_u16(ip); ip += 2;
         Value *state = vm_peek(0);
+        if (!state || state->type != VAL_LIST || state->data.list.count < 2) {
+            ip += exit_offset;
+            DISPATCH();
+        }
         Value *iterable = state->data.list.items[0];
         int idx = (int)state->data.list.items[1]->data.num;
         int len = 0;
