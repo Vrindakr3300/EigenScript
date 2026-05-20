@@ -660,13 +660,12 @@ static void compile_node(Compiler *c, ASTNode *node) {
         int loop_start = c->chunk->code_len;
         int exit_jump = emit_jump(c, OP_ITER_NEXT, node->line);
 
-        /* Bind loop var */
-        const char *var = node->data.listcomp.var;
-        uint32_t h = env_hash_name(var);
-        begin_scope(c);
-        int slot = add_local(c, var, h);
-        if (slot >= 0)
-            emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
+        /* Bind loop var via Env */
+        {
+            int var_idx = add_string_constant(c, node->data.listcomp.var);
+            emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)var_idx, node->line);
+            emit(c, OP_POP, node->line);
+        }
 
         /* Optional filter */
         int filter_jump = -1;
@@ -687,7 +686,6 @@ static void compile_node(Compiler *c, ASTNode *node) {
             patch_jump(c, skip);
         }
 
-        end_scope(c, node->line);
         emit_loop(c, loop_start, node->line);
 
         patch_jump(c, exit_jump);

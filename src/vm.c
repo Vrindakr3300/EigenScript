@@ -1041,15 +1041,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(LISTCOMP_APPEND): {
         Value *item = vm_pop();
-        /* The accumulator list is below the iterator state on the stack.
-         * Find it by scanning down. For now, use a simple approach. */
-        /* Walk stack to find the list accumulator */
-        for (int i = g_vm.sp - 1; i >= 0; i--) {
-            if (g_vm.stack[i] && g_vm.stack[i]->type == VAL_LIST &&
-                g_vm.stack[i] != item) {
-                list_append(g_vm.stack[i], item);
-                break;
-            }
+        /* Stack: [..., accumulator, iter_state]. Accumulator is 2 below TOS. */
+        if (g_vm.sp >= 2) {
+            Value *accum = g_vm.stack[g_vm.sp - 2];
+            if (accum && accum->type == VAL_LIST)
+                list_append(accum, item);
         }
         val_decref(item);
         DISPATCH();
