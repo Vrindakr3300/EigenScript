@@ -479,7 +479,7 @@ Value* builtin_tensor_gather(Value *arg) {
 }
 
 /* ==== Helper: call a user-defined EigenScript function from C ==== */
-static Value* call_eigs_fn(Value *fn, Value *arg) {
+Value* call_eigs_fn(Value *fn, Value *arg) {
     if (fn->type == VAL_BUILTIN) return fn->data.builtin(arg);
     if (fn->type != VAL_FN) return make_null();
     Env *call_env = env_new(fn->data.fn.closure);

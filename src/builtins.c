@@ -3270,6 +3270,63 @@ Value* builtin_sign_extend(Value *arg) {
     return make_num(val);
 }
 
+/* list_truncate of [list, new_len] — shrink list in-place to new_len items.
+ * If new_len >= current length, no-op. Returns the list. */
+Value* builtin_list_truncate(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) return make_null();
+    Value *list = arg->data.list.items[0];
+    Value *len_val = arg->data.list.items[1];
+    if (!list || list->type != VAL_LIST) return make_null();
+    if (!len_val || len_val->type != VAL_NUM) return list;
+    int new_len = (int)len_val->data.num;
+    if (new_len < 0) new_len = 0;
+    if (new_len >= list->data.list.count) return list;
+    for (int i = new_len; i < list->data.list.count; i++) {
+        val_decref(list->data.list.items[i]);
+        list->data.list.items[i] = NULL;
+    }
+    list->data.list.count = new_len;
+    return list;
+}
+
+/* sort_by of [list, key_fn] — sort list by numeric keys from key_fn.
+ * Evaluates key_fn once per element, then qsorts by key (ascending).
+ * Stable tiebreak by original index. Returns a NEW sorted list. */
+typedef struct { double key; int index; } SortByPair;
+
+static int sort_by_pair_cmp(const void *a, const void *b) {
+    double da = ((const SortByPair *)a)->key;
+    double db = ((const SortByPair *)b)->key;
+    if (da < db) return -1;
+    if (da > db) return  1;
+    return ((const SortByPair *)a)->index - ((const SortByPair *)b)->index;
+}
+
+Value* builtin_sort_by(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) return make_null();
+    Value *list = arg->data.list.items[0];
+    Value *key_fn = arg->data.list.items[1];
+    if (!list || list->type != VAL_LIST) return make_null();
+    if (!key_fn || (key_fn->type != VAL_FN && key_fn->type != VAL_BUILTIN))
+        return make_null();
+    int n = list->data.list.count;
+    if (n == 0) return make_list(0);
+    SortByPair *pairs = calloc(n, sizeof(SortByPair));
+    if (!pairs) return make_null();
+    for (int i = 0; i < n; i++) {
+        Value *kv = call_eigs_fn(key_fn, list->data.list.items[i]);
+        pairs[i].key = (kv && kv->type == VAL_NUM) ? kv->data.num : 0.0;
+        pairs[i].index = i;
+    }
+    qsort(pairs, n, sizeof(SortByPair), sort_by_pair_cmp);
+    Value *result = make_list(n);
+    for (int i = 0; i < n; i++) {
+        list_append(result, list->data.list.items[pairs[i].index]);
+    }
+    free(pairs);
+    return result;
+}
+
 /* sort of list — sort a numeric list in-place using qsort, return the list */
 static int sort_cmp_asc(const void *a, const void *b) {
     Value *va = *(Value**)a, *vb = *(Value**)b;
@@ -3505,6 +3562,8 @@ void register_builtins(Env *env) {
     env_set_local(env, "buf_copy", make_builtin(builtin_buf_copy));
     env_set_local(env, "sign_extend", make_builtin(builtin_sign_extend));
     env_set_local(env, "sort", make_builtin(builtin_sort));
+    env_set_local(env, "list_truncate", make_builtin(builtin_list_truncate));
+    env_set_local(env, "sort_by", make_builtin(builtin_sort_by));
     env_set_local(env, "close_channel", make_builtin(builtin_close_channel));
     env_set_local(env, "channel_closed", make_builtin(builtin_channel_closed));
 

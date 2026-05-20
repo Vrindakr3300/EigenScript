@@ -7,7 +7,7 @@
 #
 #   sort_asc of [5, 3, 1, 4, 2]            # [1, 2, 3, 4, 5]
 #   sort_desc of [5, 3, 1, 4, 2]           # [5, 4, 3, 2, 1]
-#   sort_by of [items, key_fn]             # sort by key function
+#   sort_by of [items, key_fn]             # sort by key function (C builtin, O(n log n))
 #   sorted_indices of list                  # indices that would sort the list
 #   is_sorted of list                       # 1 if ascending order
 #   unique of [3, 1, 2, 1, 3]             # [1, 2, 3]
@@ -47,30 +47,9 @@ define sort_desc(items) as:
                 j is 0
     return result
 
-# ---- sort_by: sort list using a key function ----
-# sort_by of [items, key_fn] -> sorted list
-# Sorts ascending by key_fn(item)
-define sort_by(items, key_fn) as:
-    # Build [key, index] pairs
-    pairs is []
-    for i in range of (len of items):
-        append of [pairs, [key_fn of items[i], i]]
-    # Insertion sort on keys
-    for i in range of (len of pairs):
-        j is i
-        loop while j > 0:
-            if pairs[j][0] < pairs[j - 1][0]:
-                tmp is pairs[j]
-                set_at of [pairs, j, pairs[j - 1]]
-                set_at of [pairs, j - 1, tmp]
-                j is j - 1
-            else:
-                j is 0
-    # Rebuild result in sorted order
-    result is []
-    for i in range of (len of pairs):
-        append of [result, items[pairs[i][1]]]
-    return result
+# ---- sort_by: now a C builtin (O(n log n) qsort with key function) ----
+# sort_by of [items, key_fn] is registered in builtins as a native function.
+# It evaluates key_fn once per element, qsorts by key, returns a new sorted list.
 
 # ---- sorted_indices: return indices that would sort the list ----
 # sorted_indices of list -> list of indices

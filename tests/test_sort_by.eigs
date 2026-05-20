@@ -1,0 +1,70 @@
+checks is 0
+passed is 0
+
+# T1: sort by identity function (ascending numeric)
+define identity(x) as:
+    return x
+result is sort_by of [[5, 3, 1, 4, 2], identity]
+checks += 1
+ok is result[0] == 1 and result[1] == 2 and result[2] == 3
+if ok and result[3] == 4 and result[4] == 5:
+    passed += 1
+
+# T2: sort indices by parallel array lookup
+activities is [0, 50, 10, 30, 20, 40]
+indices is [1, 2, 3, 4, 5]
+define activity_key(ci) as:
+    return activities[ci]
+si is sort_by of [indices, activity_key]
+checks += 1
+if si[0] == 2 and si[1] == 4 and si[2] == 3:
+    passed += 1
+checks += 1
+if si[3] == 5 and si[4] == 1:
+    passed += 1
+
+# T3: sort by negated key (descending effect)
+define neg_key(x) as:
+    return 0 - x
+desc is sort_by of [[1, 5, 3, 2, 4], neg_key]
+checks += 1
+ok2 is desc[0] == 5 and desc[1] == 4 and desc[2] == 3
+if ok2 and desc[3] == 2 and desc[4] == 1:
+    passed += 1
+
+# T4: empty list returns empty
+empty_result is sort_by of [[], identity]
+checks += 1
+if (len of empty_result) == 0:
+    passed += 1
+
+# T5: single element
+single is sort_by of [[42], identity]
+checks += 1
+if (len of single) == 1 and single[0] == 42:
+    passed += 1
+
+# T6: stbl sort — equal keys preserve original order
+vals is [10, 20, 30, 40, 50]
+define constant_key(x) as:
+    return 1
+stbl is sort_by of [vals, constant_key]
+checks += 1
+ok3 is stbl[0] == 10 and stbl[1] == 20
+if ok3 and stbl[2] == 30:
+    passed += 1
+
+# T7: original list not mutated
+original is [3, 1, 2]
+sorted_copy is sort_by of [original, identity]
+checks += 1
+if original[0] == 3 and original[1] == 1:
+    passed += 1
+checks += 1
+if sorted_copy[0] == 1 and sorted_copy[1] == 2:
+    passed += 1
+
+if passed == checks:
+    print of "All tests passed"
+else:
+    print of f"FAIL: {passed}/{checks} passed"

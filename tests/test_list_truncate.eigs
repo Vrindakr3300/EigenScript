@@ -1,0 +1,64 @@
+checks is 0
+passed is 0
+
+# T1: truncate to smaller size
+a is [1, 2, 3, 4, 5]
+list_truncate of [a, 3]
+checks += 1
+if (len of a) == 3:
+    passed += 1
+checks += 1
+if a[0] == 1 and a[1] == 2 and a[2] == 3:
+    passed += 1
+
+# T2: truncate to 0
+b is [10, 20, 30]
+list_truncate of [b, 0]
+checks += 1
+if (len of b) == 0:
+    passed += 1
+
+# T3: no-op when new_len >= current length
+c is [1, 2, 3]
+list_truncate of [c, 5]
+checks += 1
+if (len of c) == 3:
+    passed += 1
+list_truncate of [c, 3]
+checks += 1
+if (len of c) == 3:
+    passed += 1
+
+# T4: negative clamps to 0
+d is [1, 2, 3]
+list_truncate of [d, -1]
+checks += 1
+if (len of d) == 0:
+    passed += 1
+
+# T5: truncate to 1
+e is [100, 200, 300]
+list_truncate of [e, 1]
+checks += 1
+if (len of e) == 1 and e[0] == 100:
+    passed += 1
+
+# T6: can append after truncation
+f is [1, 2, 3, 4, 5]
+list_truncate of [f, 2]
+append of [f, 99]
+checks += 1
+if (len of f) == 3 and f[2] == 99:
+    passed += 1
+
+# T7: returns the list
+g is [1, 2, 3]
+result is list_truncate of [g, 1]
+checks += 1
+if (len of result) == 1 and result[0] == 1:
+    passed += 1
+
+if passed == checks:
+    print of "All tests passed"
+else:
+    print of f"FAIL: {passed}/{checks} passed"

@@ -1409,6 +1409,36 @@ else
     echo ""
 fi
 
+# [64] list_truncate builtin
+echo "[64] List Truncate (9 checks)"
+LT_OUTPUT=$(./eigenscript ../tests/test_list_truncate.eigs 2>&1)
+if echo "$LT_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 9))
+    PASS=$((PASS + 9))
+    echo "  PASS: all 9 list_truncate checks"
+else
+    TOTAL=$((TOTAL + 9))
+    FAIL=$((FAIL + 9))
+    echo "  FAIL: list_truncate tests"
+    echo "$LT_OUTPUT" | grep -iE "assert|error|FAIL" | head -5
+fi
+echo ""
+
+# [65] sort_by builtin
+echo "[65] Sort By (9 checks)"
+SBY_OUTPUT=$(./eigenscript ../tests/test_sort_by.eigs 2>&1)
+if echo "$SBY_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 9))
+    PASS=$((PASS + 9))
+    echo "  PASS: all 9 sort_by checks"
+else
+    TOTAL=$((TOTAL + 9))
+    FAIL=$((FAIL + 9))
+    echo "  FAIL: sort_by tests"
+    echo "$SBY_OUTPUT" | grep -iE "assert|error|FAIL" | head -5
+fi
+echo ""
+
 echo "============================================"
 echo "  RESULTS: $PASS/$TOTAL passed, $FAIL failed"
 echo "============================================"
