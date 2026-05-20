@@ -321,6 +321,9 @@ static void compile_node(Compiler *c, ASTNode *node) {
 
         int exit_jump = emit_jump(c, OP_ITER_NEXT, node->line);
 
+        /* Create fresh loop env (or reuse if not captured) */
+        emit(c, OP_LOOP_ENV_FRESH, node->line);
+
         /* Bind loop variable via Env (ITER_NEXT pushed element on stack) */
         {
             int var_idx = add_string_constant(c, node->data.forloop.var);
@@ -330,6 +333,9 @@ static void compile_node(Compiler *c, ASTNode *node) {
 
         compile_block(c, node->data.forloop.body, node->data.forloop.body_count);
         emit(c, OP_POP, node->line); /* discard body result */
+
+        /* Restore parent env */
+        emit(c, OP_LOOP_ENV_END, node->line);
 
         emit_loop(c, loop_start, node->line);
 

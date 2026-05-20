@@ -146,6 +146,8 @@ static const char *op_name(uint8_t op) {
         [OP_INDEX_GET] = "INDEX_GET", [OP_INDEX_SET] = "INDEX_SET",
         [OP_DOT_GET] = "DOT_GET", [OP_DOT_SET] = "DOT_SET",
         [OP_ITER_SETUP] = "ITER_SETUP", [OP_ITER_NEXT] = "ITER_NEXT",
+        [OP_LOOP_ENV_FRESH] = "LOOP_ENV_FRESH",
+        [OP_LOOP_ENV_END] = "LOOP_ENV_END",
         [OP_BREAK] = "BREAK", [OP_CONTINUE] = "CONTINUE",
         [OP_TRY_BEGIN] = "TRY_BEGIN", [OP_TRY_END] = "TRY_END",
         [OP_OBSERVE_ASSIGN] = "OBSERVE_ASSIGN",

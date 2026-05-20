@@ -85,6 +85,8 @@ typedef enum {
     /* Loops and iteration */
     OP_ITER_SETUP,      /* pop iterable, push iterator state */
     OP_ITER_NEXT,       /* [exit_offset:16] advance or jump to exit */
+    OP_LOOP_ENV_FRESH,  /* create fresh child env if current was captured by closure */
+    OP_LOOP_ENV_END,    /* restore parent env from loop body env */
     OP_BREAK,           /* unwind to enclosing loop exit */
     OP_CONTINUE,        /* jump to enclosing loop header */
 

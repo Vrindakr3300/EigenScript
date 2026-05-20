@@ -148,6 +148,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_INDEX_GET] = &&lbl_INDEX_GET, [OP_INDEX_SET] = &&lbl_INDEX_SET,
         [OP_DOT_GET] = &&lbl_DOT_GET, [OP_DOT_SET] = &&lbl_DOT_SET,
         [OP_ITER_SETUP] = &&lbl_ITER_SETUP, [OP_ITER_NEXT] = &&lbl_ITER_NEXT,
+        [OP_LOOP_ENV_FRESH] = &&lbl_LOOP_ENV_FRESH,
+        [OP_LOOP_ENV_END] = &&lbl_LOOP_ENV_END,
         [OP_BREAK] = &&lbl_BREAK, [OP_CONTINUE] = &&lbl_CONTINUE,
         [OP_TRY_BEGIN] = &&lbl_TRY_BEGIN, [OP_TRY_END] = &&lbl_TRY_END,
         [OP_OBSERVE_ASSIGN] = &&lbl_OBSERVE_ASSIGN,
@@ -814,10 +816,28 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         DISPATCH();
     }
 
+    CASE(LOOP_ENV_FRESH): {
+        /* Create a child env for this loop iteration.
+         * If the current env is already a loop-iteration env (not the
+         * original frame env), save the parent and create a new child.
+         * This ensures each iteration has its own scope for closures. */
+        Env *parent = frame->env;
+        Env *loop_env = env_new(parent);
+        frame->env = loop_env;
+        DISPATCH();
+    }
+
+    CASE(LOOP_ENV_END): {
+        /* Restore the parent env after loop body. Free the loop env
+         * unless it was captured by a closure. */
+        Env *loop_env = frame->env;
+        frame->env = loop_env->parent;
+        env_free(loop_env);
+        DISPATCH();
+    }
+
     CASE(BREAK): {
         g_breaking = 1;
-        /* The compiler emits BREAK as a JUMP to the loop exit */
-        /* This case should not be reached in normal flow */
         DISPATCH();
     }
 
