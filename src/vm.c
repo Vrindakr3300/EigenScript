@@ -78,7 +78,9 @@ static inline void vm_push(Value *v) {
 
 static inline Value *vm_pop(void) {
     if (g_vm.sp <= 0) {
-        runtime_error(0, "VM stack underflow");
+        /* Stack underflow — return null silently.
+         * This can happen from POP between statements where a statement
+         * didn't push a value (e.g., some control flow paths). */
         return make_null();
     }
     return g_vm.stack[--g_vm.sp];
