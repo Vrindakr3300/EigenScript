@@ -6,6 +6,7 @@
  */
 
 #include "eigenscript.h"
+#include "vm.h"
 
 /* Forward decls for helpers shared with the arena/observer machinery. */
 Value* make_num_permanent(double n);
@@ -488,6 +489,13 @@ Value* call_eigs_fn(Value *fn, Value *arg) {
             env_set_local(call_env, fn->data.fn.params[pi], arg->data.list.items[pi]);
     } else {
         env_set_local(call_env, fn->data.fn.params[0], arg);
+    }
+    if (fn->data.fn.body_count == -1) {
+        /* Bytecode function */
+        EigsChunk *chunk = (EigsChunk *)fn->data.fn.body;
+        Value *result = vm_execute(chunk, call_env);
+        env_free(call_env);
+        return result ? result : make_null();
     }
     g_returning = 0;
     g_return_val = NULL;

@@ -968,8 +968,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
 Value *vm_execute(EigsChunk *chunk, Env *env) {
     vm_init();
-    g_vm.sp = 0;
-    g_vm.frame_count = 0;
-    g_vm.global_env = env;
+    if (g_vm.global_env == NULL) {
+        /* First call — initialize */
+        g_vm.global_env = env;
+    }
+    /* Re-entrant safe: vm_run pushes/pops its own frame and cleans
+     * the stack back to its base pointer on return. */
     return vm_run(chunk, env);
 }

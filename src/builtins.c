@@ -5,6 +5,7 @@
  */
 
 #include "eigenscript.h"
+#include "vm.h"
 #include "builtins_internal.h"
 #include <pthread.h>
 #include <termios.h>
@@ -2203,7 +2204,10 @@ Value* builtin_load_file(Value *arg) {
     TokenList tl = tokenize(source);
     ASTNode *ast = parse(&tl);
     Env *target = g_load_env ? g_load_env : g_global_env;
-    Value *result = eval_node(ast, target);
+    EigsChunk *lf_chunk = compile_ast(ast, target);
+    Value *result = vm_execute(lf_chunk, target);
+    /* Don't free chunk — closures may still reference nested function chunks.
+     * TODO: reference-count chunks so they're freed when all closures are gone. */
     free_ast(ast);
     free(source);
     free_tokenlist(&tl);
@@ -2694,12 +2698,9 @@ Value* builtin_eval(Value *arg) {
     g_parse_errors = saved_errors;
 
     Env *target = g_builtin_call_env ? g_builtin_call_env : g_global_env;
-    ASTNode *last = ast;
-    if (ast && ast->type == AST_PROGRAM && ast->data.program.count > 0)
-        last = ast->data.program.stmts[ast->data.program.count - 1];
-    Value *result = eval_node(ast, target);
-    if (result && !eval_result_is_owned(last))
-        val_incref(result);
+    EigsChunk *ev_chunk = compile_ast(ast, target);
+    Value *result = vm_execute(ev_chunk, target);
+    /* Don't free chunk — closures may reference nested function chunks */
     free_tokenlist(&tl);
     return result ? result : make_null();
 }
