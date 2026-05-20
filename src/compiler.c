@@ -421,14 +421,35 @@ static void compile_node(Compiler *c, ASTNode *node) {
         compile_block(c, node->data.loop.body, node->data.loop.body_count);
         emit(c, OP_POP, node->line); /* discard body result before next iteration */
 
+        /* Observer stall check — jump to exit if stalled */
+        int stall_jump = emit_jump(c, OP_LOOP_STALL_CHECK, node->line);
+
         /* Reset depth to loop start for back-edge */
         c->stack_depth = depth_at_loop;
         emit_loop(c, loop_start, node->line);
 
-        /* Exit path: condition was false */
+        /* Exit path: condition was false or stall detected.
+         * Set __loop_exit__ and __loop_iterations__ env vars.
+         * For stall exit, LOOP_STALL_CHECK already set them.
+         * For normal exit, emit code to set them. */
         patch_jump(c, exit_jump);
-        c->stack_depth = depth_at_loop; /* JIF popped condition */
-        emit(c, OP_NULL, node->line); /* loop result when condition is false */
+        /* Normal exit — set exit vars from stall counters */
+        {
+            int exit_idx = add_string_constant(c, "__loop_exit__");
+            int iter_idx = add_string_constant(c, "__loop_iterations__");
+            int normal_idx = add_string_constant(c, "normal");
+            /* Push "normal", set __loop_exit__, pop */
+            emit_op_u16(c, OP_CONST, (uint16_t)normal_idx, node->line);
+            emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)exit_idx, node->line);
+            emit(c, OP_POP, node->line);
+            /* Push 0 for iterations (approximation), set __loop_iterations__, pop */
+            emit(c, OP_NUM_ZERO, node->line);
+            emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)iter_idx, node->line);
+            emit(c, OP_POP, node->line);
+        }
+        patch_jump(c, stall_jump);
+        c->stack_depth = depth_at_loop;
+        emit(c, OP_NULL, node->line); /* loop result */
 
         /* Patch break jumps */
         if (lp) {

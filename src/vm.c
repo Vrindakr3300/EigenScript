@@ -16,6 +16,11 @@
 static __thread VM g_vm;
 static __thread int g_vm_init = 0;
 
+/* ---- Loop stall detection state ---- */
+static __thread int g_loop_stall_count = 0;
+static __thread int g_loop_iterations = 0;
+static __thread const char *g_loop_exit_reason = "normal";
+
 /* ---- External globals from eval.c / eigenscript.c ---- */
 extern __thread Value *g_return_val;
 extern __thread int g_returning;
@@ -58,6 +63,7 @@ extern Value* promote_if_arena(Value *v);
 /* Observer helper — declared in eval.c, needs to be exposed for VM.
  * For now, call the eval.c version via a non-static wrapper. */
 extern void observer_ensure_fresh(Value *v);
+extern Value* builtin_free_val(Value *arg);
 
 /* ---- VM helpers ---- */
 
@@ -158,6 +164,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_INTERROGATE] = &&lbl_INTERROGATE, [OP_PREDICATE] = &&lbl_PREDICATE,
         [OP_UNOBSERVED_BEGIN] = &&lbl_UNOBSERVED_BEGIN,
         [OP_UNOBSERVED_END] = &&lbl_UNOBSERVED_END,
+        [OP_LOOP_STALL_CHECK] = &&lbl_LOOP_STALL_CHECK,
         [OP_IMPORT] = &&lbl_IMPORT, [OP_MATCH] = &&lbl_MATCH,
         [OP_LISTCOMP_BEGIN] = &&lbl_LISTCOMP_BEGIN,
         [OP_LISTCOMP_APPEND] = &&lbl_LISTCOMP_APPEND,
@@ -526,10 +533,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
             Env *saved = g_builtin_call_env;
             g_builtin_call_env = frame->env;
+            int consumes_arg = (fn_val->data.builtin == builtin_free_val);
             Value *result = fn_val->data.builtin(arg);
             g_builtin_call_env = saved;
 
-            val_decref(arg);
+            if (!consumes_arg) val_decref(arg);
             if (!result) result = make_null();
             else val_incref(result);
             vm_push(result);
@@ -953,6 +961,43 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(UNOBSERVED_END): {
         g_unobserved_depth--;
+        DISPATCH();
+    }
+
+    CASE(LOOP_STALL_CHECK): {
+        uint16_t exit_offset = read_u16(ip); ip += 2;
+        g_loop_iterations++;
+        int should_exit = 0;
+        if (g_unobserved_depth == 0) {
+            Value *obs = g_last_observer;
+            if (obs) observer_ensure_fresh(obs);
+            if (obs && fabs(obs->dH) < g_obs_dh_zero && obs->entropy >= g_obs_h_low) {
+                g_loop_stall_count++;
+                if (g_loop_stall_count >= 100) {
+                    g_loop_exit_reason = "stalled";
+                    should_exit = 1;
+                }
+            } else {
+                g_loop_stall_count = 0;
+            }
+        }
+        if (g_loop_iterations >= 100000000) {
+            g_loop_exit_reason = "limit";
+            should_exit = 1;
+        }
+        if (should_exit) {
+            /* Set __loop_exit__ and __loop_iterations__ in env */
+            Value *exit_val = make_str(g_loop_exit_reason);
+            env_set_local(frame->env, "__loop_exit__", exit_val);
+            val_decref(exit_val);
+            Value *iter_val = make_num(g_loop_iterations);
+            env_set_local(frame->env, "__loop_iterations__", iter_val);
+            val_decref(iter_val);
+            g_loop_stall_count = 0;
+            g_loop_iterations = 0;
+            g_loop_exit_reason = "normal";
+            ip += exit_offset;
+        }
         DISPATCH();
     }
 
