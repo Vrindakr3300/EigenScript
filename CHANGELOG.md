@@ -2,13 +2,40 @@
 
 All notable changes to EigenScript are documented here.
 
+## [0.10.0] — 2026-05-21
+
+### Architecture — Bytecode VM
+- **Replaced AST tree-walker with bytecode VM.** All code now compiles to
+  bytecode and runs through a stack-based VM with computed-goto dispatch.
+  `eval.c` (1387 lines) deleted, replaced by `compiler.c` + `vm.c` + `chunk.c`
+  (~2400 lines). Net +1250 lines for the entire VM.
+- **60+ opcodes** covering all 31 AST node types: constants, arithmetic,
+  comparison, bitwise, variables (local slots + name-based), control flow
+  (jumps, loops, iteration), functions (closure, call, return), data
+  structures (list, dict, index, dot), error handling (try/catch), observer
+  system (interrogate, predicate, stall detection), and modules (import).
+- **Non-recursive function calls.** `OP_CALL` pushes a new frame and
+  continues the dispatch loop. No C stack recursion — recursion depth
+  limited by `VM_FRAMES_MAX` (4096) instead of C stack size.
+- **Stack-depth tracking** in the compiler validates branch/loop balance.
+- **GET_LOCAL/SET_LOCAL** optimization for function parameters: direct
+  env slot access bypasses hash table lookup.
+- **Observer stall detection** (`OP_LOOP_STALL_CHECK`): while-loops exit
+  after 100 iterations of `|dH| < threshold`. Sets `__loop_exit__` and
+  `__loop_iterations__` env variables.
+
+### Builtins
+- `list_truncate of [list, new_len]` — in-place O(1) list shrink.
+- `list_remove_at of [list, index]` — in-place element removal with memmove.
+- `sort_by of [list, key_fn]` — C-backed O(n log n) qsort with key function
+  (replaces O(n²) pure-EigenScript insertion sort in lib/sort.eigs).
+
 ## [Unreleased]
 
 ### Language
 - **Compound assignment operators**: `+=`, `-=`, `*=`, `/=`, `%=`, `&=`,
-  `|=`, `^=`, `<<=`, `>>=`. Desugared in the parser to existing AST nodes —
-  `eval_num_fast` handles them for free. Works on variables, dot-access,
-  and index-access.
+  `|=`, `^=`, `<<=`, `>>=`. Desugared in the parser to existing AST nodes.
+  Works on variables, dot-access, and index-access.
 - **Buffer iteration**: `for x in buffer:` and `[expr for x in buffer]` now
   work. `what`/`who` interrogation handles buffers. VAL_BUFFER is now a
   first-class iterable type.

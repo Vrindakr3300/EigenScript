@@ -1,9 +1,12 @@
 # Roadmap
 
-Current version: **0.9.3**
+Current version: **0.10.0**
 
 ## Near-term
 
+- [ ] Dict field inline caching (OP_DOT_GET with cached slot offset)
+- [ ] Extend GET_LOCAL/SET_LOCAL to all local variables (not just params)
+- [ ] Fix remaining 15 edge-case test failures
 - [ ] Streaming subprocess I/O (stdin pipe, unbuffered stdout)
 - [ ] More STEM modules (graph theory, regression/curve fitting, numerical PDEs)
 
@@ -12,12 +15,20 @@ Current version: **0.9.3**
 - [ ] WASM compilation target
 - [ ] Destructuring assignment
 - [ ] Package manager / module registry
-- [ ] Optimizing JIT backend
+- [ ] Chunk reference counting (currently leaked to keep closures alive)
 
 ## Long-term
 
 - [ ] Self-hosting compiler (EigenScript written in EigenScript)
 - [ ] Foreign function interface (FFI) for calling C libraries
+
+## Completed (0.10.0)
+
+- [x] Bytecode VM — replaced AST tree-walker with compiled bytecode + computed-goto dispatch
+- [x] Non-recursive function calls — no C stack recursion, 4096 frame depth
+- [x] Stack-local optimization — GET_LOCAL/SET_LOCAL for function params
+- [x] Observer stall detection in VM loops (OP_LOOP_STALL_CHECK)
+- [x] list_truncate, list_remove_at, sort_by builtins
 
 ## Completed (0.9.3)
 

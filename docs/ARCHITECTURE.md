@@ -1,18 +1,22 @@
 # Architecture
 
-EigenScript is a tree-walking interpreter written in C. The runtime is a single
-binary with no external dependencies (minimal build) or optional extensions for
-HTTP, PostgreSQL, and transformer models (full build).
+EigenScript is a bytecode-compiled language with a stack-based virtual machine,
+written in C. The runtime is a single binary with no external dependencies
+(minimal build) or optional extensions for HTTP, PostgreSQL, SDL2 graphics,
+and transformer models (full build).
 
 ## Source Layout
 
 ```
 src/
-├── eigenscript.h          # Public header: types, parser, evaluator API
-├── eigenscript.c          # Globals, value constructors, refcount GC, environment
+├── eigenscript.h          # Public header: types, parser, VM API
+├── eigenscript.c          # Globals, value constructors, refcount GC, environment, observer
 ├── lexer.c                # Tokenizer
-├── parser.c               # Recursive-descent parser
-├── eval.c                 # Tree-walking evaluator + observer
+├── parser.c               # Recursive-descent parser → AST
+├── compiler.c             # AST → bytecode compiler
+├── vm.h                   # Opcode enum, chunk/frame/VM structs
+├── vm.c                   # Bytecode VM execution loop (computed-goto dispatch)
+├── chunk.c                # Bytecode container, constant pool, disassembler
 ├── builtins.c             # Core builtins (I/O, collections, string, bitwise, ...)
 ├── builtins_tensor.c      # Tensor math, gradients, SGD
 ├── builtins_internal.h    # Cross-TU prototypes for tensor builtins
@@ -20,14 +24,12 @@ src/
 ├── strbuf.c               # Growable string buffer helper
 ├── main.c                 # Entry point, CLI argument handling
 ├── ext_http.c             # HTTP server extension (optional)
-├── ext_http_internal.h    # HTTP internals
 ├── ext_db.c               # PostgreSQL extension (optional)
-├── ext_db_internal.h      # Database internals
+├── ext_store.c            # EigenStore key-value database
 ├── ext_gfx.c              # SDL2 graphics extension (optional, dlopen'd)
 ├── model_io.c             # Model weight loading/saving (optional)
 ├── model_infer.c          # Transformer forward pass (optional)
-├── model_train.c          # Training loop and gradient computation (optional)
-└── model_internal.h       # Model internals
+└── model_train.c          # Training loop and gradient computation (optional)
 ```
 
 ## Pipeline
@@ -39,13 +41,16 @@ Source code (.eigs)
   Lexer          tokenize() → token array
     │
     ▼
-  Parser         parse_block() → AST (statement tree)
+  Parser         parse() → AST (31 node types)
     │
     ▼
-  Evaluator      eval_stmt() / eval_expr() → values
+  Compiler       compile_ast() → EigsChunk (bytecode + constant pool)
     │
     ▼
-  Observer        track entropy, dH, trajectory per variable
+  VM             vm_execute() → computed-goto dispatch loop → values
+    │
+    ▼
+  Observer       track entropy, dH, trajectory per variable
 ```
 
 ### Lexer
@@ -56,27 +61,59 @@ tracks indent depth and emits INDENT/DEDENT tokens.
 
 ### Parser
 
-The recursive-descent parser (`parse_block()`) builds a statement tree. Each
-statement has a type (assignment, if, for, while, define, return, etc.) and
+The recursive-descent parser (`parse()`) builds an AST with 31 node types.
+Each node has a type (assignment, if, for, while, define, return, etc.) and
 child expressions. Expressions use a Pratt-style precedence parser.
 
-### Evaluator
+### Compiler
 
-The tree-walking evaluator (`eval_node()`) executes the AST directly. There is
-no bytecode compilation step. Values are tagged unions (`Value`) that can be
-numbers, strings, lists, dictionaries, functions, or builtins.
+The compiler (`compile_ast()` in `compiler.c`) walks the AST and emits a
+flat bytecode array with 60+ opcodes into an `EigsChunk`. Each chunk has:
 
-Numeric values pass through `num_guard` at construction and numeric fast-path
-boundaries. The runtime invariant is that user-visible numbers are finite:
-`NaN` collapses to `0`, and overflow or infinity saturates at `+/-1e308`.
-Scalar arithmetic, tensor arithmetic, `num` conversion, reassignment fast
-paths, and `unobserved` numeric mutation all preserve this invariant.
+- **Bytecode array** — compact `[op:8][arg:16LE]` encoding
+- **Constant pool** — deduplicated numbers and strings
+- **Line number table** — for error messages
+- **Nested function chunks** — compiled function bodies
+
+The compiler tracks stack depth at compile time to validate that each
+statement and branch path maintains correct stack balance. Function
+parameters are assigned local slot indices for fast access via
+`OP_GET_LOCAL`/`OP_SET_LOCAL` (direct env array index, no hash lookup).
+
+### VM
+
+The bytecode VM (`vm_execute()` / `vm_run()` in `vm.c`) uses a single
+dispatch loop with GCC computed-goto (`&&label` / `goto *table[op]`)
+for the hot path, with a switch fallback for other compilers.
+
+Key design decisions:
+
+- **Non-recursive function calls.** `OP_CALL` pushes a new `CallFrame`
+  and continues the dispatch loop. `OP_RETURN` pops the frame and
+  resumes the caller. No C stack recursion — function call depth is
+  limited only by `VM_FRAMES_MAX` (4096), not the C stack.
+
+- **Env-based variable storage.** Variables are stored in `Env` hash
+  tables (the same structure used pre-VM). Function parameters use
+  `OP_GET_LOCAL`/`OP_SET_LOCAL` for direct slot access, bypassing
+  hash lookup. Non-param variables use `OP_GET_NAME`/`OP_SET_NAME`
+  with full scope-chain walk.
+
+- **Re-entrant execution.** `vm_execute` can be called recursively
+  from builtins (`load_file`, `eval`, `import`, `dispatch`). Each
+  re-entrant call tracks its `base_frame` and returns to C when
+  unwinding past it.
+
+- **`fn_env` separation.** Each `CallFrame` has both `env` (current
+  env, which changes during `OP_LOOP_ENV_FRESH` for-loop scoping)
+  and `fn_env` (the function's original env, used by
+  `OP_GET_LOCAL`/`OP_SET_LOCAL` to avoid slot collision with
+  loop variables).
 
 ### Observer
 
-The observer system is embedded in the evaluator. Every variable assignment
-updates the variable's observer state: entropy (information content), dH (rate
-of change), and trajectory classification. The six states are:
+The observer system tracks entropy and rate-of-change for every assigned
+variable. The six trajectory states are:
 
 - **improving** — entropy is decreasing
 - **diverging** — entropy is increasing
@@ -85,26 +122,23 @@ of change), and trajectory classification. The six states are:
 - **oscillating** — dH is sign-flipping
 - **converged** — entropy is very low and stable
 
-Observer state is accessible from EigenScript via `report of x` and
-`observe of x` builtins, and drives `loop while not converged` termination.
+Observer state is accessible via interrogatives (`what`, `who`, `when`,
+`where`, `why`, `how`) and predicates (`converged`, `stable`, etc.),
+and drives `loop while not converged` termination.
 
-Observation uses lazy evaluation: assignments mark values dirty (O(1)),
-and entropy is computed on demand when observer state is read
-(interrogation, predicate check, `report`, or loop stall detection).
-The in-place numeric fast path eagerly computes entropy since it is
-O(1) for numbers. The last observed value is tracked via a thread-local
-pointer (`g_last_observer`) rather than an environment binding, avoiding
-hash lookups and refcount overhead on every assignment. When user code
-has a hot region it knows won't be interrogated, an `unobserved` block
-skips observer marking entirely and enables in-place numeric mutation
-on dict fields and locals (`eval.c` fast path). Arena mark/reset
-provides lifecycle-scoped opt-out; `unobserved` provides
-statement-scoped opt-out.
+Observation uses lazy evaluation: `OP_OBSERVE_ASSIGN` marks values dirty
+(O(1)), and entropy is computed on demand when observer state is read.
+The last observed value is tracked via a thread-local pointer
+(`g_last_observer`). `unobserved` blocks skip observer marking entirely.
+
+Loop stall detection (`OP_LOOP_STALL_CHECK`) exits while-loops after 100
+consecutive iterations with `|dH| < threshold`, setting `__loop_exit__`
+and `__loop_iterations__` env variables.
 
 ## Memory
 
 EigenScript uses a hybrid memory model: reference counting, arena bump
-allocation, a numeric freelist, and scratch stacks.
+allocation, a numeric freelist, and environment freelists.
 
 **Reference counting.** Every heap-allocated `Value` has an atomic refcount
 (`__ATOMIC_RELAXED` increment, `__ATOMIC_ACQ_REL` decrement). When the
@@ -114,32 +148,20 @@ are reclaimed in bulk by `arena_reset`.
 
 **Arena allocator.** The arena (`arena.c`) provides fast bump allocation in
 16 MB blocks (up to 64 blocks). Scripts use `arena_mark`/`arena_reset` to
-reclaim transient memory in bounded-computation loops (e.g., gradient
-updates). If the block limit is exceeded, the arena falls back to `xcalloc`
-and tracks the fallback pointers so `arena_reset` can free them. At program
-exit, `arena_destroy` frees all blocks.
-
-**Allocation invariant.** A heap-owned value (`arena == 0`) has all interior
-pointers (strings, item arrays) on the heap. `list_append` and
-`env_set_local` use the owning structure's allocation origin — not the
-global `g_arena.active` flag — to decide where to allocate growth.
+reclaim transient memory in bounded-computation loops.
 
 **Numeric freelist.** Freed `VAL_NUM` values are placed in a per-thread
 freelist (up to 4096 entries) and reused by `make_num`, avoiding
 malloc/free churn in arithmetic-heavy loops.
 
-**Dict hash table.** Dicts use the same FNV-1a open-addressing hash
-(`EnvHash`) as environments, giving O(1) key lookup, insert, and update.
+**Environment freelist.** Freed `Env` structs are cached per-thread (up to
+1024 entries) and reused by `env_new`, avoiding allocation in tight
+function-call loops.
 
 **Closure environments.** Environments captured by closures
 (`env->captured = 1`) track a reference count (`env_refcount`, atomic).
 When the last closure referencing an env is freed, the env becomes
-eligible for cleanup. Cycles (function stored in its own closure env) are
-broken by nulling `fn.closure` before decrementing the env refcount.
-
-**Thread safety.** Values sent through channels are shared by reference
-(incref'd, not deep-copied). Mutable containers (dicts, lists) must not be
-mutated concurrently by sender and receiver.
+eligible for cleanup.
 
 ## Extensions
 
@@ -152,16 +174,15 @@ Extensions are conditionally compiled via flags:
 | `EIGENSCRIPT_EXT_MODEL` | Transformer | none |
 | `EIGENSCRIPT_EXT_GFX` | SDL2 graphics | libSDL2 (loaded at runtime via `dlopen`) |
 
-The minimal build (`./build.sh`) sets all flags to 0. The full build
-(`./build.sh full`) enables everything.
+The minimal build (`make build`) sets all flags to 0. The full build
+(`make full`) enables everything.
 
 ## Standard Library
 
 The 49 modules in `lib/` are pure EigenScript — no C code. They are loaded at
 runtime via `load_file of "lib/module.eigs"`. Path resolution searches relative
-to the current working directory, then the script's directory, then the script's
-parent directory.
+to the executable's directory, then the current working directory, then the
+script's directory.
 
-The meta-circular interpreter (`lib/eigen.eigs`) is notable: it implements
-tokenization, parsing, and evaluation of EigenScript source code in EigenScript
-itself, using `eigen_run of source` as the top-level entry point.
+The meta-circular interpreter (`lib/eigen.eigs`) implements tokenization,
+parsing, and evaluation of EigenScript source code in EigenScript itself.

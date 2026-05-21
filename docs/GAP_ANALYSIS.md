@@ -1,10 +1,17 @@
-# EigenScript Gap Analysis
+# EigenScript Gap Analysis [HISTORICAL]
 
-Version surveyed: **0.8.1**
+**This document is a historical snapshot from version 0.8.1.** Many listed
+gaps have been resolved in later releases:
 
-Note: this is a historical gap analysis for the 0.8.1 line. Later releases
-closed several listed gaps, including concurrency, hashing/HMAC, UI tooling,
-STEM libraries, and the expanded 49-module standard library.
+- **Concurrency**: spawn/thread_join/channels added in 0.9.0
+- **Hashing**: SHA-256, MD5, HMAC-SHA256 added in 0.9.2
+- **UI**: 44-widget GUI toolkit added in 0.9.3
+- **STEM**: 14 scientific libraries added in 0.9.3
+- **Bytecode VM**: Tree-walker replaced with compiled bytecode in 0.10.0
+- **Standard library**: Expanded to 49 modules
+
+The sections below reflect the state as of 0.8.1 and should not be taken
+as current. See CHANGELOG.md for the current feature set.
 
 EigenScript is a general-purpose language, but some program classes stress
 capabilities that the current runtime and standard library do not provide.
