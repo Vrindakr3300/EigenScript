@@ -40,6 +40,7 @@ typedef struct Compiler {
     Env              *env;          /* for resolving globals at compile time */
     int               stack_depth;  /* tracked stack depth for validation */
     int               max_stack;    /* high-water mark */
+    int               param_count;  /* number of function params (for local opt) */
 } Compiler;
 
 /* ---- Forward declarations ---- */
@@ -236,9 +237,10 @@ static void begin_scope(Compiler *c) {
 }
 
 static void end_scope(Compiler *c, int line) {
+    (void)line;
+    /* Locals are in Env slots, not on the VM stack — just remove from tracking */
     while (c->local_count > 0 &&
            c->locals[c->local_count - 1].depth >= c->scope_depth) {
-        emit(c, OP_POP, line);
         c->local_count--;
     }
     c->scope_depth--;
@@ -294,8 +296,16 @@ static void compile_node(Compiler *c, ASTNode *node) {
         break;
 
     case AST_IDENT: {
-        /* All variable access goes through Env for now (correctness first).
-         * TODO: optimize known locals to OP_GET_LOCAL stack slots. */
+        /* Try local slot resolution for params (fast path) */
+        if (c->enclosing) {
+            uint32_t h = node->name_hash;
+            if (h == 0) h = env_hash_name(node->data.ident.name);
+            int slot = resolve_local(c, node->data.ident.name, h);
+            if (slot >= 0) {
+                emit_op_u16(c, OP_GET_LOCAL, (uint16_t)slot, node->line);
+                break;
+            }
+        }
         int idx = add_string_constant(c, node->data.ident.name);
         emit_op_u16(c, OP_GET_NAME, (uint16_t)idx, node->line);
         break;
@@ -307,9 +317,21 @@ static void compile_node(Compiler *c, ASTNode *node) {
         uint32_t h = node->name_hash;
         if (h == 0) h = env_hash_name(name);
 
-        /* All assignments go through Env for now (correctness first).
-         * TODO: optimize known locals to OP_SET_LOCAL stack slots. */
-        {
+        if (c->enclosing) {
+            /* Try local slot for known params only (not new locals) */
+            int slot = resolve_local(c, name, h);
+            if (slot >= 0 && slot < c->param_count) {
+                /* Known param — safe to use SET_LOCAL */
+                emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
+            } else if (node->data.assign.local_only) {
+                int idx = add_string_constant(c, name);
+                emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);
+            } else {
+                int idx = add_string_constant(c, name);
+                emit_op_u16(c, OP_SET_NAME, (uint16_t)idx, node->line);
+            }
+        } else {
+            /* Module level — always use name-based */
             int idx = add_string_constant(c, name);
             if (node->data.assign.local_only) {
                 emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);
@@ -546,14 +568,16 @@ static void compile_node(Compiler *c, ASTNode *node) {
         fn_compiler.chunk = fn_chunk;
         fn_compiler.enclosing = c;
         fn_compiler.env = c->env;
+        fn_compiler.param_count = node->data.func.param_count;
 
-        /* Store param names in chunk (for make_fn).
-         * Don't add as compiler locals — params are bound in Env at call time,
-         * so the function body resolves them via OP_GET_NAME. */
+        /* Store param names in chunk AND add as compiler locals.
+         * Params are at env slots 0..param_count-1, bound by OP_CALL. */
         fn_chunk->local_names = xcalloc(node->data.func.param_count, sizeof(char *));
         fn_chunk->local_count = node->data.func.param_count;
         for (int i = 0; i < node->data.func.param_count; i++) {
             fn_chunk->local_names[i] = strdup(node->data.func.params[i]);
+            uint32_t h = env_hash_name(node->data.func.params[i]);
+            add_local(&fn_compiler, node->data.func.params[i], h);
         }
 
         compile_block(&fn_compiler, node->data.func.body, node->data.func.body_count);
@@ -579,11 +603,14 @@ static void compile_node(Compiler *c, ASTNode *node) {
         fn_compiler.chunk = fn_chunk;
         fn_compiler.enclosing = c;
         fn_compiler.env = c->env;
+        fn_compiler.param_count = node->data.lambda.param_count;
 
         fn_chunk->local_names = xcalloc(node->data.lambda.param_count, sizeof(char *));
         fn_chunk->local_count = node->data.lambda.param_count;
         for (int i = 0; i < node->data.lambda.param_count; i++) {
             fn_chunk->local_names[i] = strdup(node->data.lambda.params[i]);
+            uint32_t h = env_hash_name(node->data.lambda.params[i]);
+            add_local(&fn_compiler, node->data.lambda.params[i], h);
         }
 
         /* Lambda body is a single expression — compile and return it */

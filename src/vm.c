@@ -120,6 +120,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     frame->ip = chunk->code;
     frame->bp = g_vm.sp;
     frame->env = env;
+    frame->fn_env = env; /* save original function env for GET_LOCAL/SET_LOCAL */
     frame->closure_val = NULL;
     frame->is_try = 0;
     frame->catch_ip = NULL;
@@ -368,11 +369,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(GET_LOCAL): {
         uint16_t slot = read_u16(ip); ip += 2;
-        int abs_slot = frame->bp + slot;
-        if (abs_slot < g_vm.sp) {
-            Value *v = g_vm.stack[abs_slot];
-            val_incref(v);
-            vm_push(v);
+        /* Read from the function's original env (not loop-fresh child) */
+        Env *e = frame->fn_env;
+        if (slot < (uint16_t)e->count) {
+            Value *v = e->values[slot];
+            if (v) { val_incref(v); vm_push(v); }
+            else vm_push(make_null());
         } else {
             vm_push(make_null());
         }
@@ -381,14 +383,14 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(SET_LOCAL): {
         uint16_t slot = read_u16(ip); ip += 2;
-        int abs_slot = frame->bp + slot;
         Value *v = vm_peek(0);
-        val_incref(v);
-        /* Ensure slot exists */
-        while (abs_slot >= g_vm.sp)
-            vm_push(make_null());
-        val_decref(g_vm.stack[abs_slot]);
-        g_vm.stack[abs_slot] = v;
+        /* Write to the function's original env (not loop-fresh child) */
+        Env *e = frame->fn_env;
+        if (slot < (uint16_t)e->count) {
+            val_incref(v);
+            val_decref(e->values[slot]);
+            e->values[slot] = v;
+        }
         DISPATCH();
     }
 

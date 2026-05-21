@@ -144,7 +144,8 @@ typedef struct {
     EigsChunk *chunk;
     uint8_t   *ip;              /* instruction pointer */
     int        bp;              /* base pointer into value stack */
-    Env       *env;             /* for closures and dynamic name lookup */
+    Env       *env;             /* current env (may be loop-fresh child) */
+    Env       *fn_env;          /* function's original env (for GET_LOCAL/SET_LOCAL) */
     Value     *closure_val;     /* the VAL_FN that was called */
     int        is_try;          /* 1 if try-catch frame */
     uint8_t   *catch_ip;        /* where to jump on error */
