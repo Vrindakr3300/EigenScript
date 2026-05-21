@@ -321,11 +321,19 @@ static void compile_node(Compiler *c, ASTNode *node) {
         if (h == 0) h = env_hash_name(name);
 
         if (c->enclosing) {
-            /* Try local slot for known params only (not new locals) */
             int slot = resolve_local(c, name, h);
-            if (slot >= 0 && slot < c->param_count) {
-                /* Known param — safe to use SET_LOCAL */
+            if (slot >= 0) {
+                /* Known local (param or declared) — use SET_LOCAL */
                 emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
+            } else if (node->data.assign.local_only && c->loop_depth == 0) {
+                /* New local at function scope — register slot, use SET_LOCAL */
+                slot = add_local(c, name, h);
+                if (slot >= 0) {
+                    emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
+                } else {
+                    int idx = add_string_constant(c, name);
+                    emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);
+                }
             } else if (node->data.assign.local_only) {
                 int idx = add_string_constant(c, name);
                 emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);

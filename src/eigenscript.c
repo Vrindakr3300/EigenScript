@@ -537,6 +537,11 @@ Value* dict_get(Value *dict, const char *key) {
     return dict_get_hashed(dict, key, env_hash_name(key));
 }
 
+int env_hash_find_dict(Value *dict, const char *key, uint32_t h) {
+    if (!dict || dict->type != VAL_DICT) return -1;
+    return env_hash_find(&dict->data.dict.hash, key, h, dict->data.dict.keys);
+}
+
 int dict_has(Value *dict, const char *key) {
     return dict_get(dict, key) != NULL;
 }

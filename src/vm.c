@@ -67,6 +67,56 @@ extern Value* builtin_free_val(Value *arg);
 extern const char* val_type_name(ValType t);
 extern Value* dict_get_hashed(Value *dict, const char *key, uint32_t h);
 extern void dict_set_hashed(Value *dict, const char *key, uint32_t h, Value *val);
+extern int env_hash_find_dict(Value *dict, const char *key, uint32_t h);
+
+/* ---- Dict field inline cache ---- */
+#define DICT_CACHE_SIZE 128
+#define DICT_CACHE_MASK (DICT_CACHE_SIZE - 1)
+
+typedef struct {
+    Value   *dict;      /* dict identity (pointer) */
+    uint32_t hash;      /* field name hash */
+    int      index;     /* slot index in dict arrays */
+} DictCacheEntry;
+
+static __thread DictCacheEntry g_dict_cache[DICT_CACHE_SIZE];
+
+static inline Value *dict_get_cached(Value *dict, const char *key, uint32_t h) {
+    int ci = (h ^ (uint32_t)(uintptr_t)dict) & DICT_CACHE_MASK;
+    DictCacheEntry *ce = &g_dict_cache[ci];
+    if (ce->dict == dict && ce->hash == h && ce->index < dict->data.dict.count) {
+        if (strcmp(dict->data.dict.keys[ce->index], key) == 0)
+            return dict->data.dict.vals[ce->index];
+    }
+    int idx = env_hash_find_dict(dict, key, h);
+    if (idx >= 0) {
+        ce->dict = dict; ce->hash = h; ce->index = idx;
+        return dict->data.dict.vals[idx];
+    }
+    return NULL;
+}
+
+static inline void dict_set_cached(Value *dict, const char *key, uint32_t h, Value *val) {
+    int ci = (h ^ (uint32_t)(uintptr_t)dict) & DICT_CACHE_MASK;
+    DictCacheEntry *ce = &g_dict_cache[ci];
+    if (ce->dict == dict && ce->hash == h && ce->index < dict->data.dict.count) {
+        if (strcmp(dict->data.dict.keys[ce->index], key) == 0) {
+            /* Cache hit — update in place */
+            Value *promoted = promote_if_arena(val);
+            if (promoted != val) {
+                val_decref(dict->data.dict.vals[ce->index]);
+                dict->data.dict.vals[ce->index] = promoted;
+            } else {
+                val_incref(val);
+                val_decref(dict->data.dict.vals[ce->index]);
+                dict->data.dict.vals[ce->index] = val;
+            }
+            return;
+        }
+    }
+    /* Cache miss — full set (populates hash table, cache stays stale until next get) */
+    dict_set_hashed(dict, key, h, val);
+}
 
 /* ---- VM helpers ---- */
 
@@ -227,10 +277,17 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     /* ---- Arithmetic ---- */
 
+    /* In-place numeric mutation: if a Value is a non-arena num with refcount 1,
+     * we can mutate it directly instead of allocating via make_num. */
+#define NUM_REUSE(v) ((v)->type == VAL_NUM && (v)->refcount == 1 && !(v)->arena)
+
     CASE(ADD): {
         Value *b = vm_pop(); Value *a = vm_pop();
         if (a->type == VAL_NUM && b->type == VAL_NUM) {
-            vm_push(make_num(num_guard(a->data.num + b->data.num)));
+            double r = num_guard(a->data.num + b->data.num);
+            if (NUM_REUSE(a)) { a->data.num = r; vm_push(a); val_decref(b); DISPATCH(); }
+            if (NUM_REUSE(b)) { b->data.num = r; vm_push(b); val_decref(a); DISPATCH(); }
+            vm_push(make_num(r));
         } else if (a->type == VAL_STR && b->type == VAL_STR) {
             int la = strlen(a->data.str), lb = strlen(b->data.str);
             char *s = malloc(la + lb + 1);
@@ -268,9 +325,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 #define NUM_BINOP(NAME, OP, OPNAME) \
     CASE(NAME): { \
         Value *b = vm_pop(); Value *a = vm_pop(); \
-        if (a->type == VAL_NUM && b->type == VAL_NUM) \
-            vm_push(make_num(num_guard(a->data.num OP b->data.num))); \
-        else { \
+        if (a->type == VAL_NUM && b->type == VAL_NUM) { \
+            double r = num_guard(a->data.num OP b->data.num); \
+            if (NUM_REUSE(a)) { a->data.num = r; vm_push(a); val_decref(b); DISPATCH(); } \
+            if (NUM_REUSE(b)) { b->data.num = r; vm_push(b); val_decref(a); DISPATCH(); } \
+            vm_push(make_num(r)); \
+        } else { \
             runtime_error(current_line, "cannot apply '%s' to %s and %s", \
                 OPNAME, val_type_name(a->type), val_type_name(b->type)); \
             vm_push(make_num(0)); \
@@ -289,7 +349,10 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 fprintf(stderr, "Warning line %d: division by zero\n", current_line);
                 vm_push(make_num(0));
             } else {
-                vm_push(make_num(num_guard(a->data.num / b->data.num)));
+                double r = num_guard(a->data.num / b->data.num);
+                if (NUM_REUSE(a)) { a->data.num = r; vm_push(a); val_decref(b); DISPATCH(); }
+                if (NUM_REUSE(b)) { b->data.num = r; vm_push(b); val_decref(a); DISPATCH(); }
+                vm_push(make_num(r));
             }
         } else {
             runtime_error(current_line, "cannot apply '/' to %s and %s",
@@ -302,9 +365,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(MOD): {
         Value *b = vm_pop(); Value *a = vm_pop();
-        if (a->type == VAL_NUM && b->type == VAL_NUM && b->data.num != 0.0)
-            vm_push(make_num(num_guard(fmod(a->data.num, b->data.num))));
-        else {
+        if (a->type == VAL_NUM && b->type == VAL_NUM && b->data.num != 0.0) {
+            double r = num_guard(fmod(a->data.num, b->data.num));
+            if (NUM_REUSE(a)) { a->data.num = r; vm_push(a); val_decref(b); DISPATCH(); }
+            if (NUM_REUSE(b)) { b->data.num = r; vm_push(b); val_decref(a); DISPATCH(); }
+            vm_push(make_num(r));
+        } else {
             if (!(a->type == VAL_NUM && b->type == VAL_NUM))
                 runtime_error(current_line, "cannot apply '%%' to %s and %s",
                     val_type_name(a->type), val_type_name(b->type));
@@ -317,9 +383,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 #define INT_BINOP(NAME, OP) \
     CASE(NAME): { \
         Value *b = vm_pop(); Value *a = vm_pop(); \
-        if (a->type == VAL_NUM && b->type == VAL_NUM) \
-            vm_push(make_num((double)((int64_t)a->data.num OP (int64_t)b->data.num))); \
-        else vm_push(make_num(0)); \
+        if (a->type == VAL_NUM && b->type == VAL_NUM) { \
+            double r = (double)((int64_t)a->data.num OP (int64_t)b->data.num); \
+            if (NUM_REUSE(a)) { a->data.num = r; vm_push(a); val_decref(b); DISPATCH(); } \
+            if (NUM_REUSE(b)) { b->data.num = r; vm_push(b); val_decref(a); DISPATCH(); } \
+            vm_push(make_num(r)); \
+        } else vm_push(make_num(0)); \
         val_decref(a); val_decref(b); \
         DISPATCH(); \
     }
@@ -334,8 +403,10 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(NEG): {
         Value *v = vm_pop();
-        if (v->type == VAL_NUM) vm_push(make_num(-v->data.num));
-        else {
+        if (v->type == VAL_NUM) {
+            if (NUM_REUSE(v)) { v->data.num = -v->data.num; vm_push(v); DISPATCH(); }
+            vm_push(make_num(-v->data.num));
+        } else {
             runtime_error(current_line, "cannot negate %s", val_type_name(v->type));
             vm_push(make_num(0));
         }
@@ -352,9 +423,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(BNOT): {
         Value *v = vm_pop();
-        if (v->type == VAL_NUM)
-            vm_push(make_num((double)(~(int64_t)v->data.num)));
-        else vm_push(make_num(0));
+        if (v->type == VAL_NUM) {
+            double r = (double)(~(int64_t)v->data.num);
+            if (NUM_REUSE(v)) { v->data.num = r; vm_push(v); DISPATCH(); }
+            vm_push(make_num(r));
+        } else vm_push(make_num(0));
         val_decref(v);
         DISPATCH();
     }
@@ -424,6 +497,24 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         if (slot < (uint16_t)e->count) {
             val_incref(v);
             val_decref(e->values[slot]);
+            e->values[slot] = v;
+        } else {
+            /* Grow env to accommodate compiler-assigned local slots */
+            while (slot >= (uint16_t)e->capacity) {
+                int new_cap = e->capacity ? e->capacity * 2 : 8;
+                e->names  = realloc(e->names, new_cap * sizeof(char *));
+                e->values = realloc(e->values, new_cap * sizeof(Value *));
+                memset(e->names + e->capacity, 0, (new_cap - e->capacity) * sizeof(char *));
+                memset(e->values + e->capacity, 0, (new_cap - e->capacity) * sizeof(Value *));
+                e->capacity = new_cap;
+            }
+            /* Fill any gap slots with null */
+            while (e->count <= slot) {
+                e->names[e->count] = NULL;
+                e->values[e->count] = NULL;
+                e->count++;
+            }
+            val_incref(v);
             e->values[slot] = v;
         }
         DISPATCH();
@@ -803,7 +894,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         Value *target = vm_pop();
         Value *result = make_null();
         if (target->type == VAL_DICT) {
-            Value *v = dict_get_hashed(target, key, h);
+            Value *v = dict_get_cached(target, key, h);
             if (v) { result = v; val_incref(result); }
         } else if (target->type != VAL_NULL) {
             runtime_error(current_line, "cannot access field '%s' on %s",
@@ -821,7 +912,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
         Value *val = vm_pop(); Value *target = vm_pop();
         if (target->type == VAL_DICT)
-            dict_set_hashed(target, key, h, val);
+            dict_set_cached(target, key, h, val);
         else if (target->type != VAL_NULL)
             runtime_error(current_line, "cannot set field '%s' on %s",
                 key, val_type_name(target->type));
@@ -878,10 +969,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     }
 
     CASE(LOOP_ENV_FRESH): {
-        /* Create a child env for this loop iteration.
-         * If the current env is already a loop-iteration env (not the
-         * original frame env), save the parent and create a new child.
-         * This ensures each iteration has its own scope for closures. */
+        /* Create a child env for this loop iteration. */
         Env *parent = frame->env;
         Env *loop_env = env_new(parent);
         frame->env = loop_env;
