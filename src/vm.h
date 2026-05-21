@@ -147,6 +147,7 @@ typedef struct {
     Env       *env;             /* current env (may be loop-fresh child) */
     Env       *fn_env;          /* function's original env (for GET_LOCAL/SET_LOCAL) */
     Value     *closure_val;     /* the VAL_FN that was called */
+    int        owns_env;        /* 1 if frame owns its env (free on return) */
     int        is_try;          /* 1 if try-catch frame */
     uint8_t   *catch_ip;        /* where to jump on error */
     int        catch_bp;        /* stack depth to restore */
@@ -154,7 +155,7 @@ typedef struct {
 
 /* ---- VM State ---- */
 #define VM_STACK_MAX  65536
-#define VM_FRAMES_MAX 512
+#define VM_FRAMES_MAX 4096
 
 typedef struct {
     Value     *stack[VM_STACK_MAX];

@@ -115,13 +115,15 @@ static Value *make_iter_state(Value *iterable) {
 /* ---- Main execution loop ---- */
 
 static Value *vm_run(EigsChunk *chunk, Env *env) {
+    int base_frame = g_vm.frame_count; /* track entry point for re-entrant returns */
     CallFrame *frame = &g_vm.frames[g_vm.frame_count++];
     frame->chunk = chunk;
     frame->ip = chunk->code;
     frame->bp = g_vm.sp;
     frame->env = env;
-    frame->fn_env = env; /* save original function env for GET_LOCAL/SET_LOCAL */
+    frame->fn_env = env;
     frame->closure_val = NULL;
+    frame->owns_env = 0;
     frame->is_try = 0;
     frame->catch_ip = NULL;
     frame->catch_bp = 0;
@@ -560,57 +562,67 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             DISPATCH();
         }
 
-        if (fn_val->type == VAL_FN) {
-            /* Save current frame state */
-            frame->ip = ip;
+        if (fn_val->type == VAL_FN && fn_val->data.fn.body_count == -1) {
+            /* Bytecode function — non-recursive call.
+             * Push new frame and continue dispatch loop. */
+            EigsChunk *fn_chunk = (EigsChunk *)fn_val->data.fn.body;
+            Env *call_env = env_new(fn_val->data.fn.closure);
 
-            if (fn_val->data.fn.body_count == -1) {
-                /* Bytecode function */
-                EigsChunk *fn_chunk = (EigsChunk *)fn_val->data.fn.body;
-                Env *call_env = env_new(fn_val->data.fn.closure);
-
-                /* Bind parameters into the Env AND set up stack locals.
-                 * The function body uses OP_GET_NAME for now (dynamic lookup).
-                 * TODO: optimize to stack-based locals once the basic path works. */
-                int param_count = fn_val->data.fn.param_count;
-                if (param_count > 1 && argc > 0) {
-                    int bound = param_count < (int)argc ? param_count : (int)argc;
-                    for (int i = 0; i < bound; i++)
-                        env_set_local(call_env, fn_val->data.fn.params[i],
-                                      g_vm.stack[g_vm.sp - argc + i]);
-                } else if (param_count == 1) {
-                    if (argc == 1) {
-                        env_set_local(call_env, fn_val->data.fn.params[0],
-                                      g_vm.stack[g_vm.sp - 1]);
-                    } else {
-                        Value *arg_list = make_list(argc);
-                        for (int i = 0; i < argc; i++)
-                            list_append(arg_list, g_vm.stack[g_vm.sp - argc + i]);
-                        env_set_local(call_env, fn_val->data.fn.params[0], arg_list);
-                        val_decref(arg_list);
-                    }
+            int param_count = fn_val->data.fn.param_count;
+            if (param_count > 1 && argc > 0) {
+                int bound = param_count < (int)argc ? param_count : (int)argc;
+                for (int i = 0; i < bound; i++)
+                    env_set_local(call_env, fn_val->data.fn.params[i],
+                                  g_vm.stack[g_vm.sp - argc + i]);
+            } else if (param_count == 1) {
+                if (argc == 1) {
+                    env_set_local(call_env, fn_val->data.fn.params[0],
+                                  g_vm.stack[g_vm.sp - 1]);
+                } else {
+                    Value *arg_list = make_list(argc);
+                    for (int i = 0; i < argc; i++)
+                        list_append(arg_list, g_vm.stack[g_vm.sp - argc + i]);
+                    env_set_local(call_env, fn_val->data.fn.params[0], arg_list);
+                    val_decref(arg_list);
                 }
-
-                /* Pop args + fn from stack */
-                for (int i = 0; i < argc; i++)
-                    val_decref(vm_pop());
-                val_decref(vm_pop());
-
-                Value *result = vm_run(fn_chunk, call_env);
-                env_free(call_env);
-                if (!result) result = make_null();
-                vm_push(result);
-            } else {
-                /* AST-based function — should not happen after bytecode migration */
-                for (int i = 0; i < argc; i++) val_decref(vm_pop());
-                val_decref(vm_pop());
-                vm_push(make_null());
             }
 
-            /* Restore frame */
-            frame = &g_vm.frames[g_vm.frame_count - 1];
+            /* Pop args + fn from stack */
+            for (int i = 0; i < argc; i++)
+                val_decref(vm_pop());
+            val_decref(vm_pop());
+
+            /* Save current frame and push new one */
+            frame->ip = ip;
+            if (g_vm.frame_count >= VM_FRAMES_MAX) {
+                runtime_error(current_line, "call stack overflow");
+                env_free(call_env);
+                vm_push(make_null());
+                DISPATCH();
+            }
+            frame = &g_vm.frames[g_vm.frame_count++];
+            frame->chunk = fn_chunk;
+            frame->ip = fn_chunk->code;
+            frame->bp = g_vm.sp;
+            frame->env = call_env;
+            frame->fn_env = call_env;
+            frame->closure_val = fn_val;
+            frame->owns_env = 1; /* OP_CALL created this env, free on return */
+            frame->is_try = 0;
+            frame->catch_ip = NULL;
+            frame->catch_bp = 0;
+
+            /* Switch to new frame's bytecode */
             ip = frame->ip;
-            chunk = frame->chunk;
+            chunk = fn_chunk;
+            DISPATCH();
+        }
+
+        if (fn_val->type == VAL_FN) {
+            /* AST-based function — should not happen */
+            for (int i = 0; i < argc; i++) val_decref(vm_pop());
+            val_decref(vm_pop());
+            vm_push(make_null());
             DISPATCH();
         }
 
@@ -629,19 +641,30 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         } else {
             result = make_null();
         }
-        /* Clean up stack back to frame base */
-        while (g_vm.sp > frame->bp) {
+        while (g_vm.sp > frame->bp)
             val_decref(vm_pop());
-        }
+        if (frame->owns_env) env_free(frame->env);
         g_vm.frame_count--;
-        return result;
+        /* Return to C if we've unwound past our entry point */
+        if (g_vm.frame_count <= base_frame) return result;
+        frame = &g_vm.frames[g_vm.frame_count - 1];
+        ip = frame->ip;
+        chunk = frame->chunk;
+        vm_push(result);
+        DISPATCH();
     }
 
     CASE(RETURN_NULL): {
         while (g_vm.sp > frame->bp)
             val_decref(vm_pop());
+        if (frame->owns_env) env_free(frame->env);
         g_vm.frame_count--;
-        return make_null();
+        if (g_vm.frame_count <= base_frame) return make_null();
+        frame = &g_vm.frames[g_vm.frame_count - 1];
+        ip = frame->ip;
+        chunk = frame->chunk;
+        vm_push(make_null());
+        DISPATCH();
     }
 
     /* ---- Data structures ---- */
