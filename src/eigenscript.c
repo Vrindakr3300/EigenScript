@@ -233,6 +233,7 @@ void update_observer(Value *v) {
     v->dH = new_entropy - v->last_entropy;
     v->entropy = new_entropy;
     v->last_entropy = new_entropy;
+    v->obs_age++;
     v->dirty = 0;
 }
 

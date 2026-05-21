@@ -540,9 +540,12 @@ static void compile_node(Compiler *c, ASTNode *node) {
             if (lp->break_count < MAX_BREAK_JUMPS) {
                 lp->break_jumps[lp->break_count++] = emit_jump(c, OP_JUMP, node->line);
             }
+            /* Phantom +1 for stack accounting (dead code follows jump) */
+            adjust_stack(c, 1);
+        } else {
+            /* Break outside loop: emit null (no-op, maintains stack balance) */
+            emit(c, OP_NULL, node->line);
         }
-        /* Pretend we pushed +1 for stack accounting (dead code follows) */
-        adjust_stack(c, 1);
         break;
     }
 
@@ -550,9 +553,12 @@ static void compile_node(Compiler *c, ASTNode *node) {
         if (c->loop_depth > 0) {
             LoopCtx *lp = &c->loops[c->loop_depth - 1];
             emit_loop(c, lp->continue_target, node->line);
+            /* Phantom +1 for stack accounting (dead code follows jump) */
+            adjust_stack(c, 1);
+        } else {
+            /* Continue outside loop: emit null */
+            emit(c, OP_NULL, node->line);
         }
-        /* Pretend we pushed +1 for stack accounting (dead code follows) */
-        adjust_stack(c, 1);
         break;
     }
 
@@ -717,10 +723,11 @@ static void compile_node(Compiler *c, ASTNode *node) {
 
         /* Optional filter */
         int filter_jump = -1;
+        int depth_before_filter = c->stack_depth;
         if (node->data.listcomp.filter) {
             compile_node(c, node->data.listcomp.filter);
             filter_jump = emit_jump(c, OP_JUMP_IF_FALSE, node->line);
-            emit(c, OP_POP, node->line);
+            /* JUMP_IF_FALSE popped the condition */
         }
 
         /* Expression to collect */
@@ -729,11 +736,13 @@ static void compile_node(Compiler *c, ASTNode *node) {
 
         if (filter_jump >= 0) {
             int skip = emit_jump(c, OP_JUMP, node->line);
+            /* False path: JUMP_IF_FALSE already popped condition */
             patch_jump(c, filter_jump);
-            emit(c, OP_POP, node->line);
+            c->stack_depth = depth_before_filter;
             patch_jump(c, skip);
         }
 
+        c->stack_depth = depth_before_filter;
         emit_loop(c, loop_start, node->line);
 
         patch_jump(c, exit_jump);
