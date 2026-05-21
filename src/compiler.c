@@ -645,7 +645,7 @@ static void compile_node(Compiler *c, ASTNode *node) {
 
         compile_node(c, fn_node);
 
-        if (arg_node && arg_node->type == AST_LIST) {
+        if (arg_node && arg_node->type == AST_LIST && arg_node->data.list.count > 1) {
             /* Multi-arg: compile each element as separate stack value */
             for (int i = 0; i < arg_node->data.list.count; i++)
                 compile_node(c, arg_node->data.list.elems[i]);

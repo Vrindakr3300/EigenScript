@@ -549,7 +549,9 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         Value *fn_val = g_vm.stack[g_vm.sp - 1 - argc];
 
         if (fn_val->type == VAL_BUILTIN) {
-            /* Pack args into a list for the builtin */
+            /* Pack args for the builtin.
+             * argc=1: pass raw value (matches tree-walker single-arg behavior)
+             * argc>1: pack into list (matches tree-walker multi-arg behavior) */
             Value *arg;
             if (argc == 1) {
                 arg = g_vm.stack[g_vm.sp - 1];
