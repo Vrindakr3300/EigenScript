@@ -1,8 +1,8 @@
 # Roadmap
 
-Current version: **0.10.0**
+Current version: **0.11.0**
 
-## Sprint: Language Completeness (0.10.x → 0.11.0)
+## Completed Sprint: Language Completeness (0.11.0)
 
 Goal: fix all remaining test failures, make the bytecode VM fully
 compatible with the tree-walker's behavior, improve error handling.

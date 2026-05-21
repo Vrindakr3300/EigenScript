@@ -2,6 +2,38 @@
 
 All notable changes to EigenScript are documented here.
 
+## [0.11.0] — 2026-05-21
+
+### Bytecode VM Completeness
+- **Zero VM bugs remaining.** Fixed all 14 bytecode VM test failures
+  from the 0.10.0 release. The VM is now fully compatible with the
+  tree-walker's behavior across all 92 test files.
+
+### Bug Fixes
+- **Try/catch handler stack**: nested try/catch with rethrow now works
+  correctly (max 8 nested per frame).
+- **Type error reporting**: runtime_error for SUB, MUL, DIV, MOD, NEG
+  on wrong types; DOT_GET/DOT_SET on non-dict; INDEX_GET/INDEX_SET
+  for OOB and non-indexable; ITER_SETUP for non-iterable.
+- **Error message compatibility**: "out of bounds" → "out of range";
+  WHO interrogative returns "number"/"string"/"function" (not short names).
+- **Division by zero**: warning to stderr instead of runtime_error
+  (matches tree-walker behavior).
+- **String concatenation**: string + non-string uses value_to_string
+  instead of returning null.
+- **Builtin result refcount**: sort/append returning their input no
+  longer causes double-free.
+- **Listcomp with filter**: save/restore stack depth at filter branch
+  point (was crashing).
+- **Break/continue outside loop**: emit NULL instead of phantom stack
+  adjust (was corrupting closures containing break).
+- **Observer obs_age**: increment in update_observer (was missing after
+  eval.c → eigenscript.c migration).
+- **1-element list args**: `f of [x]` passes `[x]` as a list, not `x`
+  as a scalar (fixes softmax, mat_det, and similar builtins).
+- **0-param functions**: call_eigs_fn skips param binding when
+  param_count == 0 (was accessing NULL params).
+
 ## [0.10.0] — 2026-05-21
 
 ### Architecture — Bytecode VM
