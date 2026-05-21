@@ -606,6 +606,7 @@ Value* builtin_observe(Value *arg) {
         list_append(list, make_num(0.0));
         return list;
     }
+    observer_ensure_fresh(arg);
     Value *rep = builtin_report(arg);
     list_append(list, rep);
     list_append(list, make_num(arg->entropy));
