@@ -148,9 +148,10 @@ typedef struct {
     Env       *fn_env;          /* function's original env (for GET_LOCAL/SET_LOCAL) */
     Value     *closure_val;     /* the VAL_FN that was called */
     int        owns_env;        /* 1 if frame owns its env (free on return) */
-    int        is_try;          /* 1 if try-catch frame */
-    uint8_t   *catch_ip;        /* where to jump on error */
-    int        catch_bp;        /* stack depth to restore */
+    int        is_try;          /* 1 if any try handler active */
+    /* Try handler stack (supports nested try/catch within a frame) */
+    struct { uint8_t *catch_ip; int catch_bp; } try_handlers[8];
+    int        try_count;       /* number of active try handlers */
 } CallFrame;
 
 /* ---- VM State ---- */

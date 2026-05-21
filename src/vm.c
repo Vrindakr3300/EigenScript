@@ -64,6 +64,7 @@ extern Value* promote_if_arena(Value *v);
  * For now, call the eval.c version via a non-static wrapper. */
 extern void observer_ensure_fresh(Value *v);
 extern Value* builtin_free_val(Value *arg);
+extern const char* val_type_name(ValType t);
 
 /* ---- VM helpers ---- */
 
@@ -125,8 +126,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     frame->closure_val = NULL;
     frame->owns_env = 0;
     frame->is_try = 0;
-    frame->catch_ip = NULL;
-    frame->catch_bp = 0;
+    frame->try_count = 0;
 
     uint8_t *ip = frame->ip;
     int current_line = 0;
@@ -174,14 +174,16 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_LINE] = &&lbl_LINE, [OP_WIDE] = &&lbl_WIDE,
     };
     #define CHECK_ERROR() do { \
-        if (g_has_error && frame->is_try && frame->catch_ip) { \
+        if (g_has_error && frame->try_count > 0) { \
             g_has_error = 0; \
             g_try_depth--; \
-            frame->is_try = 0; \
-            while (g_vm.sp > frame->catch_bp) val_decref(vm_pop()); \
+            frame->try_count--; \
+            uint8_t *_catch_ip = frame->try_handlers[frame->try_count].catch_ip; \
+            int _catch_bp = frame->try_handlers[frame->try_count].catch_bp; \
+            frame->is_try = (frame->try_count > 0); \
+            while (g_vm.sp > _catch_bp) val_decref(vm_pop()); \
             vm_push(make_str(g_error_msg)); \
-            ip = frame->catch_ip; \
-            frame->catch_ip = NULL; \
+            ip = _catch_ip; \
         } \
     } while(0)
     #define DISPATCH() do { CHECK_ERROR(); goto *dispatch_table[*ip++]; } while(0)
@@ -248,18 +250,22 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         DISPATCH();
     }
 
-#define NUM_BINOP(NAME, OP) \
+#define NUM_BINOP(NAME, OP, OPNAME) \
     CASE(NAME): { \
         Value *b = vm_pop(); Value *a = vm_pop(); \
         if (a->type == VAL_NUM && b->type == VAL_NUM) \
             vm_push(make_num(num_guard(a->data.num OP b->data.num))); \
-        else vm_push(make_num(0)); \
+        else { \
+            runtime_error(current_line, "cannot apply '%s' to %s and %s", \
+                OPNAME, val_type_name(a->type), val_type_name(b->type)); \
+            vm_push(make_num(0)); \
+        } \
         val_decref(a); val_decref(b); \
         DISPATCH(); \
     }
 
-    NUM_BINOP(SUB, -)
-    NUM_BINOP(MUL, *)
+    NUM_BINOP(SUB, -, "-")
+    NUM_BINOP(MUL, *, "*")
 
     CASE(DIV): {
         Value *b = vm_pop(); Value *a = vm_pop();
@@ -270,7 +276,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             } else {
                 vm_push(make_num(num_guard(a->data.num / b->data.num)));
             }
-        } else vm_push(make_num(0));
+        } else {
+            runtime_error(current_line, "cannot apply '/' to %s and %s",
+                val_type_name(a->type), val_type_name(b->type));
+            vm_push(make_num(0));
+        }
         val_decref(a); val_decref(b);
         DISPATCH();
     }
@@ -279,7 +289,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         Value *b = vm_pop(); Value *a = vm_pop();
         if (a->type == VAL_NUM && b->type == VAL_NUM && b->data.num != 0.0)
             vm_push(make_num(num_guard(fmod(a->data.num, b->data.num))));
-        else vm_push(make_num(0));
+        else {
+            if (!(a->type == VAL_NUM && b->type == VAL_NUM))
+                runtime_error(current_line, "cannot apply '%%' to %s and %s",
+                    val_type_name(a->type), val_type_name(b->type));
+            vm_push(make_num(0));
+        }
         val_decref(a); val_decref(b);
         DISPATCH();
     }
@@ -305,7 +320,10 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     CASE(NEG): {
         Value *v = vm_pop();
         if (v->type == VAL_NUM) vm_push(make_num(-v->data.num));
-        else vm_push(make_num(0));
+        else {
+            runtime_error(current_line, "cannot negate %s", val_type_name(v->type));
+            vm_push(make_num(0));
+        }
         val_decref(v);
         DISPATCH();
     }
@@ -546,19 +564,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             else val_incref(result);
             vm_push(result);
 
-            /* Check for errors */
-            if (g_has_error && frame->is_try && frame->catch_ip) {
-                g_has_error = 0;
-                g_try_depth--;
-                frame->is_try = 0;
-                /* Restore stack to try entry point */
-                while (g_vm.sp > frame->catch_bp)
-                    val_decref(vm_pop());
-                /* Push error message for catch block */
-                vm_push(make_str(g_error_msg));
-                ip = frame->catch_ip;
-                frame->catch_ip = NULL;
-            }
+            /* Check for errors from builtins */
+            CHECK_ERROR();
             DISPATCH();
         }
 
@@ -609,8 +616,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->closure_val = fn_val;
             frame->owns_env = 1; /* OP_CALL created this env, free on return */
             frame->is_try = 0;
-            frame->catch_ip = NULL;
-            frame->catch_bp = 0;
+            frame->try_count = 0;
 
             /* Switch to new frame's bytecode */
             ip = frame->ip;
@@ -712,7 +718,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 result = target->data.list.items[i];
                 val_incref(result);
             } else {
-                runtime_error(current_line, "index %d out of bounds (list length %d)", i, target->data.list.count);
+                runtime_error(current_line, "index %d out of range (list length %d)", i, target->data.list.count);
             }
         } else if (target->type == VAL_DICT && idx->type == VAL_STR) {
             Value *v = dict_get(target, idx->data.str);
@@ -722,11 +728,17 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             if (i >= 0 && i < (int)strlen(target->data.str)) {
                 char buf[2] = { target->data.str[i], 0 };
                 result = make_str(buf);
+            } else {
+                runtime_error(current_line, "string index %d out of range (length %d)", i, (int)strlen(target->data.str));
             }
         } else if (target->type == VAL_BUFFER && idx->type == VAL_NUM) {
             int i = (int)idx->data.num;
             if (i >= 0 && i < target->data.buffer.count)
                 result = make_num(target->data.buffer.data[i]);
+            else
+                runtime_error(current_line, "buffer index %d out of range (length %d)", i, target->data.buffer.count);
+        } else if (target->type != VAL_NULL) {
+            runtime_error(current_line, "cannot index %s", val_type_name(target->type));
         }
         val_decref(target); val_decref(idx);
         vm_push(result);
@@ -741,13 +753,19 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 val_incref(val);
                 val_decref(target->data.list.items[i]);
                 target->data.list.items[i] = val;
+            } else {
+                runtime_error(current_line, "index %d out of range (list length %d)", i, target->data.list.count);
             }
         } else if (target->type == VAL_BUFFER && idx->type == VAL_NUM) {
             int i = (int)idx->data.num;
             if (i >= 0 && i < target->data.buffer.count && val->type == VAL_NUM)
                 target->data.buffer.data[i] = (int)val->data.num;
+            else if (i < 0 || i >= target->data.buffer.count)
+                runtime_error(current_line, "buffer index %d out of range (length %d)", i, target->data.buffer.count);
         } else if (target->type == VAL_DICT && idx->type == VAL_STR) {
             dict_set(target, idx->data.str, val);
+        } else if (target->type != VAL_NULL) {
+            runtime_error(current_line, "cannot index %s for assignment", val_type_name(target->type));
         }
         val_decref(target); val_decref(idx);
         val_incref(val);
@@ -764,6 +782,9 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         if (target->type == VAL_DICT) {
             Value *v = dict_get(target, key);
             if (v) { result = v; val_incref(result); }
+        } else if (target->type != VAL_NULL) {
+            runtime_error(current_line, "cannot access field '%s' on %s",
+                key, val_type_name(target->type));
         }
         val_decref(target);
         vm_push(result);
@@ -776,6 +797,9 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         Value *val = vm_pop(); Value *target = vm_pop();
         if (target->type == VAL_DICT)
             dict_set(target, key, val);
+        else if (target->type != VAL_NULL)
+            runtime_error(current_line, "cannot set field '%s' on %s",
+                key, val_type_name(target->type));
         val_decref(target);
         val_incref(val);
         vm_push(val);
@@ -787,6 +811,10 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(ITER_SETUP): {
         Value *iterable = vm_pop();
+        if (iterable && iterable->type != VAL_LIST && iterable->type != VAL_BUFFER) {
+            runtime_error(current_line, "'for' requires a list or buffer, got %s",
+                val_type_name(iterable->type));
+        }
         Value *state = make_iter_state(iterable);
         val_decref(iterable);
         vm_push(state);
@@ -859,17 +887,19 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     CASE(TRY_BEGIN): {
         uint16_t catch_offset = read_u16(ip); ip += 2;
         g_try_depth++;
-        /* Save error handler: catch target IP and stack depth */
+        if (frame->try_count < 8) {
+            frame->try_handlers[frame->try_count].catch_ip = ip + catch_offset;
+            frame->try_handlers[frame->try_count].catch_bp = g_vm.sp;
+            frame->try_count++;
+        }
         frame->is_try = 1;
-        frame->catch_ip = ip + catch_offset;
-        frame->catch_bp = g_vm.sp;
         DISPATCH();
     }
 
     CASE(TRY_END): {
         g_try_depth--;
-        frame->is_try = 0;
-        frame->catch_ip = NULL;
+        if (frame->try_count > 0) frame->try_count--;
+        frame->is_try = (frame->try_count > 0);
         DISPATCH();
     }
 
@@ -898,15 +928,16 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             else if (v && v->type == VAL_BUFFER) { result = make_num(v->data.buffer.count); }
             else { result = make_num(0); }
             break;
-        case 1: /* who */
+        case 1: /* who — returns descriptive type name */
             if (v) result = make_str(
-                v->type == VAL_NUM ? "num" :
-                v->type == VAL_STR ? "str" :
+                v->type == VAL_NUM ? "number" :
+                v->type == VAL_STR ? "string" :
                 v->type == VAL_LIST ? "list" :
                 v->type == VAL_DICT ? "dict" :
-                v->type == VAL_FN ? "fn" :
+                v->type == VAL_FN ? "function" :
                 v->type == VAL_BUILTIN ? "builtin" :
-                v->type == VAL_BUFFER ? "buffer" : "unknown");
+                v->type == VAL_BUFFER ? "buffer" :
+                v->type == VAL_NULL ? "none" : "unknown");
             break;
         case 2: /* when */ result = make_num(v ? v->obs_age : 0); break;
         case 3: /* where */ result = make_num(v ? v->entropy : 0); break;
