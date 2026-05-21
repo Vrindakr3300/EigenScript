@@ -111,6 +111,13 @@ typedef enum {
     OP_WIDE,            /* next operand is 32-bit */
     OP_DISPATCH,        /* pop arg, key, table; call table[key](arg) inline */
 
+    /* Superinstructions */
+    OP_LOCAL_DOT_GET,   /* [slot:16][name_idx:16] push local[slot].name */
+    OP_LOCAL_DOT_SET,   /* [slot:16][name_idx:16] TOS = local[slot].name = TOS */
+    OP_LOCAL_IDX_GET,   /* [slot:16][idx:16] push local[slot][idx] */
+    OP_LOCAL_IDX_DOT_GET, /* [slot:16][idx:16][name_idx:16] push local[slot][idx].name */
+    OP_LOCAL_IDX_DOT_SET, /* [slot:16][idx:16][name_idx:16] local[slot][idx].name = TOS */
+
     OP_COUNT            /* sentinel — number of opcodes */
 } OpCode;
 

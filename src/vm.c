@@ -225,6 +225,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_LISTCOMP_APPEND] = &&lbl_LISTCOMP_APPEND,
         [OP_LINE] = &&lbl_LINE, [OP_WIDE] = &&lbl_WIDE,
         [OP_DISPATCH] = &&lbl_DISPATCH,
+        [OP_LOCAL_DOT_GET] = &&lbl_LOCAL_DOT_GET,
+        [OP_LOCAL_DOT_SET] = &&lbl_LOCAL_DOT_SET,
+        [OP_LOCAL_IDX_GET] = &&lbl_LOCAL_IDX_GET,
+        [OP_LOCAL_IDX_DOT_GET] = &&lbl_LOCAL_IDX_DOT_GET,
+        [OP_LOCAL_IDX_DOT_SET] = &&lbl_LOCAL_IDX_DOT_SET,
     };
     #define CHECK_ERROR() do { \
         if (g_has_error && frame->try_count > 0) { \
@@ -920,6 +925,103 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         val_incref(val);
         vm_push(val);
         val_decref(val);
+        DISPATCH();
+    }
+
+    /* ---- Superinstructions ---- */
+
+    CASE(LOCAL_DOT_GET): {
+        /* Fused GET_LOCAL + DOT_GET: push local[slot].field */
+        uint16_t slot = read_u16(ip); ip += 2;
+        uint16_t name_idx = read_u16(ip); ip += 2;
+        Env *e = frame->fn_env;
+        Value *target = (slot < (uint16_t)e->count) ? e->values[slot] : NULL;
+        Value *result = make_null();
+        if (target && target->type == VAL_DICT) {
+            const char *key = chunk->constants[name_idx]->data.str;
+            uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
+            if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
+            Value *v = dict_get_cached(target, key, h);
+            if (v) { result = v; val_incref(result); }
+        }
+        vm_push(result);
+        DISPATCH();
+    }
+
+    CASE(LOCAL_DOT_SET): {
+        /* Fused GET_LOCAL + DOT_SET: local[slot].field = TOS (keep on stack) */
+        uint16_t slot = read_u16(ip); ip += 2;
+        uint16_t name_idx = read_u16(ip); ip += 2;
+        Value *val = vm_peek(0);
+        Env *e = frame->fn_env;
+        Value *target = (slot < (uint16_t)e->count) ? e->values[slot] : NULL;
+        if (target && target->type == VAL_DICT) {
+            const char *key = chunk->constants[name_idx]->data.str;
+            uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
+            if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
+            dict_set_cached(target, key, h, val);
+        }
+        DISPATCH();
+    }
+
+    CASE(LOCAL_IDX_GET): {
+        /* Fused GET_LOCAL + CONST(int) + INDEX_GET: push local[slot][idx] */
+        uint16_t slot = read_u16(ip); ip += 2;
+        uint16_t idx = read_u16(ip); ip += 2;
+        Env *e = frame->fn_env;
+        Value *target = (slot < (uint16_t)e->count) ? e->values[slot] : NULL;
+        Value *result = make_null();
+        if (target) {
+            if (target->type == VAL_LIST && idx < (uint16_t)target->data.list.count) {
+                result = target->data.list.items[idx];
+                val_incref(result);
+            } else if (target->type == VAL_BUFFER && idx < (uint16_t)target->data.buffer.count) {
+                result = make_num(target->data.buffer.data[idx]);
+            }
+        }
+        vm_push(result);
+        DISPATCH();
+    }
+
+    CASE(LOCAL_IDX_DOT_GET): {
+        /* Fused local[idx].field — the DMG hot path (ctx[0].a, ctx[1].data, etc) */
+        uint16_t slot = read_u16(ip); ip += 2;
+        uint16_t list_idx = read_u16(ip); ip += 2;
+        uint16_t name_idx = read_u16(ip); ip += 2;
+        Env *e = frame->fn_env;
+        Value *target = (slot < (uint16_t)e->count) ? e->values[slot] : NULL;
+        Value *result = make_null();
+        if (target && target->type == VAL_LIST && list_idx < (uint16_t)target->data.list.count) {
+            Value *dict = target->data.list.items[list_idx];
+            if (dict && dict->type == VAL_DICT) {
+                const char *key = chunk->constants[name_idx]->data.str;
+                uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
+                if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
+                Value *v = dict_get_cached(dict, key, h);
+                if (v) { result = v; val_incref(result); }
+            }
+        }
+        vm_push(result);
+        DISPATCH();
+    }
+
+    CASE(LOCAL_IDX_DOT_SET): {
+        /* Fused local[idx].field = TOS — the DMG hot path (ctx[0].a is X) */
+        uint16_t slot = read_u16(ip); ip += 2;
+        uint16_t list_idx = read_u16(ip); ip += 2;
+        uint16_t name_idx = read_u16(ip); ip += 2;
+        Value *val = vm_peek(0);
+        Env *e = frame->fn_env;
+        Value *target = (slot < (uint16_t)e->count) ? e->values[slot] : NULL;
+        if (target && target->type == VAL_LIST && list_idx < (uint16_t)target->data.list.count) {
+            Value *dict = target->data.list.items[list_idx];
+            if (dict && dict->type == VAL_DICT) {
+                const char *key = chunk->constants[name_idx]->data.str;
+                uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
+                if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
+                dict_set_cached(dict, key, h, val);
+            }
+        }
         DISPATCH();
     }
 

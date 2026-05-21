@@ -99,6 +99,17 @@ static int op_stack_effect(uint8_t op) {
     /* Dot set: pop value, pop target, push value = -1 */
     case OP_DOT_SET:
         return -1;
+    /* Superinstructions */
+    case OP_LOCAL_DOT_GET:  /* push result = +1 */
+        return 1;
+    case OP_LOCAL_DOT_SET:  /* peek TOS, write to local.field = 0 */
+        return 0;
+    case OP_LOCAL_IDX_GET:  /* push result = +1 */
+        return 1;
+    case OP_LOCAL_IDX_DOT_GET:  /* push result = +1 */
+        return 1;
+    case OP_LOCAL_IDX_DOT_SET:  /* peek TOS, write = 0 */
+        return 0;
     /* Index set: pop value, pop index, pop target, push value = -2 */
     case OP_INDEX_SET:
         return -2;
@@ -155,6 +166,21 @@ static void emit_u16(Compiler *c, uint16_t val, int line) {
 static void emit_op_u16(Compiler *c, uint8_t op, uint16_t arg, int line) {
     chunk_emit(c->chunk, op, line);
     chunk_emit_u16(c->chunk, arg, line);
+    adjust_stack(c, op_stack_effect(op));
+}
+
+static void emit_op_u16_u16(Compiler *c, uint8_t op, uint16_t arg1, uint16_t arg2, int line) {
+    chunk_emit(c->chunk, op, line);
+    chunk_emit_u16(c->chunk, arg1, line);
+    chunk_emit_u16(c->chunk, arg2, line);
+    adjust_stack(c, op_stack_effect(op));
+}
+
+static void emit_op_u16_u16_u16(Compiler *c, uint8_t op, uint16_t a1, uint16_t a2, uint16_t a3, int line) {
+    chunk_emit(c->chunk, op, line);
+    chunk_emit_u16(c->chunk, a1, line);
+    chunk_emit_u16(c->chunk, a2, line);
+    chunk_emit_u16(c->chunk, a3, line);
     adjust_stack(c, op_stack_effect(op));
 }
 
@@ -700,6 +726,23 @@ static void compile_node(Compiler *c, ASTNode *node) {
     }
 
     case AST_INDEX: {
+        /* Superinstruction: local[const_int] → OP_LOCAL_IDX_GET */
+        if (c->enclosing &&
+            node->data.index.target->type == AST_IDENT &&
+            node->data.index.index->type == AST_NUM) {
+            double dv = node->data.index.index->data.num;
+            int iv = (int)dv;
+            if (iv == dv && iv >= 0 && iv <= 0xFFFF) {
+                const char *tname = node->data.index.target->data.ident.name;
+                uint32_t th = node->data.index.target->name_hash;
+                if (th == 0) th = env_hash_name(tname);
+                int slot = resolve_local(c, tname, th);
+                if (slot >= 0) {
+                    emit_op_u16_u16(c, OP_LOCAL_IDX_GET, (uint16_t)slot, (uint16_t)iv, node->line);
+                    break;
+                }
+            }
+        }
         compile_node(c, node->data.index.target);
         compile_node(c, node->data.index.index);
         emit(c, OP_INDEX_GET, node->line);
@@ -715,6 +758,39 @@ static void compile_node(Compiler *c, ASTNode *node) {
     }
 
     case AST_DOT: {
+        /* Superinstruction: local[const].field → OP_LOCAL_IDX_DOT_GET */
+        if (c->enclosing && node->data.dot.target->type == AST_INDEX) {
+            ASTNode *idx_node = node->data.dot.target;
+            if (idx_node->data.index.target->type == AST_IDENT &&
+                idx_node->data.index.index->type == AST_NUM) {
+                double dv = idx_node->data.index.index->data.num;
+                int iv = (int)dv;
+                if (iv == dv && iv >= 0 && iv <= 0xFFFF) {
+                    const char *tname = idx_node->data.index.target->data.ident.name;
+                    uint32_t th = idx_node->data.index.target->name_hash;
+                    if (th == 0) th = env_hash_name(tname);
+                    int slot = resolve_local(c, tname, th);
+                    if (slot >= 0) {
+                        int name_idx = add_string_constant(c, node->data.dot.key);
+                        emit_op_u16_u16_u16(c, OP_LOCAL_IDX_DOT_GET,
+                            (uint16_t)slot, (uint16_t)iv, (uint16_t)name_idx, node->line);
+                        break;
+                    }
+                }
+            }
+        }
+        /* Superinstruction: if target is a local, fuse GET_LOCAL + DOT_GET */
+        if (c->enclosing && node->data.dot.target->type == AST_IDENT) {
+            const char *tname = node->data.dot.target->data.ident.name;
+            uint32_t th = node->data.dot.target->name_hash;
+            if (th == 0) th = env_hash_name(tname);
+            int slot = resolve_local(c, tname, th);
+            if (slot >= 0) {
+                int idx = add_string_constant(c, node->data.dot.key);
+                emit_op_u16_u16(c, OP_LOCAL_DOT_GET, (uint16_t)slot, (uint16_t)idx, node->line);
+                break;
+            }
+        }
         compile_node(c, node->data.dot.target);
         int idx = add_string_constant(c, node->data.dot.key);
         emit_op_u16(c, OP_DOT_GET, (uint16_t)idx, node->line);
@@ -722,6 +798,41 @@ static void compile_node(Compiler *c, ASTNode *node) {
     }
 
     case AST_DOT_ASSIGN: {
+        /* Superinstruction: local[const].field = expr → OP_LOCAL_IDX_DOT_SET */
+        if (c->enclosing && node->data.dot_assign.target->type == AST_INDEX) {
+            ASTNode *idx_node = node->data.dot_assign.target;
+            if (idx_node->data.index.target->type == AST_IDENT &&
+                idx_node->data.index.index->type == AST_NUM) {
+                double dv = idx_node->data.index.index->data.num;
+                int iv = (int)dv;
+                if (iv == dv && iv >= 0 && iv <= 0xFFFF) {
+                    const char *tname = idx_node->data.index.target->data.ident.name;
+                    uint32_t th = idx_node->data.index.target->name_hash;
+                    if (th == 0) th = env_hash_name(tname);
+                    int slot = resolve_local(c, tname, th);
+                    if (slot >= 0) {
+                        compile_node(c, node->data.dot_assign.expr);
+                        int name_idx = add_string_constant(c, node->data.dot_assign.key);
+                        emit_op_u16_u16_u16(c, OP_LOCAL_IDX_DOT_SET,
+                            (uint16_t)slot, (uint16_t)iv, (uint16_t)name_idx, node->line);
+                        break;
+                    }
+                }
+            }
+        }
+        /* Superinstruction: if target is a local, fuse GET_LOCAL + DOT_SET */
+        if (c->enclosing && node->data.dot_assign.target->type == AST_IDENT) {
+            const char *tname = node->data.dot_assign.target->data.ident.name;
+            uint32_t th = node->data.dot_assign.target->name_hash;
+            if (th == 0) th = env_hash_name(tname);
+            int slot = resolve_local(c, tname, th);
+            if (slot >= 0) {
+                compile_node(c, node->data.dot_assign.expr);
+                int idx = add_string_constant(c, node->data.dot_assign.key);
+                emit_op_u16_u16(c, OP_LOCAL_DOT_SET, (uint16_t)slot, (uint16_t)idx, node->line);
+                break;
+            }
+        }
         compile_node(c, node->data.dot_assign.target);
         compile_node(c, node->data.dot_assign.expr);
         int idx = add_string_constant(c, node->data.dot_assign.key);
