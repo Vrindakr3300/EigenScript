@@ -120,6 +120,7 @@ typedef struct EigsChunk {
     int      code_cap;
 
     Value  **constants;         /* constant pool */
+    uint32_t *const_hashes;    /* cached hashes for string constants */
     int      const_count;
     int      const_cap;
 

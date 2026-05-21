@@ -16,6 +16,7 @@ EigsChunk *chunk_new(const char *name) {
     c->code = xcalloc(c->code_cap, 1);
     c->const_cap = 32;
     c->constants = xcalloc(c->const_cap, sizeof(Value *));
+    c->const_hashes = xcalloc(c->const_cap, sizeof(uint32_t));
     c->lines_cap = 256;
     c->lines = xcalloc(c->lines_cap, sizeof(int));
     c->fn_cap = 8;
@@ -30,6 +31,7 @@ void chunk_free(EigsChunk *chunk) {
     for (int i = 0; i < chunk->const_count; i++)
         val_decref(chunk->constants[i]);
     free(chunk->constants);
+    free(chunk->const_hashes);
     free(chunk->lines);
     for (int i = 0; i < chunk->fn_count; i++)
         chunk_free(chunk->functions[i]);
@@ -100,6 +102,10 @@ int chunk_add_constant(EigsChunk *chunk, Value *val) {
         chunk->const_cap *= 2;
         chunk->constants = realloc(chunk->constants,
                                    chunk->const_cap * sizeof(Value *));
+        chunk->const_hashes = realloc(chunk->const_hashes,
+                                      chunk->const_cap * sizeof(uint32_t));
+        memset(chunk->const_hashes + chunk->const_count, 0,
+               (chunk->const_cap - chunk->const_count) * sizeof(uint32_t));
     }
     val_incref(val);
     chunk->constants[chunk->const_count] = val;

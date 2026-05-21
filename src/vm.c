@@ -65,6 +65,8 @@ extern Value* promote_if_arena(Value *v);
 extern void observer_ensure_fresh(Value *v);
 extern Value* builtin_free_val(Value *arg);
 extern const char* val_type_name(ValType t);
+extern Value* dict_get_hashed(Value *dict, const char *key, uint32_t h);
+extern void dict_set_hashed(Value *dict, const char *key, uint32_t h, Value *val);
 
 /* ---- VM helpers ---- */
 
@@ -429,7 +431,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     CASE(GET_NAME): {
         uint16_t idx = read_u16(ip); ip += 2;
         const char *name = chunk->constants[idx]->data.str;
-        uint32_t h = env_hash_name(name);
+        uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
+        if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
         Value *v = env_get_hashed(frame->env, name, h);
         if (!v) {
             runtime_error(current_line, "undefined variable '%s'", name);
@@ -444,7 +447,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     CASE(SET_NAME): {
         uint16_t idx = read_u16(ip); ip += 2;
         const char *name = chunk->constants[idx]->data.str;
-        uint32_t h = env_hash_name(name);
+        uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
+        if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
         Value *v = vm_peek(0);
         env_set_hashed(frame->env, name, h, v);
         DISPATCH();
@@ -453,7 +457,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     CASE(SET_NAME_LOCAL): {
         uint16_t idx = read_u16(ip); ip += 2;
         const char *name = chunk->constants[idx]->data.str;
-        uint32_t h = env_hash_name(name);
+        uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
+        if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
         Value *v = vm_peek(0);
         env_set_local_hashed(frame->env, name, h, v);
         DISPATCH();
@@ -792,10 +797,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     CASE(DOT_GET): {
         uint16_t idx = read_u16(ip); ip += 2;
         const char *key = chunk->constants[idx]->data.str;
+        uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
+        if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
         Value *target = vm_pop();
         Value *result = make_null();
         if (target->type == VAL_DICT) {
-            Value *v = dict_get(target, key);
+            Value *v = dict_get_hashed(target, key, h);
             if (v) { result = v; val_incref(result); }
         } else if (target->type != VAL_NULL) {
             runtime_error(current_line, "cannot access field '%s' on %s",
@@ -809,9 +816,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     CASE(DOT_SET): {
         uint16_t idx = read_u16(ip); ip += 2;
         const char *key = chunk->constants[idx]->data.str;
+        uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
+        if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
         Value *val = vm_pop(); Value *target = vm_pop();
         if (target->type == VAL_DICT)
-            dict_set(target, key, val);
+            dict_set_hashed(target, key, h, val);
         else if (target->type != VAL_NULL)
             runtime_error(current_line, "cannot set field '%s' on %s",
                 key, val_type_name(target->type));
