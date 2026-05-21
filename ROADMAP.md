@@ -2,27 +2,75 @@
 
 Current version: **0.10.0**
 
-## Near-term
+## Sprint: Language Completeness (0.10.x → 0.11.0)
+
+Goal: fix all remaining test failures, make the bytecode VM fully
+compatible with the tree-walker's behavior, improve error handling.
+
+### Week 1: Error handling & try/catch
+
+- [ ] Fix try/catch type error and nested re-throw (2 failures)
+- [ ] Fix error propagation across function calls (test_error_propagation)
+- [ ] Fix error message content matching (test_error_extra)
+- [ ] Fix import error handling (test_import_errors, 2 failures)
+- [ ] Fix GC error-path behavioral differences (test_gc, 14/34)
+- [ ] Fix /dev/null stdin handling (test_file_io, 1 failure)
+
+### Week 2: Segfaults & deep recursion
+
+- [ ] Fix test_coverage_v2 crash (large test suite, likely deep recursion or stack overflow in computation)
+- [ ] Fix test_geometry crash (geometry library, likely recursive algorithm)
+- [ ] Investigate and fix the recursion_guard test
+- [ ] Chunk reference counting (closures hold refs to compiled chunks that are currently leaked)
+
+### Week 3: Observer & correctness
+
+- [ ] Fix observer interaction: observation age tracking (test_observer_interactions)
+- [ ] Fix tensor observer edge case (test_coverage_gaps CG48)
+- [ ] Fix softmax length check (test_softmax_guard)
+- [ ] Fix closure with break escaping caller loop (test_control_flow_interactions CF20)
+- [ ] Fix STEM library failures (test_lab, test_linalg — 1 each)
+
+### Week 4: Polish & release
+
+- [ ] Run full test suite through the test runner (not just individual files)
+- [ ] Verify EigenMiniSat, DMG, EigenGauntlet all pass
+- [ ] Update test count in docs (was 1030, now should reflect bytecode VM)
+- [ ] Performance comparison: bytecode VM vs tree-walker baseline
+- [ ] Release 0.11.0
+
+## After 0.11.0
+
+### Performance (0.12.0)
 
 - [ ] Dict field inline caching (OP_DOT_GET with cached slot offset)
 - [ ] Extend GET_LOCAL/SET_LOCAL to all local variables (not just params)
-- [ ] Fix remaining 15 edge-case test failures
+- [ ] In-place numeric mutation in SET_LOCAL/SET_NAME for refcount-1 values
+- [ ] Benchmark DMG target: 1+ MHz (currently 0.16 MHz)
+
+### Language features (0.13.0)
+
+- [ ] Destructuring assignment (`[a, b] is [1, 2]`)
 - [ ] Streaming subprocess I/O (stdin pipe, unbuffered stdout)
-- [ ] More STEM modules (graph theory, regression/curve fitting, numerical PDEs)
+- [ ] String slicing (`s[1:3]`)
+- [ ] Default parameter values
 
-## Medium-term
+### Ecosystem
 
-- [ ] WASM compilation target
-- [ ] Destructuring assignment
 - [ ] Package manager / module registry
-- [ ] Chunk reference counting (currently leaked to keep closures alive)
-
-## Long-term
-
-- [ ] Self-hosting compiler (EigenScript written in EigenScript)
+- [ ] More STEM modules (graph theory, regression, numerical PDEs)
+- [ ] WASM compilation target
 - [ ] Foreign function interface (FFI) for calling C libraries
 
-## Completed (0.10.0)
+### Long-term
+
+- [ ] Self-hosting compiler (EigenScript written in EigenScript)
+- [ ] GitHub Linguist submission (requires 2K+ .eigs files across repos)
+- [ ] Public release
+
+## Completed
+
+### 0.10.0 (2026-05-21)
 
 - [x] Bytecode VM — replaced AST tree-walker with compiled bytecode + computed-goto dispatch
 - [x] Non-recursive function calls — no C stack recursion, 4096 frame depth
@@ -30,91 +78,49 @@ Current version: **0.10.0**
 - [x] Observer stall detection in VM loops (OP_LOOP_STALL_CHECK)
 - [x] list_truncate, list_remove_at, sort_by builtins
 
-## Completed (0.9.3)
+### 0.9.3
 
-- [x] Computational geometry library (EigenScript's namesake) — 60+ functions, convex hull, transforms
-- [x] Lab data collection framework — experiment management with observer-aware measurement analysis
-- [x] Tunable observer thresholds (`set_observer_thresholds`) for advanced convergence studies
-- [x] 15 STEM simulation examples (orbital mechanics, climate model, genetic drift, etc.)
+- [x] Computational geometry library — 60+ functions, convex hull, transforms
+- [x] Lab data collection framework
 - [x] 49 stdlib modules, 14 STEM
+- [x] 15 STEM simulation examples
 
-## Completed (0.9.2)
+### 0.9.2
 
-- [x] STEM standard library — 12 modules: physics, chemistry, biology, engineering, earth_science, linalg, calculus, probability, optimize, simulation, numerics, experiment
-- [x] Observer-aware computation — optimization, simulation, iterative methods, and experimental analysis that leverage EigenScript's native convergence detection
-- [x] SDL2 audio extension — synthesis (sine/saw/square/noise), playback, mixing, ADSR envelope
-- [x] Code formatter (`--fmt`) and linter (`--lint`) built into binary
-- [x] Valgrind leak fix (2MB → 1.8KB per run), shellcheck clean test runner
-- [x] Tidepool near-parity: creature system, combat, mating, editor, camera zoom, particles, high scores
+- [x] 12 STEM standard library modules
+- [x] SDL2 audio extension
+- [x] Code formatter and linter
+- [x] Tidepool game near-parity
 
-## Completed (0.9.1)
+### 0.9.1
 
-- [x] Language server protocol (LSP) — eigenlsp binary, VS Code extension
-- [x] Hashing builtins — SHA-256, MD5, HMAC-SHA256, file hashing
-- [x] Column tracking in tokens and AST nodes
+- [x] Language server protocol (LSP) — eigenlsp, VS Code extension
+- [x] Hashing builtins — SHA-256, MD5, HMAC-SHA256
 
-## Completed (0.9.0)
+### 0.9.0
 
-- [x] UI toolkit — 44 widgets, 3 themes, flex layout, animation, keyboard navigation
-- [x] Real concurrency — thread-local globals, `spawn`/`thread_join`, channels
-- [x] EigenStore — zero-dependency native embedded database
-- [x] Data library — DataFrame operations (df_from_csv, df_select, df_where, df_join, etc.)
-- [x] Statistics library — mean, median, std_dev, histogram, correlation, describe
-- [x] Graphical debugger with observer-aware variable inspection
-- [x] Meta-circular interpreter at full language parity (dicts, lambdas, imports, observer)
-- [x] Index-assignment syntax (`list[i] is val`, `dict[key] is val`)
-- [x] SDL2 enhancements (rounded rects, clip rects, mouse wheel, modifier keys, window resize)
-- [x] 817 tests, eval.c at 96.6% coverage
+- [x] UI toolkit — 44 widgets, 3 themes, flex layout, animation
+- [x] Real concurrency — spawn/thread_join/channels
+- [x] EigenStore embedded database
+- [x] Graphical debugger with observer-aware inspection
+- [x] 817 tests
 
-## Completed (0.8.0)
+### 0.8.0
 
-- [x] Reference counting garbage collection
-- [x] `unobserved:` blocks — opt-out of observer tracking, in-place numeric mutation
-- [x] SDL2 graphics extension (13 builtins: window, shapes, text, events, timing)
-- [x] Bitmap font text rendering (`gfx_text`)
-- [x] Bitwise operations (`bit_and`, `bit_or`, `bit_xor`, `bit_not`, `bit_shl`, `bit_shr`)
-- [x] Terminal I/O (`write`, `flush`, `raw_key`, `usleep`)
-- [x] `join` as C builtin (O(n) string concatenation)
-- [x] `monotonic_ns` / `monotonic_ms` — high-resolution monotonic timer
-- [x] System stdlib resolution (`~/.local/lib/eigenscript/`)
-- [x] `make install` installs stdlib alongside binary
-- [x] Gap analysis document (`docs/GAP_ANALYSIS.md`)
-- [x] Source split: `eigenscript.c` → `lexer.c`, `parser.c`, `eval.c`, `builtins.c`
-- [x] Security hardening (strbuf, OOM-safe alloc, recursion guard, softmax NaN guard)
-- [x] Fuzz testing infrastructure (44 edge case + adversarial tests under ASAN+UBSan)
+- [x] Reference counting GC, unobserved blocks, SDL2 graphics
+- [x] Bitwise operations, terminal I/O, arena allocator
+- [x] Fuzz testing, security hardening
 
-## Completed (0.7.0)
+### 0.7.0
 
-- [x] Pattern matching (`match`/`case` with wildcard `_`)
-- [x] Pipe operator (`|>`)
-- [x] Lambda expressions (`(x) => x * 2`)
-- [x] Break/continue in loops
-- [x] Dot-assignment on dicts (`config.name is "value"`)
-- [x] Multiline collections (lists and dicts span multiple lines)
-- [x] Regex builtins (`regex_match`, `regex_find`, `regex_replace` — POSIX ERE)
-- [x] Import system with namespacing (`import math`)
-- [x] Formal EBNF grammar specification (`docs/GRAMMAR.md`)
-- [x] 371 → 568 tests
+- [x] Pattern matching, pipe operator, lambdas, break/continue
+- [x] Regex, import system, EBNF grammar
 
-## Completed (0.6.0)
+### 0.6.0
 
-- [x] REPL (interactive mode)
-- [x] Native dictionary type with `{}` syntax and `.key` access
-- [x] First-class closures
-- [x] Named function parameters (`define add(a, b) as:`)
-- [x] String interpolation (`f"hello {name}"`)
-- [x] Try/catch error handling + `throw` builtin
-- [x] `eval` builtin
-- [x] Meta-circular interpreter (`lib/eigen.eigs`)
+- [x] REPL, dictionaries, closures, f-strings, try/catch, eval
 
-## Completed (0.5.0)
+### 0.5.0
 
-- [x] Observer semantics with 6 trajectory states
-- [x] Interrogative operators (what/who/when/where/why/how)
-- [x] 121 builtins across core, tensor, I/O, and extension modules
-- [x] 25 standard library modules
-- [x] Arena memory allocator
-- [x] HTTP server extension
-- [x] PostgreSQL extension
-- [x] Transformer model extension (inference + training)
-- [x] Full documentation (syntax, builtins, stdlib, diagnostics)
+- [x] Observer semantics, 121 builtins, 25 stdlib modules
+- [x] HTTP, PostgreSQL, transformer extensions
