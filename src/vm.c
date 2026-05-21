@@ -601,46 +601,10 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 if (!result) result = make_null();
                 vm_push(result);
             } else {
-                /* AST-based function — use existing eval path */
-                /* This handles the transition period */
-                extern Value* eval_block(ASTNode **stmts, int count, Env *env);
-                Env *call_env = env_new(fn_val->data.fn.closure);
-
-                if (fn_val->data.fn.param_count > 1 && argc > 0) {
-                    int bound = fn_val->data.fn.param_count;
-                    if (bound > argc) bound = argc;
-                    for (int i = 0; i < bound; i++)
-                        env_set_local(call_env, fn_val->data.fn.params[i],
-                                      g_vm.stack[g_vm.sp - argc + i]);
-                } else if (fn_val->data.fn.param_count == 1) {
-                    if (argc == 1) {
-                        env_set_local(call_env, fn_val->data.fn.params[0],
-                                      g_vm.stack[g_vm.sp - 1]);
-                    } else {
-                        Value *arg_list = make_list(argc);
-                        for (int i = 0; i < argc; i++)
-                            list_append(arg_list, g_vm.stack[g_vm.sp - argc + i]);
-                        env_set_local(call_env, fn_val->data.fn.params[0], arg_list);
-                        val_decref(arg_list);
-                    }
-                }
-
-                for (int i = 0; i < argc; i++)
-                    val_decref(vm_pop());
+                /* AST-based function — should not happen after bytecode migration */
+                for (int i = 0; i < argc; i++) val_decref(vm_pop());
                 val_decref(vm_pop());
-
-                g_returning = 0;
-                g_return_val = NULL;
-                Value *result = eval_block(fn_val->data.fn.body,
-                                           fn_val->data.fn.body_count, call_env);
-                if (g_returning) {
-                    g_returning = 0;
-                    result = g_return_val ? g_return_val : make_null();
-                }
-                env_free(call_env);
-                if (!result) result = make_null();
-                else val_incref(result);
-                vm_push(result);
+                vm_push(make_null());
             }
 
             /* Restore frame */

@@ -2925,10 +2925,12 @@ static void *thread_entry(void *arg) {
         Value *result = make_null();
         g_returning = 0;
         g_return_val = NULL;
-        result = eval_block(fn->data.fn.body, fn->data.fn.body_count, call_env);
-        if (g_returning) {
-            result = g_return_val;
-            g_returning = 0;
+        if (fn->data.fn.body_count == -1) {
+            EigsChunk *fn_chunk = (EigsChunk *)fn->data.fn.body;
+            result = vm_execute(fn_chunk, call_env);
+        } else {
+            /* AST-based function — should not happen after bytecode migration */
+            result = make_null();
         }
         h->result = result;
         if (result) val_incref(result);
@@ -3401,15 +3403,9 @@ Value* builtin_dispatch(Value *arg) {
             env_free(call_env);
             return result ? result : make_null();
         }
-        g_returning = 0;
-        g_return_val = NULL;
-        Value *result = eval_block(fn->data.fn.body, fn->data.fn.body_count, call_env);
-        if (g_returning) {
-            result = g_return_val;
-            g_returning = 0;
-        }
+        /* AST-based function — should not happen after bytecode migration */
         env_free(call_env);
-        return result ? result : make_null();
+        return make_null();
     }
 
     runtime_error(0, "dispatch: slot %d is not a function", key);

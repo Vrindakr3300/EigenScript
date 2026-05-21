@@ -497,16 +497,9 @@ Value* call_eigs_fn(Value *fn, Value *arg) {
         env_free(call_env);
         return result ? result : make_null();
     }
-    g_returning = 0;
-    g_return_val = NULL;
-    Value *result = eval_block(fn->data.fn.body, fn->data.fn.body_count, call_env);
-    if (g_returning) {
-        g_returning = 0;
-        env_free(call_env);
-        return g_return_val ? g_return_val : make_null();
-    }
+    /* AST-based function — should not happen after bytecode migration */
     env_free(call_env);
-    return result;
+    return make_null();
 }
 
 /* ==== BUILTIN: random_normal ==== */
