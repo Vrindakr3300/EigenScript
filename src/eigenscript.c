@@ -141,7 +141,7 @@ const char* val_type_name(ValType t) {
 /* Arena allocator and free_weight_val are in arena.c */
 
 /* Forward declarations for hash helpers (used by dict and env). */
-static uint32_t env_hash_name(const char *name);
+uint32_t env_hash_name(const char *name);
 static void env_hash_init(EnvHash *ht, int cap);
 static void env_hash_insert(EnvHash *ht, uint32_t h, int idx);
 static void env_hash_rebuild(EnvHash *ht, char **names, int count);
@@ -176,6 +176,78 @@ static __thread EnvNameIntern *g_env_name_interns[ENV_NAME_INTERN_BUCKETS];
  * Children are val_decref'd (not recursively freed), so shared values
  * tracked by refcount elsewhere stay alive. Arena-owned memory is
  * skipped — it gets reclaimed by arena_reset. */
+/* ---- Observer system (moved from eval.c) ---- */
+
+static double compute_entropy_impl(Value *v, int depth) {
+    if (!v || depth > 64) return 0.0;
+    switch (v->type) {
+        case VAL_NULL: return 0.0;
+        case VAL_NUM: {
+            double x = fabs(v->data.num);
+            if (x == 0.0 || x == 1.0) return 0.0;
+            double p = 1.0 / (1.0 + x);
+            if (p <= 0.0 || p >= 1.0) return 0.0;
+            return -(p * log2(p) + (1.0-p) * log2(1.0-p));
+        }
+        case VAL_STR: {
+            if (!v->data.str || !v->data.str[0]) return 0.0;
+            int freq[256] = {0};
+            int len = 0;
+            for (const char *c = v->data.str; *c; c++) { freq[(unsigned char)*c]++; len++; }
+            if (len == 0) return 0.0;
+            double h = 0.0;
+            for (int i = 0; i < 256; i++) {
+                if (freq[i] > 0) { double p = (double)freq[i] / len; h -= p * log2(p); }
+            }
+            return h;
+        }
+        case VAL_LIST: {
+            if (v->data.list.count == 0) return 0.0;
+            double sum = 0.0;
+            for (int i = 0; i < v->data.list.count; i++)
+                sum += compute_entropy_impl(v->data.list.items[i], depth + 1);
+            return sum / v->data.list.count + log2(v->data.list.count + 1);
+        }
+        case VAL_DICT: {
+            if (v->data.dict.count == 0) return 0.0;
+            double sum = 0.0;
+            for (int i = 0; i < v->data.dict.count; i++)
+                sum += compute_entropy_impl(v->data.dict.vals[i], depth + 1);
+            return sum / v->data.dict.count + log2(v->data.dict.count + 1);
+        }
+        case VAL_FN: return 1.0;
+        case VAL_BUILTIN: return 0.0;
+        case VAL_JSON_RAW: return 0.0;
+        case VAL_BUFFER: return log2(v->data.buffer.count + 1);
+        case VAL_TEXT_BUILDER: return log2((double)v->data.text_builder.len + 1.0);
+    }
+    return 0.0;
+}
+
+double compute_entropy(Value *v) { return compute_entropy_impl(v, 0); }
+
+void update_observer(Value *v) {
+    if (!v) return;
+    double new_entropy = compute_entropy(v);
+    v->prev_dH = v->dH;
+    v->dH = new_entropy - v->last_entropy;
+    v->entropy = new_entropy;
+    v->last_entropy = new_entropy;
+    v->dirty = 0;
+}
+
+void observer_ensure_fresh(Value *v) {
+    if (v && v->dirty) update_observer(v);
+}
+
+/* ---- Thread-local globals (moved from eval.c) ---- */
+__thread Value *g_last_observer = NULL;
+__thread Env *g_builtin_call_env = NULL;
+__thread int g_unobserved_depth = 0;
+__thread double g_obs_dh_zero  = 0.001;
+__thread double g_obs_dh_small = 0.01;
+__thread double g_obs_h_low    = 0.1;
+
 void free_value(Value *v) {
     if (!v || v->arena) return;
     if (v->type == VAL_NUM) {
@@ -216,9 +288,13 @@ void free_value(Value *v) {
                 free(v->data.fn.params[i]);
             free(v->data.fn.params);
             free(v->data.fn.param_hashes);
-            for (int i = 0; i < v->data.fn.body_count; i++)
-                free_ast(v->data.fn.body[i]);
-            free(v->data.fn.body);
+            if (v->data.fn.body_count != -1) {
+                /* AST-based function — free body nodes */
+                for (int i = 0; i < v->data.fn.body_count; i++)
+                    free_ast(v->data.fn.body[i]);
+                free(v->data.fn.body);
+            }
+            /* body_count == -1 means bytecode fn: body is a chunk ptr, not owned here */
             {
                 Env *clo = v->data.fn.closure;
                 v->data.fn.closure = NULL;  /* break cycle before decrement */
@@ -588,7 +664,7 @@ char* value_to_string(Value *v) {
 
 /* FNV-1a hash — fast, good distribution for short identifier strings.
  * Returns non-zero (zero is reserved as "empty slot" sentinel). */
-static uint32_t env_hash_name(const char *name) {
+uint32_t env_hash_name(const char *name) {
     uint32_t h = 2166136261u;
     for (const char *p = name; *p; p++)
         h = (h ^ (uint8_t)*p) * 16777619u;

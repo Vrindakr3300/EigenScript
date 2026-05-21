@@ -3,6 +3,7 @@
  */
 
 #include "eigenscript.h"
+#include "vm.h"
 #if EIGENSCRIPT_EXT_HTTP
 #include "ext_http_internal.h"
 #endif
@@ -107,7 +108,9 @@ static void eigenscript_repl(Env *env) {
 
         g_returning = 0;
         g_return_val = NULL;
-        Value *result = eval_node(ast, env);
+        EigsChunk *repl_chunk = compile_ast(ast, env);
+        Value *result = vm_execute(repl_chunk, env);
+        chunk_free(repl_chunk);
 
         /* Print non-null results */
         if (result && result->type != VAL_NULL) {
@@ -266,8 +269,11 @@ int main(int argc, char **argv) {
         free(source);
         return 1;
     }
-    Value *result = eval_node(ast, global);
+    EigsChunk *script_chunk = compile_ast(ast, global);
+    Value *result = vm_execute(script_chunk, global);
     if (result) val_decref(result);
+    /* Don't free chunk — closures/functions may still reference nested chunks.
+     * Process is exiting anyway. TODO: refcount chunks. */
 
     free_ast(ast);
     free_tokenlist(&tl);

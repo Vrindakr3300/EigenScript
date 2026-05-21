@@ -5,6 +5,7 @@
  */
 
 #include "eigenscript.h"
+#include "vm.h"
 #include "builtins_internal.h"
 #include <pthread.h>
 #include <termios.h>
@@ -2203,7 +2204,10 @@ Value* builtin_load_file(Value *arg) {
     TokenList tl = tokenize(source);
     ASTNode *ast = parse(&tl);
     Env *target = g_load_env ? g_load_env : g_global_env;
-    Value *result = eval_node(ast, target);
+    EigsChunk *lf_chunk = compile_ast(ast, target);
+    Value *result = vm_execute(lf_chunk, target);
+    /* Don't free chunk — closures may still reference nested function chunks.
+     * TODO: reference-count chunks so they're freed when all closures are gone. */
     free_ast(ast);
     free(source);
     free_tokenlist(&tl);
@@ -2694,12 +2698,9 @@ Value* builtin_eval(Value *arg) {
     g_parse_errors = saved_errors;
 
     Env *target = g_builtin_call_env ? g_builtin_call_env : g_global_env;
-    ASTNode *last = ast;
-    if (ast && ast->type == AST_PROGRAM && ast->data.program.count > 0)
-        last = ast->data.program.stmts[ast->data.program.count - 1];
-    Value *result = eval_node(ast, target);
-    if (result && !eval_result_is_owned(last))
-        val_incref(result);
+    EigsChunk *ev_chunk = compile_ast(ast, target);
+    Value *result = vm_execute(ev_chunk, target);
+    /* Don't free chunk — closures may reference nested function chunks */
     free_tokenlist(&tl);
     return result ? result : make_null();
 }
@@ -2924,10 +2925,12 @@ static void *thread_entry(void *arg) {
         Value *result = make_null();
         g_returning = 0;
         g_return_val = NULL;
-        result = eval_block(fn->data.fn.body, fn->data.fn.body_count, call_env);
-        if (g_returning) {
-            result = g_return_val;
-            g_returning = 0;
+        if (fn->data.fn.body_count == -1) {
+            EigsChunk *fn_chunk = (EigsChunk *)fn->data.fn.body;
+            result = vm_execute(fn_chunk, call_env);
+        } else {
+            /* AST-based function — should not happen after bytecode migration */
+            result = make_null();
         }
         h->result = result;
         if (result) val_incref(result);
@@ -3393,15 +3396,16 @@ Value* builtin_dispatch(Value *arg) {
         if (fn->data.fn.param_count > 0) {
             env_set_local(call_env, fn->data.fn.params[0], fn_arg);
         }
-        g_returning = 0;
-        g_return_val = NULL;
-        Value *result = eval_block(fn->data.fn.body, fn->data.fn.body_count, call_env);
-        if (g_returning) {
-            result = g_return_val;
-            g_returning = 0;
+        if (fn->data.fn.body_count == -1) {
+            /* Bytecode function */
+            EigsChunk *fn_chunk = (EigsChunk *)fn->data.fn.body;
+            Value *result = vm_execute(fn_chunk, call_env);
+            env_free(call_env);
+            return result ? result : make_null();
         }
+        /* AST-based function — should not happen after bytecode migration */
         env_free(call_env);
-        return result ? result : make_null();
+        return make_null();
     }
 
     runtime_error(0, "dispatch: slot %d is not a function", key);
