@@ -120,6 +120,28 @@ static inline void dict_set_cached(Value *dict, const char *key, uint32_t h, Val
     dict_set_hashed(dict, key, h, val);
 }
 
+/* Slot-aware dict set: for the DMG register-write hot path. If the dict
+ * cache hits and the existing slot is an exclusive untracked VAL_NUM,
+ * mutate data.num in place — no allocation, no refcount churn. Returns
+ * 1 if the in-place fast path fired; 0 means the caller must materialize
+ * and call dict_set_cached. */
+static inline int dict_set_cached_immediate(Value *dict, const char *key, uint32_t h, double num) {
+    int ci = (h ^ (uint32_t)(uintptr_t)dict) & DICT_CACHE_MASK;
+    DictCacheEntry *ce = &g_dict_cache[ci];
+    if (ce->dict == dict && ce->hash == h && ce->index < dict->data.dict.count) {
+        if (strcmp(dict->data.dict.keys[ce->index], key) == 0) {
+            Value *existing = dict->data.dict.vals[ce->index];
+            if (existing && existing->type == VAL_NUM &&
+                existing->refcount == 1 && existing->obs_age == 0 &&
+                !existing->arena) {
+                existing->data.num = num;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 /* ---- VM helpers ---- */
 
 static void vm_init(void) {
@@ -734,12 +756,21 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(SET_LOCAL): {
         uint16_t slot = read_u16(ip); ip += 2;
-        Value *v = vm_peek(0);
-        /* Write to the function's original env (not loop-fresh child) */
         Env *e = frame->fn_env;
         if ((int)slot < e->count) {
+            /* Immediate-num + exclusive-num-binding fast path: mutate
+             * data.num in place so a hot counter never allocates. */
+            EigsSlot tos = g_vm.stack[g_vm.sp - 1];
+            Value *existing = e->values[slot];
+            if (slot_is_num(tos) && existing &&
+                existing->type == VAL_NUM && existing->refcount == 1 &&
+                existing->obs_age == 0 && !existing->arena) {
+                existing->data.num = tos.d;
+                DISPATCH();
+            }
+            Value *v = vm_slot_lift(g_vm.sp - 1);
             val_incref(v);
-            val_decref(e->values[slot]);
+            val_decref(existing);
             e->values[slot] = v;
         }
         DISPATCH();
@@ -1219,13 +1250,18 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         /* Fused GET_LOCAL + DOT_SET: local[slot].field = TOS (keep on stack) */
         uint16_t slot = read_u16(ip); ip += 2;
         uint16_t name_idx = read_u16(ip); ip += 2;
-        Value *val = vm_peek(0);
         Env *e = frame->fn_env;
         Value *target = ((int)slot < e->count) ? e->values[slot] : NULL;
         if (target && target->type == VAL_DICT) {
             const char *key = chunk->constants[name_idx]->data.str;
             uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
             if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
+            EigsSlot tos = g_vm.stack[g_vm.sp - 1];
+            if (slot_is_num(tos) &&
+                dict_set_cached_immediate(target, key, h, tos.d)) {
+                DISPATCH();
+            }
+            Value *val = vm_slot_lift(g_vm.sp - 1);
             dict_set_cached(target, key, h, val);
         } else if (target && target->type != VAL_NULL) {
             const char *key = chunk->constants[name_idx]->data.str;
@@ -1328,7 +1364,6 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         uint16_t slot = read_u16(ip); ip += 2;
         uint16_t list_idx = read_u16(ip); ip += 2;
         uint16_t name_idx = read_u16(ip); ip += 2;
-        Value *val = vm_peek(0);
         Env *e = frame->fn_env;
         Value *target = ((int)slot < e->count) ? e->values[slot] : NULL;
         int i = (int)list_idx;
@@ -1339,6 +1374,15 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                     const char *key = chunk->constants[name_idx]->data.str;
                     uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
                     if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
+                    /* Immediate-num + exclusive-num-slot fast path:
+                     * mutate the existing dict slot's data.num in place
+                     * and leave the stack slot as an immediate (no lift). */
+                    EigsSlot tos = g_vm.stack[g_vm.sp - 1];
+                    if (slot_is_num(tos) &&
+                        dict_set_cached_immediate(dict, key, h, tos.d)) {
+                        DISPATCH();
+                    }
+                    Value *val = vm_slot_lift(g_vm.sp - 1);
                     dict_set_cached(dict, key, h, val);
                 } else if (dict && dict->type != VAL_NULL) {
                     const char *key = chunk->constants[name_idx]->data.str;
