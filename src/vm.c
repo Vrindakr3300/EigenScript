@@ -195,6 +195,37 @@ static inline Value *vm_peek(int distance) {
 #define STK_AS_VAL(i)       slot_bridge_unwrap(g_vm.stack[i])
 #define STK_PUT_VAL(i, v)   (g_vm.stack[i] = slot_bridge_wrap(v))
 
+/* Raw slot push: bypasses slot_bridge_wrap, used by opcodes that emit
+ * immediates directly (post-arith, post-cmp, NEG/NOT/BNOT, DUP, etc.). */
+static inline void vm_push_slot(EigsSlot s) {
+    if (g_vm.sp >= VM_STACK_MAX) {
+        runtime_error(0, "VM stack overflow");
+        return;
+    }
+    g_vm.stack[g_vm.sp++] = s;
+}
+
+/* Slot-aware truthiness — covers immediate num, null, bool, and falls
+ * back to is_truthy() for heap/tracked. */
+static inline int slot_truthy(EigsSlot s) {
+    if (slot_is_num(s)) return s.d != 0.0;
+    if (slot_is_null(s)) return 0;
+    if (slot_is_bool(s)) return slot_as_bool(s);
+    return is_truthy(slot_as_ptr(s));
+}
+
+/* Pull a double out of a slot if it represents a number. Covers both
+ * immediate doubles and heap/tracked VAL_NUMs (which still appear from
+ * env loads and from the constant pool until B-3 flips those). */
+static inline int slot_as_double(EigsSlot s, double *out) {
+    if (slot_is_num(s)) { *out = s.d; return 1; }
+    if (slot_is_ptr(s)) {
+        Value *v = slot_as_ptr(s);
+        if (v->type == VAL_NUM) { *out = v->data.num; return 1; }
+    }
+    return 0;
+}
+
 static inline uint16_t read_u16(uint8_t *ip) {
     return ip[0] | (ip[1] << 8);
 }
@@ -336,31 +367,44 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     /* ---- Arithmetic ---- */
 
-    /* In-place numeric mutation: if a Value is a non-arena num with refcount 1,
-     * we can mutate it directly instead of allocating via make_num. */
+    /* NUM_REUSE — retained for slow-path fallbacks that allocate via
+     * make_num then realize they could have mutated in place. The hot
+     * arith fast path no longer needs it: immediate doubles have no
+     * refcount and heap-num results are emitted as immediates. */
 #define NUM_REUSE(v) ((v)->type == VAL_NUM && (v)->refcount == 1 && !(v)->arena)
 
-    /* Stack-top fast path: peek at sp-1 and sp-2 directly */
+    /* Stack-top fast path: read two slots, extract doubles from either
+     * immediate or heap VAL_NUM form, compute. Result is wrapped as a
+     * heap Value (via make_num or in-place NUM_REUSE). Immediates aren't
+     * emitted until B-3 audits every vm_peek caller for immediate-safe
+     * refcount handling. */
 #define ARITH_FAST(OP) do { \
-    Value *_b = STK_AS_VAL(g_vm.sp - 1); \
-    Value *_a = STK_AS_VAL(g_vm.sp - 2); \
-    if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) { \
-        double _r = num_guard(_a->data.num OP _b->data.num); \
-        if (NUM_REUSE(_a)) { \
-            _a->data.num = _r; \
-            if (NUM_REUSE(_b)) { free_value(_b); } else { val_decref(_b); } \
-            g_vm.sp--; \
-            DISPATCH(); \
+    EigsSlot _bs = g_vm.stack[g_vm.sp - 1]; \
+    EigsSlot _as = g_vm.stack[g_vm.sp - 2]; \
+    double _ad, _bd; \
+    if (__builtin_expect(slot_as_double(_as, &_ad) & slot_as_double(_bs, &_bd), 1)) { \
+        double _r = num_guard(_ad OP _bd); \
+        if (slot_is_ptr(_as)) { \
+            Value *_a = slot_as_ptr(_as); \
+            if (NUM_REUSE(_a)) { \
+                _a->data.num = _r; \
+                slot_decref(_bs); \
+                g_vm.sp--; \
+                DISPATCH(); \
+            } \
         } \
-        if (NUM_REUSE(_b)) { \
-            _b->data.num = _r; \
-            STK_PUT_VAL(g_vm.sp - 2, _b); \
-            val_decref(_a); \
-            g_vm.sp--; \
-            DISPATCH(); \
+        if (slot_is_ptr(_bs)) { \
+            Value *_b = slot_as_ptr(_bs); \
+            if (NUM_REUSE(_b)) { \
+                _b->data.num = _r; \
+                g_vm.stack[g_vm.sp - 2] = _bs; \
+                slot_decref(_as); \
+                g_vm.sp--; \
+                DISPATCH(); \
+            } \
         } \
-        STK_PUT_VAL(g_vm.sp - 2, make_num(_r)); \
-        val_decref(_a); val_decref(_b); \
+        slot_decref(_as); slot_decref(_bs); \
+        g_vm.stack[g_vm.sp - 2] = slot_from_heap(make_num(_r)); \
         g_vm.sp--; \
         DISPATCH(); \
     } \
@@ -470,31 +514,27 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
 #define INT_BINOP(NAME, OP) \
     CASE(NAME): { \
-        Value *_b = STK_AS_VAL(g_vm.sp - 1); \
-        Value *_a = STK_AS_VAL(g_vm.sp - 2); \
-        if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) { \
-            double _r = (double)((int64_t)_a->data.num OP (int64_t)_b->data.num); \
-            if (NUM_REUSE(_a)) { \
-                _a->data.num = _r; \
-                if (NUM_REUSE(_b)) { free_value(_b); } else { val_decref(_b); } \
-                g_vm.sp--; \
-                DISPATCH(); \
+        EigsSlot _bs = g_vm.stack[g_vm.sp - 1]; \
+        EigsSlot _as = g_vm.stack[g_vm.sp - 2]; \
+        double _ad, _bd; \
+        if (__builtin_expect(slot_as_double(_as, &_ad) & slot_as_double(_bs, &_bd), 1)) { \
+            double _r = (double)((int64_t)_ad OP (int64_t)_bd); \
+            if (slot_is_ptr(_as)) { \
+                Value *_a = slot_as_ptr(_as); \
+                if (NUM_REUSE(_a)) { _a->data.num = _r; slot_decref(_bs); g_vm.sp--; DISPATCH(); } \
             } \
-            if (NUM_REUSE(_b)) { \
-                _b->data.num = _r; \
-                STK_PUT_VAL(g_vm.sp - 2, _b); \
-                val_decref(_a); \
-                g_vm.sp--; \
-                DISPATCH(); \
+            if (slot_is_ptr(_bs)) { \
+                Value *_b = slot_as_ptr(_bs); \
+                if (NUM_REUSE(_b)) { _b->data.num = _r; g_vm.stack[g_vm.sp - 2] = _bs; slot_decref(_as); g_vm.sp--; DISPATCH(); } \
             } \
-            STK_PUT_VAL(g_vm.sp - 2, make_num(_r)); \
-            val_decref(_a); val_decref(_b); \
+            slot_decref(_as); slot_decref(_bs); \
+            g_vm.stack[g_vm.sp - 2] = slot_from_heap(make_num(_r)); \
             g_vm.sp--; \
             DISPATCH(); \
         } \
-        Value *b = vm_pop(); Value *a = vm_pop(); \
-        vm_push(make_num(0)); \
-        val_decref(a); val_decref(b); \
+        slot_decref(_as); slot_decref(_bs); \
+        g_vm.stack[g_vm.sp - 2] = slot_from_heap(make_num(0)); \
+        g_vm.sp--; \
         DISPATCH(); \
     }
 
@@ -507,46 +547,69 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     /* ---- Unary ---- */
 
     CASE(NEG): {
-        Value *v = vm_pop();
-        if (v->type == VAL_NUM) {
-            if (NUM_REUSE(v)) { v->data.num = -v->data.num; vm_push(v); DISPATCH(); }
-            vm_push(make_num(-v->data.num));
-        } else {
-            runtime_error(current_line, "cannot negate %s", val_type_name(v->type));
-            vm_push(make_num(0));
+        EigsSlot s = g_vm.stack[g_vm.sp - 1];
+        double d;
+        if (__builtin_expect(slot_as_double(s, &d), 1)) {
+            if (slot_is_ptr(s)) {
+                Value *v = slot_as_ptr(s);
+                if (NUM_REUSE(v)) { v->data.num = -d; DISPATCH(); }
+            }
+            slot_decref(s);
+            g_vm.stack[g_vm.sp - 1] = slot_from_heap(make_num(-d));
+            DISPATCH();
         }
-        val_decref(v);
+        runtime_error(current_line, "cannot negate non-numeric");
+        slot_decref(s);
+        g_vm.stack[g_vm.sp - 1] = slot_from_heap(make_num(0));
         DISPATCH();
     }
 
     CASE(NOT): {
-        Value *v = vm_pop();
-        vm_push(make_num(is_truthy(v) ? 0.0 : 1.0));
-        val_decref(v);
+        EigsSlot s = g_vm.stack[g_vm.sp - 1];
+        int t = slot_truthy(s);
+        slot_decref(s);
+        g_vm.stack[g_vm.sp - 1] = slot_from_heap(make_num(t ? 0.0 : 1.0));
         DISPATCH();
     }
 
     CASE(BNOT): {
-        Value *v = vm_pop();
-        if (v->type == VAL_NUM) {
-            double r = (double)(~(int64_t)v->data.num);
-            if (NUM_REUSE(v)) { v->data.num = r; vm_push(v); DISPATCH(); }
-            vm_push(make_num(r));
-        } else vm_push(make_num(0));
-        val_decref(v);
+        EigsSlot s = g_vm.stack[g_vm.sp - 1];
+        double d;
+        if (__builtin_expect(slot_as_double(s, &d), 1)) {
+            double r = (double)(~(int64_t)d);
+            if (slot_is_ptr(s)) {
+                Value *v = slot_as_ptr(s);
+                if (NUM_REUSE(v)) { v->data.num = r; DISPATCH(); }
+            }
+            slot_decref(s);
+            g_vm.stack[g_vm.sp - 1] = slot_from_heap(make_num(r));
+            DISPATCH();
+        }
+        slot_decref(s);
+        g_vm.stack[g_vm.sp - 1] = slot_from_heap(make_num(0));
         DISPATCH();
     }
 
     /* ---- Comparison ---- */
 
     CASE(EQ): {
-        Value *_b = STK_AS_VAL(g_vm.sp - 1);
-        Value *_a = STK_AS_VAL(g_vm.sp - 2);
-        if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) {
-            double _r = (_a->data.num == _b->data.num) ? 1.0 : 0.0;
-            if (NUM_REUSE(_a)) { _a->data.num = _r; if (NUM_REUSE(_b)) free_value(_b); else val_decref(_b); g_vm.sp--; DISPATCH(); }
-            if (NUM_REUSE(_b)) { _b->data.num = _r; STK_PUT_VAL(g_vm.sp-2, _b); val_decref(_a); g_vm.sp--; DISPATCH(); }
-            STK_PUT_VAL(g_vm.sp-2, make_num(_r)); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH();
+        EigsSlot _bs = g_vm.stack[g_vm.sp - 1];
+        EigsSlot _as = g_vm.stack[g_vm.sp - 2];
+        double _ad, _bd;
+        if (__builtin_expect(slot_as_double(_as, &_ad) & slot_as_double(_bs, &_bd), 1)) {
+            double _r = (_ad == _bd) ? 1.0 : 0.0;
+            if (slot_is_ptr(_as)) {
+                Value *_a = slot_as_ptr(_as);
+                if (NUM_REUSE(_a)) { _a->data.num = _r; slot_decref(_bs); g_vm.sp--; DISPATCH(); }
+            }
+            if (slot_is_ptr(_bs)) {
+                Value *_b = slot_as_ptr(_bs);
+                if (NUM_REUSE(_b)) { _b->data.num = _r; g_vm.stack[g_vm.sp - 2] = _bs; slot_decref(_as); g_vm.sp--; DISPATCH(); }
+            }
+            slot_decref(_as); slot_decref(_bs);
+            g_vm.stack[g_vm.sp - 2] = slot_from_heap(make_num(_r));
+            g_vm.sp--;
+            DISPATCH();
         }
         Value *b = vm_pop(); Value *a = vm_pop();
         int eq = 0;
@@ -559,13 +622,23 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     }
 
     CASE(NE): {
-        Value *_b = STK_AS_VAL(g_vm.sp - 1);
-        Value *_a = STK_AS_VAL(g_vm.sp - 2);
-        if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) {
-            double _r = (_a->data.num != _b->data.num) ? 1.0 : 0.0;
-            if (NUM_REUSE(_a)) { _a->data.num = _r; if (NUM_REUSE(_b)) free_value(_b); else val_decref(_b); g_vm.sp--; DISPATCH(); }
-            if (NUM_REUSE(_b)) { _b->data.num = _r; STK_PUT_VAL(g_vm.sp-2, _b); val_decref(_a); g_vm.sp--; DISPATCH(); }
-            STK_PUT_VAL(g_vm.sp-2, make_num(_r)); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH();
+        EigsSlot _bs = g_vm.stack[g_vm.sp - 1];
+        EigsSlot _as = g_vm.stack[g_vm.sp - 2];
+        double _ad, _bd;
+        if (__builtin_expect(slot_as_double(_as, &_ad) & slot_as_double(_bs, &_bd), 1)) {
+            double _r = (_ad != _bd) ? 1.0 : 0.0;
+            if (slot_is_ptr(_as)) {
+                Value *_a = slot_as_ptr(_as);
+                if (NUM_REUSE(_a)) { _a->data.num = _r; slot_decref(_bs); g_vm.sp--; DISPATCH(); }
+            }
+            if (slot_is_ptr(_bs)) {
+                Value *_b = slot_as_ptr(_bs);
+                if (NUM_REUSE(_b)) { _b->data.num = _r; g_vm.stack[g_vm.sp - 2] = _bs; slot_decref(_as); g_vm.sp--; DISPATCH(); }
+            }
+            slot_decref(_as); slot_decref(_bs);
+            g_vm.stack[g_vm.sp - 2] = slot_from_heap(make_num(_r));
+            g_vm.sp--;
+            DISPATCH();
         }
         Value *b = vm_pop(); Value *a = vm_pop();
         int eq = 0;
@@ -579,17 +652,27 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
 #define NUM_CMP(NAME, OP) \
     CASE(NAME): { \
-        Value *_b = STK_AS_VAL(g_vm.sp - 1); \
-        Value *_a = STK_AS_VAL(g_vm.sp - 2); \
-        if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) { \
-            double _r = (_a->data.num OP _b->data.num) ? 1.0 : 0.0; \
-            if (NUM_REUSE(_a)) { _a->data.num = _r; if (NUM_REUSE(_b)) free_value(_b); else val_decref(_b); g_vm.sp--; DISPATCH(); } \
-            if (NUM_REUSE(_b)) { _b->data.num = _r; STK_PUT_VAL(g_vm.sp-2, _b); val_decref(_a); g_vm.sp--; DISPATCH(); } \
-            STK_PUT_VAL(g_vm.sp-2, make_num(_r)); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH(); \
+        EigsSlot _bs = g_vm.stack[g_vm.sp - 1]; \
+        EigsSlot _as = g_vm.stack[g_vm.sp - 2]; \
+        double _ad, _bd; \
+        if (__builtin_expect(slot_as_double(_as, &_ad) & slot_as_double(_bs, &_bd), 1)) { \
+            double _r = (_ad OP _bd) ? 1.0 : 0.0; \
+            if (slot_is_ptr(_as)) { \
+                Value *_a = slot_as_ptr(_as); \
+                if (NUM_REUSE(_a)) { _a->data.num = _r; slot_decref(_bs); g_vm.sp--; DISPATCH(); } \
+            } \
+            if (slot_is_ptr(_bs)) { \
+                Value *_b = slot_as_ptr(_bs); \
+                if (NUM_REUSE(_b)) { _b->data.num = _r; g_vm.stack[g_vm.sp - 2] = _bs; slot_decref(_as); g_vm.sp--; DISPATCH(); } \
+            } \
+            slot_decref(_as); slot_decref(_bs); \
+            g_vm.stack[g_vm.sp - 2] = slot_from_heap(make_num(_r)); \
+            g_vm.sp--; \
+            DISPATCH(); \
         } \
-        Value *b = vm_pop(); Value *a = vm_pop(); \
-        vm_push(make_num(0)); \
-        val_decref(a); val_decref(b); \
+        slot_decref(_as); slot_decref(_bs); \
+        g_vm.stack[g_vm.sp - 2] = slot_from_heap(make_num(0)); \
+        g_vm.sp--; \
         DISPATCH(); \
     }
 
@@ -1308,23 +1391,36 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(OBSERVE_ASSIGN): {
         uint16_t name_idx = read_u16(ip); ip += 2;
-        Value *v = vm_peek(0);
-        if (g_unobserved_depth == 0 && v) {
-            /* Transfer observer history from previous value of this binding */
-            const char *name = chunk->constants[name_idx]->data.str;
-            uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
-            if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
-            Value *prev = env_get_hashed(frame->env, name, h);
-            if (prev && prev != v) {
-                observer_ensure_fresh(prev);
-                v->last_entropy = prev->last_entropy;
-                v->entropy = prev->entropy;
-                v->obs_age = prev->obs_age;
-                v->dH = prev->dH;
-                v->prev_dH = prev->prev_dH;
+        if (g_unobserved_depth == 0) {
+            /* Promote an immediate TOS to a tracked heap Value so the
+             * observer fields (entropy/dH/obs_age/dirty) live on the
+             * same object that SET_NAME will store in env. Without this
+             * promotion, each vm_peek of an immediate would materialize
+             * a fresh make_num and the observer state would be lost. */
+            EigsSlot s = g_vm.stack[g_vm.sp - 1];
+            Value *v = NULL;
+            if (slot_is_num(s)) {
+                v = make_tracked_num(s.d);
+                g_vm.stack[g_vm.sp - 1] = slot_from_tracked(v);
+            } else if (slot_is_ptr(s)) {
+                v = slot_as_ptr(s);
             }
-            v->dirty = 1;
-            g_last_observer = v;
+            if (v) {
+                const char *name = chunk->constants[name_idx]->data.str;
+                uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
+                if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
+                Value *prev = env_get_hashed(frame->env, name, h);
+                if (prev && prev != v) {
+                    observer_ensure_fresh(prev);
+                    v->last_entropy = prev->last_entropy;
+                    v->entropy = prev->entropy;
+                    v->obs_age = prev->obs_age;
+                    v->dH = prev->dH;
+                    v->prev_dH = prev->prev_dH;
+                }
+                v->dirty = 1;
+                g_last_observer = v;
+            }
         }
         DISPATCH();
     }
