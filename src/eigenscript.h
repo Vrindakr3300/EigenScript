@@ -140,7 +140,7 @@ struct ASTNode {
         struct { ASTNode **keys; ASTNode **vals; int count; } dict;
         struct { ASTNode *target; char *key; } dot;
         struct { ASTNode *target; char *key; ASTNode *expr; } dot_assign;
-        struct { ASTNode *target; ASTNode *index; ASTNode *expr; } index_assign;
+        struct { ASTNode *target; ASTNode *index; ASTNode *expr; char compound_op[4]; } index_assign;
         struct { char *module_name; } import;
         struct { ASTNode *expr; ASTNode **patterns; ASTNode ***bodies; int *body_counts; int case_count; } match;
         struct { char **params; int param_count; ASTNode *body; } lambda;

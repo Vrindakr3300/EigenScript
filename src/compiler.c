@@ -89,6 +89,9 @@ static int op_stack_effect(uint8_t op) {
     case OP_GET_LOCAL: case OP_GET_NAME: case OP_DUP:
     case OP_PREDICATE: case OP_LISTCOMP_BEGIN:
         return 1;
+    /* Push 2 */
+    case OP_DUP2:
+        return 2;
     /* Pop 1 */
     case OP_POP:
         return -1;
@@ -766,7 +769,16 @@ static void compile_node(Compiler *c, ASTNode *node) {
     case AST_INDEX_ASSIGN: {
         compile_node(c, node->data.index_assign.target);
         compile_node(c, node->data.index_assign.index);
-        compile_node(c, node->data.index_assign.expr);
+        if (node->data.index_assign.compound_op[0]) {
+            /* Compound: target index → DUP2 → INDEX_GET → expr → BINOP → INDEX_SET */
+            emit(c, OP_DUP2, node->line);
+            emit(c, OP_INDEX_GET, node->line);
+            compile_node(c, node->data.index_assign.expr);
+            uint8_t op = binop_to_opcode(node->data.index_assign.compound_op);
+            emit(c, op, node->line);
+        } else {
+            compile_node(c, node->data.index_assign.expr);
+        }
         emit(c, OP_INDEX_SET, node->line);
         break;
     }

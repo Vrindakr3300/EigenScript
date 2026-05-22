@@ -67,6 +67,7 @@ typedef enum {
     /* Stack manipulation */
     OP_POP,             /* discard TOS */
     OP_DUP,             /* duplicate TOS */
+    OP_DUP2,            /* duplicate top two: a b → a b a b */
 
     /* Functions */
     OP_CLOSURE,         /* [fn_idx:16] create closure from compiled function */

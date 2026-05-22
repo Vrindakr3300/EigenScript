@@ -204,7 +204,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_JUMP_IF_TRUE] = &&lbl_JUMP_IF_TRUE,
         [OP_JUMP_IF_FALSE_PEEK] = &&lbl_JUMP_IF_FALSE_PEEK,
         [OP_JUMP_IF_TRUE_PEEK] = &&lbl_JUMP_IF_TRUE_PEEK,
-        [OP_POP] = &&lbl_POP, [OP_DUP] = &&lbl_DUP,
+        [OP_POP] = &&lbl_POP, [OP_DUP] = &&lbl_DUP, [OP_DUP2] = &&lbl_DUP2,
         [OP_CLOSURE] = &&lbl_CLOSURE, [OP_CALL] = &&lbl_CALL,
         [OP_RETURN] = &&lbl_RETURN, [OP_RETURN_NULL] = &&lbl_RETURN_NULL,
         [OP_LIST] = &&lbl_LIST, [OP_DICT] = &&lbl_DICT,
@@ -677,6 +677,14 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         Value *v = vm_peek(0);
         val_incref(v);
         vm_push(v);
+        DISPATCH();
+    }
+
+    CASE(DUP2): {
+        Value *b = vm_peek(0);
+        Value *a = vm_peek(1);
+        val_incref(a); val_incref(b);
+        vm_push(a); vm_push(b);
         DISPATCH();
     }
 

@@ -1191,25 +1191,15 @@ static ASTNode* parse_statement(Parser *p) {
         /* Index-assignment: grid[0][1] is value, items[i] is value */
         if (target->type == AST_INDEX && (p_cur(p)->type == TOK_IS || is_compound_assign(p_cur(p)->type))) {
             int compound = is_compound_assign(p_cur(p)->type);
-            char cop[4];
+            char cop[4] = {0};
             if (compound) compound_to_op(p_cur(p)->type, cop);
             p_advance(p); /* skip IS or compound op */
             ASTNode *rhs = parse_expression(p);
-            if (compound) {
-                /* Desugar a[i] += expr → a[i] is a[i] + expr */
-                ASTNode *read = make_node(AST_INDEX, t->line);
-                read->data.index.target = clone_ast(target->data.index.target);
-                read->data.index.index = clone_ast(target->data.index.index);
-                ASTNode *binop = make_node(AST_BINOP, t->line);
-                memcpy(binop->data.binop.op, cop, 4);
-                binop->data.binop.left = read;
-                binop->data.binop.right = rhs;
-                rhs = binop;
-            }
             ASTNode *n = make_node(AST_INDEX_ASSIGN, t->line);
             n->data.index_assign.target = target->data.index.target;
             n->data.index_assign.index = target->data.index.index;
             n->data.index_assign.expr = rhs;
+            memcpy(n->data.index_assign.compound_op, cop, 4);
             free(target);
             return n;
         }
