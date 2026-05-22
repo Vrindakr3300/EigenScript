@@ -665,7 +665,7 @@ Value* builtin_sgd_update(Value *arg) {
             double pv = (old->type == VAL_NUM) ? old->data.num : 0.0;
             double gv = (grad->data.list.items[i]->type == VAL_NUM) ? grad->data.list.items[i]->data.num : 0.0;
             param->data.list.items[i] = make_num_permanent(pv - lr * gv);
-            free_weight_val(old);
+            val_decref(old);
         }
     } else {
         /* 2D */
@@ -682,7 +682,7 @@ Value* builtin_sgd_update(Value *arg) {
                 double pv = (old->type == VAL_NUM) ? old->data.num : 0.0;
                 double gv = (gr->data.list.items[c]->type == VAL_NUM) ? gr->data.list.items[c]->data.num : 0.0;
                 pr->data.list.items[c] = make_num_permanent(pv - lr * gv);
-                free_weight_val(old);
+                val_decref(old);
             }
         }
     }
@@ -773,7 +773,7 @@ Value* builtin_sgd_update_rows(Value *arg) {
             double pv = (old->type == VAL_NUM) ? old->data.num : 0.0;
             double gv = (grow->data.list.items[c]->type == VAL_NUM) ? grow->data.list.items[c]->data.num : 0.0;
             mrow->data.list.items[c] = make_num_permanent(pv - lr * gv);
-            free_weight_val(old);
+            val_decref(old);
         }
     }
     return matrix;
@@ -874,7 +874,7 @@ Value* builtin_sgd_update_cols(Value *arg) {
             double pv = (old->type == VAL_NUM) ? old->data.num : 0.0;
             double gv = (grow->data.list.items[col]->type == VAL_NUM) ? grow->data.list.items[col]->data.num : 0.0;
             mrow->data.list.items[col] = make_num_permanent(pv - lr * gv);
-            free_weight_val(old);
+            val_decref(old);
         }
     }
     return matrix;
