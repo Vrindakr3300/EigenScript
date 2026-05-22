@@ -567,23 +567,27 @@ static void compile_node(Compiler *c, ASTNode *node) {
         c->stack_depth = depth_before_loop;
         emit_loop(c, loop_start, node->line);
 
-        /* Exit path: ITER_NEXT jumped here, no element pushed */
+        /* Break lands here — env already cleaned by break's LOOP_ENV_END */
+        if (lp) {
+            for (int i = 0; i < lp->break_count; i++)
+                patch_jump(c, lp->break_jumps[i]);
+        }
+
+        /* Exit path: ITER_NEXT jumped here (no element pushed), or break jumped here */
         patch_jump(c, exit_jump);
         c->stack_depth = depth_before_loop; /* iterator state still on stack */
         emit(c, OP_POP, node->line); /* pop iterator state */
         emit(c, OP_NULL, node->line); /* for-loop result */
 
-        if (lp) {
-            for (int i = 0; i < lp->break_count; i++)
-                patch_jump(c, lp->break_jumps[i]);
-            c->loop_depth--;
-        }
+        if (lp) c->loop_depth--;
         break;
     }
 
     case AST_BREAK: {
         if (c->loop_depth > 0) {
             LoopCtx *lp = &c->loops[c->loop_depth - 1];
+            /* Clean up loop env before jumping out (for-loops create per-iteration envs) */
+            emit(c, OP_LOOP_ENV_END, node->line);
             if (lp->break_count < MAX_BREAK_JUMPS) {
                 lp->break_jumps[lp->break_count++] = emit_jump(c, OP_JUMP, node->line);
             }

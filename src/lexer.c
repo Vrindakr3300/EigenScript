@@ -159,6 +159,10 @@ TokenList tokenize(const char *source) {
                     indent_top--;
                     tok_add(&tl, TOK_DEDENT, 0, NULL, line, col);
                 }
+                if (spaces != indent_stack[indent_top]) {
+                    fprintf(stderr, "Syntax error line %d: indentation does not match any outer level\n", line);
+                    g_parse_errors++;
+                }
             }
             at_line_start = 0;
         }

@@ -568,14 +568,25 @@ static ASTNode* parse_primary(Parser *p) {
         p_advance(p);
         ASTNode *expr = parse_expression(p);
         p_expect(p, TOK_RPAREN);
-        while (p_cur(p)->type == TOK_LBRACKET) {
-            p_advance(p);
-            ASTNode *idx = parse_expression(p);
-            p_expect(p, TOK_RBRACKET);
-            ASTNode *index_node = make_node(AST_INDEX, p_cur(p)->line);
-            index_node->data.index.target = expr;
-            index_node->data.index.index = idx;
-            expr = index_node;
+        while (p_cur(p)->type == TOK_LBRACKET || p_cur(p)->type == TOK_DOT) {
+            if (p_cur(p)->type == TOK_DOT) {
+                p_advance(p);
+                Token *key_tok = p_cur(p);
+                p_expect(p, TOK_IDENT);
+                ASTNode *dot = make_node(AST_DOT, key_tok->line);
+                dot->data.dot.target = expr;
+                dot->data.dot.key = xstrdup(key_tok->str_val);
+                set_name_hash(dot, dot->data.dot.key);
+                expr = dot;
+            } else {
+                p_advance(p);
+                ASTNode *idx = parse_expression(p);
+                p_expect(p, TOK_RBRACKET);
+                ASTNode *index_node = make_node(AST_INDEX, p_cur(p)->line);
+                index_node->data.index.target = expr;
+                index_node->data.index.index = idx;
+                expr = index_node;
+            }
         }
         return expr;
     }
@@ -859,7 +870,7 @@ static ASTNode* parse_comparison(Parser *p) {
             default: break;
         }
         p_advance(p);
-        ASTNode *right = parse_addition(p);
+        ASTNode *right = parse_bitor(p);
         ASTNode *n = make_node(AST_BINOP, p_cur(p)->line);
         snprintf(n->data.binop.op, sizeof(n->data.binop.op), "%s", op);
         n->data.binop.left = left;

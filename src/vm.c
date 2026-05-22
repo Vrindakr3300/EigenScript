@@ -879,8 +879,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         for (int i = 0; i < count; i++) {
             Value *k = g_vm.stack[base + i * 2];
             Value *v = g_vm.stack[base + i * 2 + 1];
-            const char *key_str = (k->type == VAL_STR) ? k->data.str : "?";
-            dict_set(dict, key_str, v);
+            if (k->type != VAL_STR) {
+                runtime_error(current_line, "dict key must be a string, got %s", val_type_name(k->type));
+                continue;
+            }
+            dict_set(dict, k->data.str, v);
         }
         for (int i = 0; i < count * 2; i++)
             val_decref(vm_pop());
