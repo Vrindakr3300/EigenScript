@@ -1982,32 +1982,35 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     }
 
     CASE(DISPATCH): {
-        /* Native dispatch: pop arg, key, table; call table[key](arg) inline.
-         * Replaces builtin_dispatch to avoid re-entrant vm_execute calls. */
-        Value *arg = vm_pop();
-        Value *key_val = vm_pop();
-        Value *table = vm_pop();
+        /* Native dispatch: stack [table, key, arg] -> table[key](arg).
+         * Slot-aware: key is an immediate-num; never materialize. Table
+         * and arg are heap pointers in practice (list + ctx). */
+        EigsSlot arg_s   = g_vm.stack[g_vm.sp - 1];
+        EigsSlot key_s   = g_vm.stack[g_vm.sp - 2];
+        EigsSlot table_s = g_vm.stack[g_vm.sp - 3];
+        g_vm.sp -= 3;
 
-        if (!table || table->type != VAL_LIST ||
-            !key_val || key_val->type != VAL_NUM) {
-            val_decref(arg); val_decref(key_val); val_decref(table);
-            vm_push(make_null());
+        if (!slot_is_num(key_s) || !slot_is_ptr(table_s)) {
+            slot_decref(arg_s); slot_decref(key_s); slot_decref(table_s);
+            vm_push_slot(slot_null());
             DISPATCH();
         }
 
-        int key = (int)key_val->data.num;
-        val_decref(key_val);
+        Value *table = slot_as_ptr(table_s);
+        int key = (int)key_s.d;
 
-        if (key < 0 || key >= table->data.list.count) {
-            val_decref(arg); val_decref(table);
-            vm_push(make_null());
+        if (table->type != VAL_LIST ||
+            key < 0 || key >= table->data.list.count) {
+            slot_decref(arg_s); slot_decref(table_s);
+            vm_push_slot(slot_null());
             DISPATCH();
         }
 
         Value *fn = table->data.list.items[key];
 
         if (fn && fn->type == VAL_BUILTIN) {
-            val_incref(arg);
+            Value *arg = slot_to_value(arg_s);
+            slot_decref(arg_s);
             Env *saved = g_builtin_call_env;
             g_builtin_call_env = frame->env;
             Value *result = fn->data.builtin(arg);
@@ -2015,23 +2018,28 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             if (result != arg) val_decref(arg);
             if (!result) result = make_null();
             else if (result != arg) val_incref(result);
-            val_decref(table);
+            slot_decref(table_s);
             vm_push(result);
             CHECK_ERROR();
             DISPATCH();
         }
 
         if (fn && fn->type == VAL_FN && fn->data.fn.body_count == -1) {
-            /* Bytecode function — push frame inline (no re-entry) */
+            /* Bytecode function — push frame inline (no re-entry).
+             * Bind the single param directly from the slot (no boxing). */
             EigsChunk *fn_chunk = (EigsChunk *)fn->data.fn.body;
             Env *call_env = env_new(fn->data.fn.closure);
-            if (fn->data.fn.param_count > 0)
-                env_set_local(call_env, fn->data.fn.params[0], arg);
+            if (fn->data.fn.param_count > 0) {
+                uint32_t ph = fn->data.fn.param_hashes ? fn->data.fn.param_hashes[0] : 0;
+                env_set_local_hashed_slot(call_env,
+                    fn->data.fn.params[0], ph, arg_s);
+            } else {
+                slot_decref(arg_s);
+            }
             /* Pre-allocate slots for non-captured locals */
             if (fn_chunk->local_count > fn->data.fn.param_count)
                 env_reserve_slots(call_env, fn_chunk->local_count);
-            val_decref(arg);
-            val_decref(table);
+            slot_decref(table_s);
 
             frame->ip = ip;
             if (g_vm.frame_count >= VM_FRAMES_MAX) {
@@ -2057,8 +2065,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         }
 
         /* Not callable */
-        val_decref(arg); val_decref(table);
-        vm_push(make_null());
+        slot_decref(arg_s); slot_decref(table_s);
+        vm_push_slot(slot_null());
         DISPATCH();
     }
 
