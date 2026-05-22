@@ -27,6 +27,7 @@ typedef struct {
     int break_count;
     int continue_target;
     int scope_depth;
+    int has_fresh_env;  /* 1 if loop emits OP_LOOP_ENV_FRESH per iteration (for-loops) */
 } LoopCtx;
 
 /* Dynamic set of name pointers used for escape analysis & module-name tracking.
@@ -1081,6 +1082,7 @@ static void compile_node(Compiler *c, ASTNode *node) {
             lp = &c->loops[c->loop_depth++];
             lp->break_count = 0;
             lp->scope_depth = c->scope_depth;
+            lp->has_fresh_env = 0; /* while-loops don't allocate per-iter envs */
         }
 
         int loop_start = c->chunk->code_len;
@@ -1117,14 +1119,17 @@ static void compile_node(Compiler *c, ASTNode *node) {
         }
         patch_jump(c, stall_jump);
         c->stack_depth = depth_at_loop;
-        emit(c, OP_NULL, node->line); /* loop result */
 
-        /* Patch break jumps */
+        /* Patch break jumps to land BEFORE OP_NULL so the break path also
+         * pushes the loop result, matching the condition-exit/stall-exit paths
+         * and the compile-time stack tracking (AST_BREAK's adjust_stack +1). */
         if (lp) {
             for (int i = 0; i < lp->break_count; i++)
                 patch_jump(c, lp->break_jumps[i]);
             c->loop_depth--;
         }
+
+        emit(c, OP_NULL, node->line); /* loop result */
         break;
     }
 
@@ -1137,6 +1142,7 @@ static void compile_node(Compiler *c, ASTNode *node) {
             lp = &c->loops[c->loop_depth++];
             lp->break_count = 0;
             lp->scope_depth = c->scope_depth;
+            lp->has_fresh_env = 1; /* for-loops allocate a per-iter env */
         }
 
         int depth_before_loop = c->stack_depth;
@@ -1185,8 +1191,11 @@ static void compile_node(Compiler *c, ASTNode *node) {
     case AST_BREAK: {
         if (c->loop_depth > 0) {
             LoopCtx *lp = &c->loops[c->loop_depth - 1];
-            /* Clean up loop env before jumping out (for-loops create per-iteration envs) */
-            emit(c, OP_LOOP_ENV_END, node->line);
+            /* Clean up loop env before jumping out, but ONLY if the loop allocated
+             * a per-iteration env. While-loops don't — emitting OP_LOOP_ENV_END
+             * there would free the surrounding env (often the global one). */
+            if (lp->has_fresh_env)
+                emit(c, OP_LOOP_ENV_END, node->line);
             if (lp->break_count < MAX_BREAK_JUMPS) {
                 lp->break_jumps[lp->break_count++] = emit_jump(c, OP_JUMP, node->line);
             }
