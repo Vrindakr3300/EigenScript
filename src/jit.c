@@ -131,26 +131,29 @@ static void ensure_layout(void) {
 }
 
 /* Scan a chunk-start prefix of opcodes we can natively translate.
- * Returns the prefix length in *bytes* (0 = nothing compilable).
+ * Returns prefix length in *bytes* (0 = nothing compilable). Sets
+ * *has_get_local nonzero if the prefix contains OP_GET_LOCAL — the
+ * emitter uses this to decide whether to emit the env-cache slice of
+ * the prologue (worth ~25 bytes, paid once).
  *
  * Stage 4 supported set:
- *   OP_NULL, OP_NUM_ZERO, OP_NUM_ONE — inline immediate push.
- *   OP_LINE                          — inline 32-bit store to current_line.
- *   OP_CONST [idx:16]                — inline push of pre-encoded slot;
- *                                      heap constants emit a one-shot
- *                                      atomic incref (skipped statically
- *                                      when v->arena == 1).
- *   OP_POP                           — peephole `dec %ecx`, valid only
- *                                      when the most recent push was an
- *                                      immediate (number/null) whose
- *                                      slot_decref is a no-op.
- *
- * Requires ≥3 ops AND ≥1 non-LINE op so the prologue/epilogue fixed
- * cost is recovered. */
-static int jit_supported_prefix(const struct EigsChunk *chunk) {
+ *   OP_NULL/NUM_ZERO/NUM_ONE — inline immediate push.
+ *   OP_LINE                  — inline 32-bit store to current_line.
+ *   OP_CONST [idx:16]        — pre-encoded slot push + inline incref for
+ *                              heap (skipped statically when arena==1).
+ *   OP_GET_LOCAL [slot:16]   — load fn_env->values[slot]; inline
+ *                              conditional incref.
+ *   OP_POP                   — peephole `dec %ecx`, valid only when the
+ *                              most recent push was an immediate whose
+ *                              slot_decref is a no-op. GET_LOCAL breaks
+ *                              the chain (dynamic slot type).
+ */
+static int jit_supported_prefix(const struct EigsChunk *chunk,
+                                int *has_get_local) {
     int i = 0, ops = 0, non_line_ops = 0;
     int last_good = 0;
-    int last_push_immediate = 0;  /* most recent push was a non-refcounted slot */
+    int last_push_immediate = 0;
+    *has_get_local = 0;
     while (i < chunk->code_len) {
         uint8_t op = chunk->code[i];
         if (op == OP_NULL || op == OP_NUM_ZERO || op == OP_NUM_ONE) {
@@ -164,10 +167,12 @@ static int jit_supported_prefix(const struct EigsChunk *chunk) {
             Value *v = chunk->constants[idx];
             if (!v) break;
             i += 3; ops++; non_line_ops++;
-            /* Numeric constants flow as immediates; heap constants need
-             * a runtime incref but still don't grow the stack with a
-             * refcounted slot (the bits are the same — heap slot). */
             last_push_immediate = (v->type == VAL_NUM && v->obs_age == 0);
+        } else if (op == OP_GET_LOCAL) {
+            if (i + 3 > chunk->code_len) break;
+            i += 3; ops++; non_line_ops++;
+            *has_get_local = 1;
+            last_push_immediate = 0;
         } else if (op == OP_POP) {
             if (!last_push_immediate) break;
             i += 1; ops++; non_line_ops++;
@@ -175,7 +180,6 @@ static int jit_supported_prefix(const struct EigsChunk *chunk) {
         } else if (op == OP_LINE) {
             if (i + 3 > chunk->code_len) break;
             i += 3; ops++;
-            /* OP_LINE doesn't touch the stack — preserve last_push_immediate */
         } else {
             break;
         }
@@ -186,12 +190,12 @@ static int jit_supported_prefix(const struct EigsChunk *chunk) {
 }
 
 /* Upper bound on emitted bytes:
- *   prologue 23 + epilogue 10 + 40 bytes/op worst case (OP_CONST heap
- *   with incref: movabs+store+inc + movabs %rdi + lock addl).
- *   The caller advances frame->ip by chunk->jit_advance, so the thunk
- *   only writes %ecx back to g_vm.sp before returning. */
-static size_t jit_estimate_size(int prefix) {
-    return 23 + 10 + 40 * (size_t)prefix;
+ *   prologue 23 (always) + 35 (env-cache extra when has_get_local) +
+ *   epilogue 10 + 64 bytes/op worst case (OP_GET_LOCAL with conditional
+ *   incref). The caller advances frame->ip by chunk->jit_advance, so
+ *   the thunk only writes %ecx back to g_vm.sp before returning. */
+static size_t jit_estimate_size(int prefix, int has_get_local) {
+    return 23 + (has_get_local ? 35 : 0) + 10 + 64 * (size_t)prefix;
 }
 
 /* ---- x86-64 encoding helpers ---- */
@@ -263,6 +267,83 @@ static uint8_t *emit_lock_addl_1_disp32_rdi(uint8_t *w, int32_t disp) {
     *w++ = 0x01;
     return w;
 }
+
+/* mov disp32(%rbx), %eax   — load 32-bit (6 bytes) */
+static uint8_t *emit_mov_disp32_rbx_to_eax(uint8_t *w, int32_t disp) {
+    *w++ = 0x8B; *w++ = 0x83;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* dec %eax (2 bytes) */
+static uint8_t *emit_dec_eax(uint8_t *w) { *w++ = 0xFF; *w++ = 0xC8; return w; }
+
+/* imul $imm32, %rax, %rax  (7 bytes) */
+static uint8_t *emit_imul_imm32_rax(uint8_t *w, int32_t imm) {
+    *w++ = 0x48; *w++ = 0x69; *w++ = 0xC0;
+    return emit_u32(w, (uint32_t)imm);
+}
+
+/* lea disp32(%rbx, %rax, 1), %r12   — &g_vm.frames[fc-1] (8 bytes) */
+static uint8_t *emit_lea_rbx_rax_to_r12(uint8_t *w, int32_t disp) {
+    *w++ = 0x4C; *w++ = 0x8D; *w++ = 0xA4; *w++ = 0x03;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov disp32(%r12), %r12   — chase pointer through frame->fn_env then
+ * env->values (9 bytes per chase: REX.WRB + opcode + SIB + disp32).
+ * We always use disp32 since field offsets may be large. */
+static uint8_t *emit_mov_disp32_r12_to_r12(uint8_t *w, int32_t disp) {
+    *w++ = 0x4D; *w++ = 0x8B; *w++ = 0xA4; *w++ = 0x24;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov disp32(%r12), %rax   — load 8-byte slot from cached values base
+ * at compile-time-known offset (9 bytes). */
+static uint8_t *emit_mov_disp32_r12_to_rax(uint8_t *w, int32_t disp) {
+    *w++ = 0x49; *w++ = 0x8B; *w++ = 0x84; *w++ = 0x24;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov %rax, %rdx  (3 bytes) */
+static uint8_t *emit_mov_rax_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x89; *w++ = 0xC2; return w;
+}
+/* mov %rax, %rdi  (3 bytes) */
+static uint8_t *emit_mov_rax_rdi(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x89; *w++ = 0xC7; return w;
+}
+/* shr $48, %rdx  (4 bytes) */
+static uint8_t *emit_shr_48_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0xC1; *w++ = 0xEA; *w++ = 0x30; return w;
+}
+/* shl $16, %rdi  (4 bytes) */
+static uint8_t *emit_shl_16_rdi(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0xC1; *w++ = 0xE7; *w++ = 0x10; return w;
+}
+/* shr $16, %rdi  (4 bytes) */
+static uint8_t *emit_shr_16_rdi(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0xC1; *w++ = 0xEF; *w++ = 0x10; return w;
+}
+/* cmp $imm32, %edx  (6 bytes) */
+static uint8_t *emit_cmp_imm32_edx(uint8_t *w, uint32_t imm) {
+    *w++ = 0x81; *w++ = 0xFA;
+    return emit_u32(w, imm);
+}
+/* testb $1, disp32(%rdi)  (7 bytes) */
+static uint8_t *emit_testb_1_disp32_rdi(uint8_t *w, int32_t disp) {
+    *w++ = 0xF6; *w++ = 0x87;
+    w = emit_u32(w, (uint32_t)disp);
+    *w++ = 0x01;
+    return w;
+}
+/* jb rel8 (2 bytes); patch second byte to be (target - end_of_jb). */
+static uint8_t *emit_jb_rel8(uint8_t *w, uint8_t **patch) {
+    *w++ = 0x72; *patch = w; *w++ = 0x00; return w;
+}
+/* jnz rel8 (2 bytes) */
+static uint8_t *emit_jnz_rel8(uint8_t *w, uint8_t **patch) {
+    *w++ = 0x75; *patch = w; *w++ = 0x00; return w;
+}
 #endif
 
 void jit_try_compile_chunk(struct EigsChunk *chunk) {
@@ -276,7 +357,8 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
 #else
     ensure_layout();
 
-    int prefix = jit_supported_prefix(chunk);
+    int has_get_local = 0;
+    int prefix = jit_supported_prefix(chunk, &has_get_local);
     if (prefix == 0) {
         chunk->jit_state = 1;
         chunk->jit_code = NULL;
@@ -297,7 +379,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
         return;
     }
 
-    size_t size = jit_estimate_size(prefix);
+    size_t size = jit_estimate_size(prefix, has_get_local);
     uint8_t *code = jit_cache_alloc(g_jit_cache, size);
     if (!code) {
         chunk->jit_state = 1;
@@ -308,11 +390,31 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
 
     uint8_t *w = code;
 
-    /* Prologue (23 bytes): preserve %rbx, point it at &g_vm, cache sp. */
+    /* Prologue: preserve %rbx + %r12, point %rbx at &g_vm, cache sp.
+     *
+     * Register allocation across the thunk:
+     *   %rbx = &g_vm                 (callee-saved, set once)
+     *   %ecx = g_vm.sp               (live, mutates with pushes/pops)
+     *   %r12 = current_frame->fn_env->values  (set only when has_get_local)
+     *
+     * %rdx/%rdi/%rax are scratch for incref logic. */
     w = emit_u8(w, 0x53);                                       /* push %rbx */
+    w = emit_u8(w, 0x41); w = emit_u8(w, 0x54);                 /* push %r12 */
     w = emit_load_fs_zero_rbx(w);                               /* mov %fs:0, %rbx */
     w = emit_lea_rbx_disp32_rbx(w, (int32_t)g_layout.g_vm_tpoff);
     w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);         /* mov sp, %ecx */
+
+    if (has_get_local) {
+        /* %r12 = &g_vm.frames[frame_count - 1]
+         *      = &g_vm + off_frames + (fc-1)*sizeof_callframe
+         * Then chase frame->fn_env then env->values into %r12. */
+        w = emit_mov_disp32_rbx_to_eax(w, g_layout.off_frame_count);
+        w = emit_dec_eax(w);
+        w = emit_imul_imm32_rax(w, g_layout.sizeof_callframe);
+        w = emit_lea_rbx_rax_to_r12(w, g_layout.off_frames);
+        w = emit_mov_disp32_r12_to_r12(w, g_layout.off_callframe_fn_env);
+        w = emit_mov_disp32_r12_to_r12(w, g_layout.off_env_values);
+    }
 
     /* Body: inline native code per opcode. */
     int i = 0;
@@ -356,6 +458,51 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
                         w, (int32_t)offsetof(Value, refcount));
             }
             i += 3;
+        } else if (op == OP_GET_LOCAL) {
+            uint16_t slot = (uint16_t)(chunk->code[i + 1] |
+                                       ((uint16_t)chunk->code[i + 2] << 8));
+            /* %rax = values[slot]  (8-byte slot at slot*8 offset) */
+            w = emit_mov_disp32_r12_to_rax(w, (int32_t)slot * 8);
+            /* Conditional incref:
+             *    rdx = rax; rdx >>= 48;
+             *    if (rdx < 0xFFFB) goto skip;   // immediate (num/null/bool)
+             *    rdi = (rax << 16) >> 16;        // mask payload (Value*)
+             *    if (rdi->arena) goto skip;
+             *    lock addl $1, refcount(rdi)
+             *  skip:
+             *    store rax to stack[sp]; sp++
+             */
+            w = emit_mov_rax_rdx(w);
+            w = emit_shr_48_rdx(w);
+            w = emit_cmp_imm32_edx(w, 0xFFFB);
+            uint8_t *jb_patch;
+            w = emit_jb_rel8(w, &jb_patch);
+            uint8_t *jb_after_check = w;
+            w = emit_mov_rax_rdi(w);
+            w = emit_shl_16_rdi(w);
+            w = emit_shr_16_rdi(w);
+            w = emit_testb_1_disp32_rdi(w, (int32_t)offsetof(Value, arena));
+            uint8_t *jnz_patch;
+            w = emit_jnz_rel8(w, &jnz_patch);
+            uint8_t *jnz_after_check = w;
+            w = emit_lock_addl_1_disp32_rdi(
+                    w, (int32_t)offsetof(Value, refcount));
+            /* Patch both forward jumps to land here (the store). */
+            int jb_rel = (int)(w - jb_after_check);
+            int jnz_rel = (int)(w - jnz_after_check);
+            if (jb_rel > 127 || jnz_rel > 127) {
+                /* Shouldn't happen given our worst-case size budget.
+                 * Abandon emission for safety. */
+                chunk->jit_state = 1;
+                chunk->jit_code = NULL;
+                jit_cache_seal(g_jit_cache);
+                return;
+            }
+            *jb_patch = (uint8_t)jb_rel;
+            *jnz_patch = (uint8_t)jnz_rel;
+            w = emit_store_rax_at_stack(w, g_layout.off_stack);
+            w = emit_inc_ecx(w);
+            i += 3;
         } else if (op == OP_POP) {
             /* Peephole: prior op pushed an immediate, whose slot_decref
              * is a no-op. Just dec the cached sp. */
@@ -370,9 +517,10 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
         }
     }
 
-    /* Epilogue (8 bytes): write sp back to g_vm, restore %rbx, return.
-     * frame->ip advance is the caller's responsibility (see jit.h). */
+    /* Epilogue (10 bytes): write sp back to g_vm, restore %r12 + %rbx,
+     * return. frame->ip advance is the caller's responsibility. */
     w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+    w = emit_u8(w, 0x41); w = emit_u8(w, 0x5C);                 /* pop %r12 */
     w = emit_u8(w, 0x5B);                                       /* pop %rbx */
     w = emit_u8(w, 0xC3);                                       /* ret */
 

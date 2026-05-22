@@ -343,14 +343,17 @@ static Value *make_iter_state(Value *iterable) {
 void eigs_jit_get_layout(EigsJitLayout *out) {
     void *tp;
     __asm__ __volatile__("mov %%fs:0, %0" : "=r"(tp));
-    out->g_vm_tpoff       = (long)((char *)&g_vm - (char *)tp);
-    out->off_sp           = (int)offsetof(VM, sp);
-    out->off_stack        = (int)offsetof(VM, stack);
-    out->off_frame_count  = (int)offsetof(VM, frame_count);
-    out->off_frames       = (int)offsetof(VM, frames);
-    out->off_current_line = (int)offsetof(VM, current_line);
-    out->off_callframe_ip = (int)offsetof(CallFrame, ip);
-    out->sizeof_callframe = (int)sizeof(CallFrame);
+    out->g_vm_tpoff          = (long)((char *)&g_vm - (char *)tp);
+    out->off_sp              = (int)offsetof(VM, sp);
+    out->off_stack           = (int)offsetof(VM, stack);
+    out->off_frame_count     = (int)offsetof(VM, frame_count);
+    out->off_frames          = (int)offsetof(VM, frames);
+    out->off_current_line    = (int)offsetof(VM, current_line);
+    out->off_callframe_ip    = (int)offsetof(CallFrame, ip);
+    out->off_callframe_fn_env= (int)offsetof(CallFrame, fn_env);
+    out->sizeof_callframe    = (int)sizeof(CallFrame);
+    out->off_env_values      = (int)offsetof(Env, values);
+    out->off_env_count       = (int)offsetof(Env, count);
 }
 
 /* ---- Main execution loop ---- */

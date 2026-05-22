@@ -93,7 +93,10 @@ typedef struct {
     int  off_frames;
     int  off_current_line;
     int  off_callframe_ip;
+    int  off_callframe_fn_env;
     int  sizeof_callframe;
+    int  off_env_values;
+    int  off_env_count;
 } EigsJitLayout;
 
 void eigs_jit_get_layout(EigsJitLayout *out);
