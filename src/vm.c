@@ -1126,35 +1126,44 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     }
 
     CASE(RETURN): {
-        Value *result;
+        /* Slot-native: avoid make_num/free_value round-trip when a callee
+         * returns an immediate. Carry the result slot across the frame
+         * switch directly. */
+        EigsSlot result_s;
         if (g_vm.sp > frame->bp) {
-            result = vm_pop();
+            result_s = g_vm.stack[--g_vm.sp];
         } else {
-            result = make_null();
+            result_s = slot_null();
         }
         while (g_vm.sp > frame->bp)
-            val_decref(vm_pop());
+            slot_decref(g_vm.stack[--g_vm.sp]);
         if (frame->owns_env) env_free(frame->env);
         g_vm.frame_count--;
-        /* Return to C if we've unwound past our entry point */
-        if (g_vm.frame_count <= base_frame) return result;
+        if (g_vm.frame_count <= base_frame) {
+            /* Return to C: transfer slot's owned ref into a Value*.
+             * Immediate -> materialize; pointer -> reuse slot's ref. */
+            if (slot_is_num(result_s))       return make_num(result_s.d);
+            if (slot_is_null(result_s))      return make_null();
+            if (slot_is_bool(result_s))      return make_num(slot_as_bool(result_s) ? 1.0 : 0.0);
+            return slot_as_ptr(result_s);
+        }
         frame = &g_vm.frames[g_vm.frame_count - 1];
         ip = frame->ip;
         chunk = frame->chunk;
-        vm_push(result);
+        g_vm.stack[g_vm.sp++] = result_s;
         DISPATCH();
     }
 
     CASE(RETURN_NULL): {
         while (g_vm.sp > frame->bp)
-            val_decref(vm_pop());
+            slot_decref(g_vm.stack[--g_vm.sp]);
         if (frame->owns_env) env_free(frame->env);
         g_vm.frame_count--;
         if (g_vm.frame_count <= base_frame) return make_null();
         frame = &g_vm.frames[g_vm.frame_count - 1];
         ip = frame->ip;
         chunk = frame->chunk;
-        vm_push(make_null());
+        g_vm.stack[g_vm.sp++] = slot_null();
         DISPATCH();
     }
 
