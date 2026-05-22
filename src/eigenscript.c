@@ -287,6 +287,7 @@ void free_value(Value *v) {
             free(v->data.dict.vals);
             free(v->data.dict.hash.hashes);
             free(v->data.dict.hash.indices);
+            free(v->data.dict.hash.generations);
             break;
         case VAL_FN:
             free(v->data.fn.name);
@@ -774,18 +775,22 @@ uint32_t env_name_hash(const char *name) {
 
 static void env_hash_init(EnvHash *ht, int cap) {
     ht->mask = cap - 1;
-    ht->hashes  = xcalloc(cap, sizeof(uint32_t));
-    ht->indices = xmalloc_array(cap, sizeof(int));
+    ht->hashes      = xmalloc_array(cap, sizeof(uint32_t));
+    ht->indices     = xmalloc_array(cap, sizeof(int));
+    ht->generations = xcalloc(cap, sizeof(uint32_t));  /* zero => empty (current gen starts at 1) */
+    ht->generation  = 1;
     for (int i = 0; i < cap; i++) ht->indices[i] = -1;
 }
 
 static void env_hash_insert(EnvHash *ht, uint32_t h, int idx) {
     int slot = h & ht->mask;
-    while (ht->hashes[slot]) {
+    uint32_t gen = ht->generation;
+    while (ht->generations[slot] == gen) {
         slot = (slot + 1) & ht->mask;
     }
     ht->hashes[slot] = h;
     ht->indices[slot] = idx;
+    ht->generations[slot] = gen;
 }
 
 static void env_hash_rebuild(EnvHash *ht, char **names, int count) {
@@ -793,16 +798,19 @@ static void env_hash_rebuild(EnvHash *ht, char **names, int count) {
     if (new_cap < ENV_HASH_INIT_CAP) new_cap = ENV_HASH_INIT_CAP;
     free(ht->hashes);
     free(ht->indices);
+    free(ht->generations);
     env_hash_init(ht, new_cap);
     for (int i = 0; i < count; i++)
         env_hash_insert(ht, env_hash_name(names[i]), i);
 }
 
-/* Lookup name in hash table. Returns index into names/values or -1. */
+/* Lookup name in hash table. Returns index into names/values or -1.
+ * Slot is "occupied" iff its generation matches the table's current gen. */
 static int env_hash_find(const EnvHash *ht, const char *name, uint32_t h, char **names) {
-    if (!ht->hashes) return -1;
+    if (!ht->generations) return -1;
     int slot = h & ht->mask;
-    while (ht->hashes[slot]) {
+    uint32_t gen = ht->generation;
+    while (ht->generations[slot] == gen) {
         if (ht->hashes[slot] == h && strcmp(names[ht->indices[slot]], name) == 0)
             return ht->indices[slot];
         slot = (slot + 1) & ht->mask;
@@ -832,7 +840,9 @@ Env* env_new(Env *parent) {
         g_env_freelist = e->parent;
         g_env_freelist_count--;
         e->count = 0;
-        memset(e->hash.hashes, 0, (e->hash.mask + 1) * sizeof(uint32_t));
+        /* Generation already bumped in env_free's freelist branch.
+         * Hash slots from the prior occupant are dormant by virtue of
+         * generations[i] != current generation. */
     } else {
         e = xcalloc(1, sizeof(Env));
         e->capacity = ENV_INIT_CAP;
@@ -1052,7 +1062,13 @@ void env_free(Env *env) {
         env->count = 0;
         env->captured = 0;
         env->env_refcount = 0;
-        memset(env->hash.hashes, 0, (env->hash.mask + 1) * sizeof(uint32_t));
+        /* O(1) invalidation: bump generation. On wrap, fall back to a
+         * full reset (every ~4 billion env reuses on this thread). */
+        if (++env->hash.generation == 0) {
+            memset(env->hash.generations, 0,
+                   (env->hash.mask + 1) * sizeof(uint32_t));
+            env->hash.generation = 1;
+        }
         env->parent = g_env_freelist;
         g_env_freelist = env;
         g_env_freelist_count++;
@@ -1062,6 +1078,7 @@ void env_free(Env *env) {
     free(env->values);
     free(env->hash.hashes);
     free(env->hash.indices);
+    free(env->hash.generations);
     free(env);
 }
 
@@ -1110,7 +1127,11 @@ void env_clear(Env *env) {
         slot_decref(env->values[i]);
     }
     env->count = 0;
-    memset(env->hash.hashes, 0, (env->hash.mask + 1) * sizeof(uint32_t));
+    if (++env->hash.generation == 0) {
+        memset(env->hash.generations, 0,
+               (env->hash.mask + 1) * sizeof(uint32_t));
+        env->hash.generation = 1;
+    }
 }
 
 Value* env_get_hashed(Env *env, const char *name, uint32_t h) {

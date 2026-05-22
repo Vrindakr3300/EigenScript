@@ -169,9 +169,11 @@ typedef union { double d; uint64_t u; } EigsSlot;
 #define ENV_HASH_INIT_CAP 32  /* must be power of 2 */
 
 typedef struct {
-    uint32_t *hashes;   /* hash of name (0 = empty slot) */
-    int      *indices;  /* index into Env::names/values, or -1 */
-    int       mask;     /* capacity - 1 (for & masking) */
+    uint32_t *hashes;       /* hash of name */
+    int      *indices;      /* index into Env::names/values, or -1 */
+    uint32_t *generations;  /* per-slot generation marker */
+    int       mask;         /* capacity - 1 (for & masking) */
+    uint32_t  generation;   /* current generation; slot is occupied iff generations[i] == this */
 } EnvHash;
 
 struct Env {
