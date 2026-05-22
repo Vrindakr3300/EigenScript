@@ -271,6 +271,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     }
 
     CASE(NUM_ZERO): {
+        /* Push a fresh num(0) — likely to be consumed by arithmetic and reused */
         vm_push(make_num(0.0));
         DISPATCH();
     }
@@ -286,7 +287,35 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
      * we can mutate it directly instead of allocating via make_num. */
 #define NUM_REUSE(v) ((v)->type == VAL_NUM && (v)->refcount == 1 && !(v)->arena)
 
+    /* Stack-top fast path: peek at sp-1 and sp-2 directly */
+#define ARITH_FAST(OP) do { \
+    Value *_b = g_vm.stack[g_vm.sp - 1]; \
+    Value *_a = g_vm.stack[g_vm.sp - 2]; \
+    if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) { \
+        double _r = num_guard(_a->data.num OP _b->data.num); \
+        if (NUM_REUSE(_a)) { \
+            _a->data.num = _r; \
+            if (NUM_REUSE(_b)) { free_value(_b); } else { val_decref(_b); } \
+            g_vm.sp--; \
+            DISPATCH(); \
+        } \
+        if (NUM_REUSE(_b)) { \
+            _b->data.num = _r; \
+            g_vm.stack[g_vm.sp - 2] = _b; \
+            val_decref(_a); \
+            g_vm.sp--; \
+            DISPATCH(); \
+        } \
+        g_vm.stack[g_vm.sp - 2] = make_num(_r); \
+        val_decref(_a); val_decref(_b); \
+        g_vm.sp--; \
+        DISPATCH(); \
+    } \
+} while(0)
+
     CASE(ADD): {
+        ARITH_FAST(+);
+        /* Slow path: handles string concat etc */
         Value *b = vm_pop(); Value *a = vm_pop();
         if (a->type == VAL_NUM && b->type == VAL_NUM) {
             double r = num_guard(a->data.num + b->data.num);
@@ -329,6 +358,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
 #define NUM_BINOP(NAME, OP, OPNAME) \
     CASE(NAME): { \
+        ARITH_FAST(OP); \
         Value *b = vm_pop(); Value *a = vm_pop(); \
         if (a->type == VAL_NUM && b->type == VAL_NUM) { \
             double r = num_guard(a->data.num OP b->data.num); \
@@ -387,13 +417,30 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
 #define INT_BINOP(NAME, OP) \
     CASE(NAME): { \
+        Value *_b = g_vm.stack[g_vm.sp - 1]; \
+        Value *_a = g_vm.stack[g_vm.sp - 2]; \
+        if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) { \
+            double _r = (double)((int64_t)_a->data.num OP (int64_t)_b->data.num); \
+            if (NUM_REUSE(_a)) { \
+                _a->data.num = _r; \
+                if (NUM_REUSE(_b)) { free_value(_b); } else { val_decref(_b); } \
+                g_vm.sp--; \
+                DISPATCH(); \
+            } \
+            if (NUM_REUSE(_b)) { \
+                _b->data.num = _r; \
+                g_vm.stack[g_vm.sp - 2] = _b; \
+                val_decref(_a); \
+                g_vm.sp--; \
+                DISPATCH(); \
+            } \
+            g_vm.stack[g_vm.sp - 2] = make_num(_r); \
+            val_decref(_a); val_decref(_b); \
+            g_vm.sp--; \
+            DISPATCH(); \
+        } \
         Value *b = vm_pop(); Value *a = vm_pop(); \
-        if (a->type == VAL_NUM && b->type == VAL_NUM) { \
-            double r = (double)((int64_t)a->data.num OP (int64_t)b->data.num); \
-            if (NUM_REUSE(a)) { a->data.num = r; vm_push(a); val_decref(b); DISPATCH(); } \
-            if (NUM_REUSE(b)) { b->data.num = r; vm_push(b); val_decref(a); DISPATCH(); } \
-            vm_push(make_num(r)); \
-        } else vm_push(make_num(0)); \
+        vm_push(make_num(0)); \
         val_decref(a); val_decref(b); \
         DISPATCH(); \
     }
@@ -440,10 +487,17 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     /* ---- Comparison ---- */
 
     CASE(EQ): {
+        Value *_b = g_vm.stack[g_vm.sp - 1];
+        Value *_a = g_vm.stack[g_vm.sp - 2];
+        if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) {
+            double _r = (_a->data.num == _b->data.num) ? 1.0 : 0.0;
+            if (NUM_REUSE(_a)) { _a->data.num = _r; if (NUM_REUSE(_b)) free_value(_b); else val_decref(_b); g_vm.sp--; DISPATCH(); }
+            if (NUM_REUSE(_b)) { _b->data.num = _r; g_vm.stack[g_vm.sp-2] = _b; val_decref(_a); g_vm.sp--; DISPATCH(); }
+            g_vm.stack[g_vm.sp-2] = make_num(_r); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH();
+        }
         Value *b = vm_pop(); Value *a = vm_pop();
         int eq = 0;
-        if (a->type == VAL_NUM && b->type == VAL_NUM) eq = a->data.num == b->data.num;
-        else if (a->type == VAL_STR && b->type == VAL_STR) eq = strcmp(a->data.str, b->data.str) == 0;
+        if (a->type == VAL_STR && b->type == VAL_STR) eq = strcmp(a->data.str, b->data.str) == 0;
         else if (a->type == VAL_NULL && b->type == VAL_NULL) eq = 1;
         else eq = (a == b);
         vm_push(make_num(eq ? 1.0 : 0.0));
@@ -452,10 +506,17 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     }
 
     CASE(NE): {
+        Value *_b = g_vm.stack[g_vm.sp - 1];
+        Value *_a = g_vm.stack[g_vm.sp - 2];
+        if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) {
+            double _r = (_a->data.num != _b->data.num) ? 1.0 : 0.0;
+            if (NUM_REUSE(_a)) { _a->data.num = _r; if (NUM_REUSE(_b)) free_value(_b); else val_decref(_b); g_vm.sp--; DISPATCH(); }
+            if (NUM_REUSE(_b)) { _b->data.num = _r; g_vm.stack[g_vm.sp-2] = _b; val_decref(_a); g_vm.sp--; DISPATCH(); }
+            g_vm.stack[g_vm.sp-2] = make_num(_r); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH();
+        }
         Value *b = vm_pop(); Value *a = vm_pop();
         int eq = 0;
-        if (a->type == VAL_NUM && b->type == VAL_NUM) eq = a->data.num == b->data.num;
-        else if (a->type == VAL_STR && b->type == VAL_STR) eq = strcmp(a->data.str, b->data.str) == 0;
+        if (a->type == VAL_STR && b->type == VAL_STR) eq = strcmp(a->data.str, b->data.str) == 0;
         else if (a->type == VAL_NULL && b->type == VAL_NULL) eq = 1;
         else eq = (a == b);
         vm_push(make_num(eq ? 0.0 : 1.0));
@@ -465,10 +526,16 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
 #define NUM_CMP(NAME, OP) \
     CASE(NAME): { \
+        Value *_b = g_vm.stack[g_vm.sp - 1]; \
+        Value *_a = g_vm.stack[g_vm.sp - 2]; \
+        if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) { \
+            double _r = (_a->data.num OP _b->data.num) ? 1.0 : 0.0; \
+            if (NUM_REUSE(_a)) { _a->data.num = _r; if (NUM_REUSE(_b)) free_value(_b); else val_decref(_b); g_vm.sp--; DISPATCH(); } \
+            if (NUM_REUSE(_b)) { _b->data.num = _r; g_vm.stack[g_vm.sp-2] = _b; val_decref(_a); g_vm.sp--; DISPATCH(); } \
+            g_vm.stack[g_vm.sp-2] = make_num(_r); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH(); \
+        } \
         Value *b = vm_pop(); Value *a = vm_pop(); \
-        if (a->type == VAL_NUM && b->type == VAL_NUM) \
-            vm_push(make_num(a->data.num OP b->data.num ? 1.0 : 0.0)); \
-        else vm_push(make_num(0)); \
+        vm_push(make_num(0)); \
         val_decref(a); val_decref(b); \
         DISPATCH(); \
     }
