@@ -7,6 +7,7 @@
 
 #include "eigenscript.h"
 #include "vm.h"
+#include "jit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1132,6 +1133,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->is_try = 0;
             frame->try_count = 0;
 
+            /* JIT hook: compile lazily, run native prefix if available. */
+            if (fn_chunk->jit_state == 0) jit_try_compile_chunk(fn_chunk);
+            if (fn_chunk->jit_code) {
+                ((JitChunkFn)fn_chunk->jit_code)(fn_chunk);
+            }
+
             /* Switch to new frame's bytecode */
             ip = frame->ip;
             chunk = fn_chunk;
@@ -2088,6 +2095,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->owns_env = 1;
             frame->is_try = 0;
             frame->try_count = 0;
+
+            /* JIT hook (mirror of OP_CALL bytecode-fn path). */
+            if (fn_chunk->jit_state == 0) jit_try_compile_chunk(fn_chunk);
+            if (fn_chunk->jit_code) {
+                ((JitChunkFn)fn_chunk->jit_code)(fn_chunk);
+            }
 
             ip = frame->ip;
             chunk = fn_chunk;

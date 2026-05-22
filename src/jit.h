@@ -45,4 +45,29 @@ size_t jit_cache_used(const EigsJitCache *jc);
 typedef int64_t (*JitConstFn)(void);
 JitConstFn jit_emit_const_return(EigsJitCache *jc, int64_t value);
 
+/* ---- In-VM integration ----
+ *
+ * Forward declare the chunk type so vm.c can hand chunks to the JIT
+ * without dragging the full vm.h into jit.c.  The full layout is
+ * defined in vm.h. */
+struct EigsChunk;
+
+/* Signature of a chunk-level JITed entry point. The thunk reads the
+ * thread-local VM state, executes the prefix of `chunk`'s opcodes it
+ * supports, points `g_vm.frames[frame_count-1].ip` at the next byte
+ * the interpreter should resume from, and returns. */
+typedef void (*JitChunkFn)(struct EigsChunk *chunk);
+
+/* Try to compile `chunk` into native code. On success, sets
+ * chunk->jit_state = 2 and chunk->jit_code to a JitChunkFn pointer.
+ * On any unsupported pattern, sets jit_state = 1 and leaves jit_code
+ * NULL. Idempotent — subsequent calls on the same chunk return
+ * immediately if jit_state != 0. */
+void jit_try_compile_chunk(struct EigsChunk *chunk);
+
+/* Lifetime hooks for the per-thread JIT cache. jit_module_shutdown is
+ * optional (process exit reclaims pages anyway) but useful in tests. */
+void jit_module_init(void);
+void jit_module_shutdown(void);
+
 #endif /* EIGS_JIT_H */

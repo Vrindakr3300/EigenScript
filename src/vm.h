@@ -175,6 +175,15 @@ typedef struct EigsChunk {
     char    *name;              /* function name or "<module>" */
     int      param_count;
     int      max_stack;         /* computed max stack depth */
+
+    /* JIT — populated lazily on first frame push.
+     * jit_state: 0 = untried, 1 = failed/unsupported, 2 = compiled.
+     * jit_code: callable native thunk when jit_state == 2. The thunk
+     * receives the chunk pointer, reads g_vm thread-local state, runs
+     * any prefix of opcodes it supports, sets frame->ip to where the
+     * interpreter should resume, and returns. */
+    uint8_t  jit_state;
+    void    *jit_code;
 } EigsChunk;
 
 /* ---- Call Frame ---- */

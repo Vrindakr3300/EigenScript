@@ -1,4 +1,6 @@
 #include "jit.h"
+#include "eigenscript.h"
+#include "vm.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -77,4 +79,33 @@ JitConstFn jit_emit_const_return(EigsJitCache *jc, int64_t value) {
     (void)value;
     return NULL;
 #endif
+}
+
+/* ---- In-VM integration ---- */
+
+/* Per-thread cache so each interpreter thread compiles into its own
+ * pages. Lazily initialized on first compile attempt. */
+static __thread EigsJitCache *g_jit_cache = NULL;
+
+void jit_module_init(void) {
+    /* Defer cache creation until the first compile request. */
+}
+
+void jit_module_shutdown(void) {
+    if (g_jit_cache) {
+        jit_cache_free(g_jit_cache);
+        g_jit_cache = NULL;
+    }
+}
+
+void jit_try_compile_chunk(struct EigsChunk *chunk) {
+    if (!chunk) return;
+    /* Stage 2: no opcode templates yet. Mark as failed so we never
+     * retry. Stage 3 will scan chunk->code and emit native templates
+     * for the supported opcode prefix, then set jit_state = 2. */
+    chunk->jit_state = 1;
+    chunk->jit_code = NULL;
+    /* Reference the cache var so a future compiler doesn't warn —
+     * Stage 3 will replace this with real lazy allocation. */
+    (void)g_jit_cache;
 }
