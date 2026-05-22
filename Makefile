@@ -17,7 +17,7 @@ LSP_SOURCES := $(SRC_DIR)/eigenlsp.c $(SRC_DIR)/eigenscript.c $(SRC_DIR)/lexer.c
                $(SRC_DIR)/hash.c $(SRC_DIR)/arena.c $(SRC_DIR)/strbuf.c $(SRC_DIR)/ext_store.c
 LSP_BINARY  := $(SRC_DIR)/eigenlsp
 
-.PHONY: all build full http gfx test install install-gfx clean coverage coverage-clean fuzz fuzz-run lsp
+.PHONY: all build full http gfx test install install-gfx clean coverage coverage-clean fuzz fuzz-run lsp jit-smoke
 
 all: build
 
@@ -94,8 +94,12 @@ lsp:
 		$(LDFLAGS)
 	@echo "EigenScript LSP $(VERSION) built. Binary: $$(du -sh $(LSP_BINARY) | cut -f1)"
 
+jit-smoke:
+	$(CC) -Wall -Wextra -O2 -o /tmp/jit_smoke $(SRC_DIR)/jit.c $(SRC_DIR)/jit_smoke.c
+	/tmp/jit_smoke
+
 clean:
-	rm -f $(BINARY) $(LSP_BINARY) $(SRC_DIR)/*.o
+	rm -f $(BINARY) $(LSP_BINARY) $(SRC_DIR)/*.o /tmp/jit_smoke
 
 coverage-clean:
 	rm -f $(SRC_DIR)/*.gcda $(SRC_DIR)/*.gcno $(SRC_DIR)/*.gcov coverage.txt
