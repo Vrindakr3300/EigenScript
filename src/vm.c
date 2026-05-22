@@ -129,12 +129,49 @@ static void vm_init(void) {
     }
 }
 
+/* ---- Bridge helpers (Phase B-1) ----
+ *
+ * The stack stores EigsSlot, but during the Phase B rollout most
+ * opcodes still expect to work with Value*. slot_bridge_wrap takes a
+ * Value* and produces a slot that NEVER emits an immediate — the
+ * pointer is always preserved. slot_bridge_unwrap is the inverse: it
+ * always returns the underlying Value*, materializing a fresh one only
+ * if an opcode that's already been migrated pushed a true immediate.
+ *
+ * These are local to vm.c because they're a transient pattern, not
+ * part of the slot encoding contract. As opcodes are rewritten in
+ * subsequent Phase B sub-steps, the unwrap helpers shrink toward
+ * disuse. */
+static inline EigsSlot slot_bridge_wrap(Value *v) {
+    if (!v) return slot_null();
+    if (v->type == VAL_NULL) return slot_null();
+    if (v->type == VAL_NUM && v->obs_age > 0) return slot_from_tracked(v);
+    return slot_from_heap(v);
+}
+
+extern Value g_null_singleton_external_decl;  /* not used; doc only */
+
+static inline Value *slot_bridge_unwrap(EigsSlot s) {
+    if (slot_is_num(s)) {
+        /* Materialize immediate -> fresh Value. Caller owns one ref. */
+        return make_num(s.d);
+    }
+    if (slot_is_null(s)) {
+        return make_null();
+    }
+    if (slot_is_bool(s)) {
+        return make_num(slot_as_bool(s) ? 1.0 : 0.0);
+    }
+    /* Heap or tracked: just unwrap the pointer (ref already in slot). */
+    return slot_as_ptr(s);
+}
+
 static inline void vm_push(Value *v) {
     if (g_vm.sp >= VM_STACK_MAX) {
         runtime_error(0, "VM stack overflow");
         return;
     }
-    g_vm.stack[g_vm.sp++] = v;
+    g_vm.stack[g_vm.sp++] = slot_bridge_wrap(v);
 }
 
 static inline Value *vm_pop(void) {
@@ -144,12 +181,19 @@ static inline Value *vm_pop(void) {
          * didn't push a value (e.g., some control flow paths). */
         return make_null();
     }
-    return g_vm.stack[--g_vm.sp];
+    return slot_bridge_unwrap(g_vm.stack[--g_vm.sp]);
 }
 
 static inline Value *vm_peek(int distance) {
-    return g_vm.stack[g_vm.sp - 1 - distance];
+    return slot_bridge_unwrap(g_vm.stack[g_vm.sp - 1 - distance]);
 }
+
+/* Direct-stack-access bridge macros. Most opcodes still touch the
+ * stack as if it were a Value*[]; these wrap each access through
+ * slot_bridge_unwrap / slot_bridge_wrap so the underlying EigsSlot
+ * storage remains hidden until per-opcode rewrites land in B-3+. */
+#define STK_AS_VAL(i)       slot_bridge_unwrap(g_vm.stack[i])
+#define STK_PUT_VAL(i, v)   (g_vm.stack[i] = slot_bridge_wrap(v))
 
 static inline uint16_t read_u16(uint8_t *ip) {
     return ip[0] | (ip[1] << 8);
@@ -298,8 +342,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     /* Stack-top fast path: peek at sp-1 and sp-2 directly */
 #define ARITH_FAST(OP) do { \
-    Value *_b = g_vm.stack[g_vm.sp - 1]; \
-    Value *_a = g_vm.stack[g_vm.sp - 2]; \
+    Value *_b = STK_AS_VAL(g_vm.sp - 1); \
+    Value *_a = STK_AS_VAL(g_vm.sp - 2); \
     if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) { \
         double _r = num_guard(_a->data.num OP _b->data.num); \
         if (NUM_REUSE(_a)) { \
@@ -310,12 +354,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         } \
         if (NUM_REUSE(_b)) { \
             _b->data.num = _r; \
-            g_vm.stack[g_vm.sp - 2] = _b; \
+            STK_PUT_VAL(g_vm.sp - 2, _b); \
             val_decref(_a); \
             g_vm.sp--; \
             DISPATCH(); \
         } \
-        g_vm.stack[g_vm.sp - 2] = make_num(_r); \
+        STK_PUT_VAL(g_vm.sp - 2, make_num(_r)); \
         val_decref(_a); val_decref(_b); \
         g_vm.sp--; \
         DISPATCH(); \
@@ -426,8 +470,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
 #define INT_BINOP(NAME, OP) \
     CASE(NAME): { \
-        Value *_b = g_vm.stack[g_vm.sp - 1]; \
-        Value *_a = g_vm.stack[g_vm.sp - 2]; \
+        Value *_b = STK_AS_VAL(g_vm.sp - 1); \
+        Value *_a = STK_AS_VAL(g_vm.sp - 2); \
         if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) { \
             double _r = (double)((int64_t)_a->data.num OP (int64_t)_b->data.num); \
             if (NUM_REUSE(_a)) { \
@@ -438,12 +482,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             } \
             if (NUM_REUSE(_b)) { \
                 _b->data.num = _r; \
-                g_vm.stack[g_vm.sp - 2] = _b; \
+                STK_PUT_VAL(g_vm.sp - 2, _b); \
                 val_decref(_a); \
                 g_vm.sp--; \
                 DISPATCH(); \
             } \
-            g_vm.stack[g_vm.sp - 2] = make_num(_r); \
+            STK_PUT_VAL(g_vm.sp - 2, make_num(_r)); \
             val_decref(_a); val_decref(_b); \
             g_vm.sp--; \
             DISPATCH(); \
@@ -496,13 +540,13 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     /* ---- Comparison ---- */
 
     CASE(EQ): {
-        Value *_b = g_vm.stack[g_vm.sp - 1];
-        Value *_a = g_vm.stack[g_vm.sp - 2];
+        Value *_b = STK_AS_VAL(g_vm.sp - 1);
+        Value *_a = STK_AS_VAL(g_vm.sp - 2);
         if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) {
             double _r = (_a->data.num == _b->data.num) ? 1.0 : 0.0;
             if (NUM_REUSE(_a)) { _a->data.num = _r; if (NUM_REUSE(_b)) free_value(_b); else val_decref(_b); g_vm.sp--; DISPATCH(); }
-            if (NUM_REUSE(_b)) { _b->data.num = _r; g_vm.stack[g_vm.sp-2] = _b; val_decref(_a); g_vm.sp--; DISPATCH(); }
-            g_vm.stack[g_vm.sp-2] = make_num(_r); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH();
+            if (NUM_REUSE(_b)) { _b->data.num = _r; STK_PUT_VAL(g_vm.sp-2, _b); val_decref(_a); g_vm.sp--; DISPATCH(); }
+            STK_PUT_VAL(g_vm.sp-2, make_num(_r)); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH();
         }
         Value *b = vm_pop(); Value *a = vm_pop();
         int eq = 0;
@@ -515,13 +559,13 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     }
 
     CASE(NE): {
-        Value *_b = g_vm.stack[g_vm.sp - 1];
-        Value *_a = g_vm.stack[g_vm.sp - 2];
+        Value *_b = STK_AS_VAL(g_vm.sp - 1);
+        Value *_a = STK_AS_VAL(g_vm.sp - 2);
         if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) {
             double _r = (_a->data.num != _b->data.num) ? 1.0 : 0.0;
             if (NUM_REUSE(_a)) { _a->data.num = _r; if (NUM_REUSE(_b)) free_value(_b); else val_decref(_b); g_vm.sp--; DISPATCH(); }
-            if (NUM_REUSE(_b)) { _b->data.num = _r; g_vm.stack[g_vm.sp-2] = _b; val_decref(_a); g_vm.sp--; DISPATCH(); }
-            g_vm.stack[g_vm.sp-2] = make_num(_r); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH();
+            if (NUM_REUSE(_b)) { _b->data.num = _r; STK_PUT_VAL(g_vm.sp-2, _b); val_decref(_a); g_vm.sp--; DISPATCH(); }
+            STK_PUT_VAL(g_vm.sp-2, make_num(_r)); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH();
         }
         Value *b = vm_pop(); Value *a = vm_pop();
         int eq = 0;
@@ -535,13 +579,13 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
 #define NUM_CMP(NAME, OP) \
     CASE(NAME): { \
-        Value *_b = g_vm.stack[g_vm.sp - 1]; \
-        Value *_a = g_vm.stack[g_vm.sp - 2]; \
+        Value *_b = STK_AS_VAL(g_vm.sp - 1); \
+        Value *_a = STK_AS_VAL(g_vm.sp - 2); \
         if (__builtin_expect(_a->type == VAL_NUM && _b->type == VAL_NUM, 1)) { \
             double _r = (_a->data.num OP _b->data.num) ? 1.0 : 0.0; \
             if (NUM_REUSE(_a)) { _a->data.num = _r; if (NUM_REUSE(_b)) free_value(_b); else val_decref(_b); g_vm.sp--; DISPATCH(); } \
-            if (NUM_REUSE(_b)) { _b->data.num = _r; g_vm.stack[g_vm.sp-2] = _b; val_decref(_a); g_vm.sp--; DISPATCH(); } \
-            g_vm.stack[g_vm.sp-2] = make_num(_r); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH(); \
+            if (NUM_REUSE(_b)) { _b->data.num = _r; STK_PUT_VAL(g_vm.sp-2, _b); val_decref(_a); g_vm.sp--; DISPATCH(); } \
+            STK_PUT_VAL(g_vm.sp-2, make_num(_r)); val_decref(_a); val_decref(_b); g_vm.sp--; DISPATCH(); \
         } \
         Value *b = vm_pop(); Value *a = vm_pop(); \
         vm_push(make_num(0)); \
@@ -635,7 +679,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(JUMP_IF_FALSE): {
         uint16_t offset = read_u16(ip); ip += 2;
-        Value *v = g_vm.stack[--g_vm.sp];
+        Value *v = STK_AS_VAL(--g_vm.sp);
         if (v->type == VAL_NUM) {
             if (v->data.num == 0.0) ip += offset;
             if (NUM_REUSE(v)) free_value(v); else val_decref(v);
@@ -648,7 +692,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(JUMP_IF_TRUE): {
         uint16_t offset = read_u16(ip); ip += 2;
-        Value *v = g_vm.stack[--g_vm.sp];
+        Value *v = STK_AS_VAL(--g_vm.sp);
         if (v->type == VAL_NUM) {
             if (v->data.num != 0.0) ip += offset;
             if (NUM_REUSE(v)) free_value(v); else val_decref(v);
@@ -674,11 +718,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     /* ---- Stack ---- */
 
     CASE(POP): {
-        Value *v = g_vm.stack[--g_vm.sp];
-        if (v && !v->arena) {
-            if (__atomic_sub_fetch(&v->refcount, 1, __ATOMIC_ACQ_REL) <= 0)
-                free_value(v);
-        }
+        slot_decref(g_vm.stack[--g_vm.sp]);
         DISPATCH();
     }
 
@@ -727,7 +767,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             vm_push(make_null());
             DISPATCH();
         }
-        Value *fn_val = g_vm.stack[g_vm.sp - 1 - argc];
+        Value *fn_val = STK_AS_VAL(g_vm.sp - 1 - argc);
 
         if (fn_val->type == VAL_BUILTIN) {
             /* Pack args for the builtin.
@@ -735,12 +775,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
              * argc>1: pack into list (matches tree-walker multi-arg behavior) */
             Value *arg;
             if (argc == 1) {
-                arg = g_vm.stack[g_vm.sp - 1];
+                arg = STK_AS_VAL(g_vm.sp - 1);
                 val_incref(arg);
             } else {
                 arg = make_list(argc);
                 for (int i = 0; i < argc; i++) {
-                    list_append(arg, g_vm.stack[g_vm.sp - argc + i]);
+                    list_append(arg, STK_AS_VAL(g_vm.sp - argc + i));
                 }
             }
             /* Pop args + fn from stack */
@@ -776,15 +816,15 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 int bound = param_count < (int)argc ? param_count : (int)argc;
                 for (int i = 0; i < bound; i++)
                     env_set_local(call_env, fn_val->data.fn.params[i],
-                                  g_vm.stack[g_vm.sp - argc + i]);
+                                  STK_AS_VAL(g_vm.sp - argc + i));
             } else if (param_count == 1) {
                 if (argc == 1) {
                     env_set_local(call_env, fn_val->data.fn.params[0],
-                                  g_vm.stack[g_vm.sp - 1]);
+                                  STK_AS_VAL(g_vm.sp - 1));
                 } else {
                     Value *arg_list = make_list(argc);
                     for (int i = 0; i < argc; i++)
-                        list_append(arg_list, g_vm.stack[g_vm.sp - argc + i]);
+                        list_append(arg_list, STK_AS_VAL(g_vm.sp - argc + i));
                     env_set_local(call_env, fn_val->data.fn.params[0], arg_list);
                     val_decref(arg_list);
                 }
@@ -883,7 +923,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         Value *list = make_list(count);
         for (int i = 0; i < count; i++) {
             if (base + i < g_vm.sp)
-                list_append(list, g_vm.stack[base + i]);
+                list_append(list, STK_AS_VAL(base + i));
         }
         /* Pop the elements */
         for (int i = 0; i < count && g_vm.sp > base; i++)
@@ -899,8 +939,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         int base = g_vm.sp - count * 2;
         if (base < 0) base = 0; /* guard against stack underflow */
         for (int i = 0; i < count; i++) {
-            Value *k = g_vm.stack[base + i * 2];
-            Value *v = g_vm.stack[base + i * 2 + 1];
+            Value *k = STK_AS_VAL(base + i * 2);
+            Value *v = STK_AS_VAL(base + i * 2 + 1);
             if (k->type != VAL_STR) {
                 runtime_error(current_line, "dict key must be a string, got %s", val_type_name(k->type));
                 continue;
@@ -1505,7 +1545,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         Value *item = vm_pop();
         /* Stack: [..., accumulator, iter_state]. Accumulator is 2 below TOS. */
         if (g_vm.sp >= 2) {
-            Value *accum = g_vm.stack[g_vm.sp - 2];
+            Value *accum = STK_AS_VAL(g_vm.sp - 2);
             if (accum && accum->type == VAL_LIST)
                 list_append(accum, item);
         }

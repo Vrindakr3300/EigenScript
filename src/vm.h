@@ -14,6 +14,14 @@ typedef struct Value Value;
 typedef struct Env Env;
 typedef struct ASTNode ASTNode;
 
+/* EigsSlot is defined in value_slot.h which is included via
+ * eigenscript.h after the Value struct is fully declared (needed
+ * for the inline slot_incref / slot_decref refcount helpers). */
+#include "value_slot.h"
+/* Re-include is harmless because of the header guard, but if a TU
+ * includes vm.h before eigenscript.h, slot_incref / slot_decref will
+ * be incomplete-typed. All current TUs include eigenscript.h first. */
+
 /* ---- Opcodes ---- */
 typedef enum {
     /* Constants */
@@ -170,7 +178,7 @@ typedef struct {
 #define VM_FRAMES_MAX 4096
 
 typedef struct {
-    Value     *stack[VM_STACK_MAX];
+    EigsSlot   stack[VM_STACK_MAX];
     int        sp;
     CallFrame  frames[VM_FRAMES_MAX];
     int        frame_count;
