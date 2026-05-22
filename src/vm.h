@@ -178,11 +178,13 @@ typedef struct EigsChunk {
 
     /* JIT — populated lazily on first frame push.
      * jit_state: 0 = untried, 1 = failed/unsupported, 2 = compiled.
-     * jit_code: callable native thunk when jit_state == 2. The thunk
-     * receives the chunk pointer, reads g_vm thread-local state, runs
-     * any prefix of opcodes it supports, sets frame->ip to where the
-     * interpreter should resume, and returns. */
+     * jit_code: callable native thunk (signature void(void)) when
+     * jit_state == 2. The thunk runs a prefix of opcodes against g_vm
+     * thread-local state and returns; the caller advances frame->ip by
+     * jit_advance bytes. Keeping the ip math out of the thunk avoids
+     * ~15 cycles of frame_count/sizeof_callframe arithmetic per call. */
     uint8_t  jit_state;
+    int      jit_advance;
     void    *jit_code;
 } EigsChunk;
 

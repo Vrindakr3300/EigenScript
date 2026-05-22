@@ -119,26 +119,33 @@ void jit_module_shutdown(void) {
     }
 }
 
-/* Stage 3a templates implemented in vm.c. Each helper natively executes
- * one opcode at the top-of-frame, advances frame->ip by the opcode size,
- * and returns. */
-extern void eigs_jit_tmpl_null(void);
-extern void eigs_jit_tmpl_num_zero(void);
-extern void eigs_jit_tmpl_num_one(void);
-extern void eigs_jit_tmpl_line(int line);
-extern void eigs_jit_tmpl_pop(void);
-
 #if defined(__x86_64__)
+/* Stage 3b: layout descriptor captured once via the vm.c-owned probe. */
+static int g_layout_inited = 0;
+static EigsJitLayout g_layout;
+
+static void ensure_layout(void) {
+    if (g_layout_inited) return;
+    eigs_jit_get_layout(&g_layout);
+    g_layout_inited = 1;
+}
+
 /* Scan a chunk-start prefix of opcodes we can natively translate.
  * Returns the prefix length in *bytes* (0 = nothing compilable).
  *
- * Profitability filter: the helper-call trampoline pays ~30 cycles per
- * opcode (movabs + indirect call + helper body + ret) vs the
- * interpreter's ~5-cycle computed-goto dispatch. We only compile when
- * the prefix contains at least one non-LINE opcode AND the prefix is
- * at least 3 opcodes long, so the JIT setup amortizes. Stage 3b will
- * replace this with inline-emit which can profitably handle short
- * prefixes including LINE-only.
+ * Stage 3b inline emission: the trampoline is ~15-cycle setup + ~3
+ * cycles per opcode, so even a 3-op prefix amortizes vs the
+ * interpreter's ~8 cycles per dispatched opcode. We still require at
+ * least 3 ops AND at least one non-LINE op so the prologue/epilogue
+ * fixed cost is recovered.
+ *
+ * Supported set:
+ *   OP_NULL, OP_NUM_ZERO, OP_NUM_ONE — inline immediate push.
+ *   OP_LINE                          — inline 32-bit store to current_line.
+ *   OP_POP                           — peephole `dec %ecx` (safe because
+ *                                      our supported predecessors push
+ *                                      immediates whose slot_decref is
+ *                                      a no-op).
  */
 static int jit_supported_prefix(const struct EigsChunk *chunk) {
     int i = 0, ops = 0, non_line_ops = 0;
@@ -160,18 +167,69 @@ static int jit_supported_prefix(const struct EigsChunk *chunk) {
     return last_good;
 }
 
-/* Worst-case bytes emitted per opcode in the prefix. */
-static size_t jit_estimate_size(const struct EigsChunk *chunk, int prefix) {
-    /* prologue (sub $8,%rsp) + epilogue (add $8,%rsp; ret) = 4 + 5 = 9 */
-    size_t s = 9;
-    int i = 0;
-    while (i < prefix) {
-        uint8_t op = chunk->code[i];
-        if (op == OP_LINE) { s += 17; i += 3; } /* mov imm32,%edi; movabs; call */
-        else               { s += 12; i += 1; } /* movabs; call */
-    }
-    return s;
+/* Upper bound on emitted bytes:
+ *   prologue 23 + epilogue 10 + 20 bytes/op worst case (immediate push).
+ *   The caller advances frame->ip by chunk->jit_advance, so the thunk
+ *   only writes %ecx back to g_vm.sp before returning. */
+static size_t jit_estimate_size(int prefix) {
+    return 23 + 10 + 20 * (size_t)prefix;
 }
+
+/* ---- x86-64 encoding helpers ---- */
+
+static uint8_t *emit_u8(uint8_t *w, uint8_t b)         { *w++ = b; return w; }
+static uint8_t *emit_u32(uint8_t *w, uint32_t v)       { memcpy(w, &v, 4); return w + 4; }
+static uint8_t *emit_u64(uint8_t *w, uint64_t v)       { memcpy(w, &v, 8); return w + 8; }
+
+/* mov %fs:0, %rbx  — load TLS base into %rbx (9 bytes) */
+static uint8_t *emit_load_fs_zero_rbx(uint8_t *w) {
+    *w++ = 0x64; *w++ = 0x48; *w++ = 0x8B;
+    *w++ = 0x1C; *w++ = 0x25;
+    return emit_u32(w, 0);
+}
+
+/* lea disp32(%rbx), %rbx  — %rbx += disp32 (7 bytes) */
+static uint8_t *emit_lea_rbx_disp32_rbx(uint8_t *w, int32_t disp) {
+    *w++ = 0x48; *w++ = 0x8D; *w++ = 0x9B;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov disp32(%rbx), %ecx  — load 32-bit (6 bytes) */
+static uint8_t *emit_mov_disp32_rbx_to_ecx(uint8_t *w, int32_t disp) {
+    *w++ = 0x8B; *w++ = 0x8B;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov %ecx, disp32(%rbx)  — store 32-bit (6 bytes) */
+static uint8_t *emit_mov_ecx_to_disp32_rbx(uint8_t *w, int32_t disp) {
+    *w++ = 0x89; *w++ = 0x8B;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* movabs $imm64, %rax  (10 bytes) */
+static uint8_t *emit_movabs_rax(uint8_t *w, uint64_t imm) {
+    *w++ = 0x48; *w++ = 0xB8;
+    return emit_u64(w, imm);
+}
+
+/* mov %rax, disp32(%rbx, %rcx, 8)  — store 64-bit at stack[sp] (8 bytes) */
+static uint8_t *emit_store_rax_at_stack(uint8_t *w, int32_t off_stack) {
+    *w++ = 0x48; *w++ = 0x89; *w++ = 0x84; *w++ = 0xCB;
+    return emit_u32(w, (uint32_t)off_stack);
+}
+
+/* movl $imm32, disp32(%rbx)  (10 bytes) */
+static uint8_t *emit_movl_imm_at_disp32_rbx(uint8_t *w, int32_t disp,
+                                            int32_t value) {
+    *w++ = 0xC7; *w++ = 0x83;
+    w = emit_u32(w, (uint32_t)disp);
+    return emit_u32(w, (uint32_t)value);
+}
+
+/* inc %ecx (2 bytes) */
+static uint8_t *emit_inc_ecx(uint8_t *w) { *w++ = 0xFF; *w++ = 0xC1; return w; }
+/* dec %ecx (2 bytes) */
+static uint8_t *emit_dec_ecx(uint8_t *w) { *w++ = 0xFF; *w++ = 0xC9; return w; }
 #endif
 
 void jit_try_compile_chunk(struct EigsChunk *chunk) {
@@ -183,6 +241,8 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
     chunk->jit_code = NULL;
     return;
 #else
+    ensure_layout();
+
     int prefix = jit_supported_prefix(chunk);
     if (prefix == 0) {
         chunk->jit_state = 1;
@@ -204,7 +264,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
         return;
     }
 
-    size_t size = jit_estimate_size(chunk, prefix);
+    size_t size = jit_estimate_size(prefix);
     uint8_t *code = jit_cache_alloc(g_jit_cache, size);
     if (!code) {
         chunk->jit_state = 1;
@@ -215,53 +275,60 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
 
     uint8_t *w = code;
 
-    /* Prologue: sub $8, %rsp  — restores 16-byte stack alignment before
-     * inner calls. Thunk entry has %rsp = 16n+8 (caller's `call` pushed
-     * 8 bytes). After sub $8: 16n+0; inner call lands at 16n-8+8 = 16n+8
-     * which is what callees expect on entry. */
-    *w++ = 0x48; *w++ = 0x83; *w++ = 0xEC; *w++ = 0x08;
+    /* Prologue (23 bytes): preserve %rbx, point it at &g_vm, cache sp. */
+    w = emit_u8(w, 0x53);                                       /* push %rbx */
+    w = emit_load_fs_zero_rbx(w);                               /* mov %fs:0, %rbx */
+    w = emit_lea_rbx_disp32_rbx(w, (int32_t)g_layout.g_vm_tpoff);
+    w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);         /* mov sp, %ecx */
 
+    /* Body: inline native code per opcode. */
     int i = 0;
     while (i < prefix) {
         uint8_t op = chunk->code[i];
-        void *helper = NULL;
-        int op_size = 1;
-
-        if (op == OP_NULL)            helper = (void *)&eigs_jit_tmpl_null;
-        else if (op == OP_NUM_ZERO)   helper = (void *)&eigs_jit_tmpl_num_zero;
-        else if (op == OP_NUM_ONE)    helper = (void *)&eigs_jit_tmpl_num_one;
-        else if (op == OP_POP)        helper = (void *)&eigs_jit_tmpl_pop;
-        else if (op == OP_LINE) {
+        if (op == OP_NULL || op == OP_NUM_ZERO || op == OP_NUM_ONE) {
+            uint64_t bits;
+            if (op == OP_NULL) {
+                bits = 0xFFF8000000000000ULL;       /* SLOT_NULL_BITS */
+            } else if (op == OP_NUM_ZERO) {
+                bits = 0;                            /* IEEE-754 +0.0 */
+            } else {
+                double d = 1.0;
+                memcpy(&bits, &d, 8);                /* IEEE-754 1.0 */
+            }
+            w = emit_movabs_rax(w, bits);
+            w = emit_store_rax_at_stack(w, g_layout.off_stack);
+            w = emit_inc_ecx(w);
+            i += 1;
+        } else if (op == OP_POP) {
+            /* Peephole: prior op pushed an immediate (NULL/NUM_*),
+             * whose slot_decref is a no-op. Just dec the cached sp. */
+            w = emit_dec_ecx(w);
+            i += 1;
+        } else { /* OP_LINE */
             uint16_t line = (uint16_t)(chunk->code[i + 1] |
                                        ((uint16_t)chunk->code[i + 2] << 8));
-            int32_t imm = (int32_t)line;
-            /* mov $line, %edi  — argument register for eigs_jit_tmpl_line */
-            *w++ = 0xBF;
-            memcpy(w, &imm, 4); w += 4;
-            helper = (void *)&eigs_jit_tmpl_line;
-            op_size = 3;
+            w = emit_movl_imm_at_disp32_rbx(w, g_layout.off_current_line,
+                                            (int32_t)line);
+            i += 3;
         }
-
-        /* movabs $helper, %rax */
-        *w++ = 0x48; *w++ = 0xB8;
-        memcpy(w, &helper, sizeof helper); w += sizeof helper;
-        /* call *%rax */
-        *w++ = 0xFF; *w++ = 0xD0;
-
-        i += op_size;
     }
 
-    /* Epilogue: add $8, %rsp; ret */
-    *w++ = 0x48; *w++ = 0x83; *w++ = 0xC4; *w++ = 0x08;
-    *w++ = 0xC3;
+    /* Epilogue (8 bytes): write sp back to g_vm, restore %rbx, return.
+     * frame->ip advance is the caller's responsibility (see jit.h). */
+    w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+    w = emit_u8(w, 0x5B);                                       /* pop %rbx */
+    w = emit_u8(w, 0xC3);                                       /* ret */
 
-    /* Defensive: we may have emitted fewer bytes than estimated if the
-     * estimator over-counted. We bumped `used` by `size`; the extra
-     * bytes are harmless padding. */
-    (void)w;
+    /* Sanity: did we stay within the allocation? */
+    if ((size_t)(w - code) > size) {
+        /* Catastrophic — we wrote past `used`. Abandon. */
+        chunk->jit_state = 1;
+        chunk->jit_code = NULL;
+        jit_cache_seal(g_jit_cache);
+        return;
+    }
 
     if (jit_cache_seal(g_jit_cache) != 0) {
-        /* Cache stays RW — we can't safely execute. Abandon this chunk. */
         chunk->jit_state = 1;
         chunk->jit_code = NULL;
         return;
@@ -269,6 +336,14 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
 
     chunk->jit_state = 2;
     chunk->jit_code = code;
+    chunk->jit_advance = prefix;
     g_jit_compiled_chunks++;
+    if (getenv("EIGS_JIT_DEBUG")) {
+        fprintf(stderr, "[jit] compiled %s: prefix=%d bytes (",
+                chunk->name ? chunk->name : "?", prefix);
+        for (int j = 0; j < prefix; j++)
+            fprintf(stderr, " %02x", chunk->code[j]);
+        fprintf(stderr, " ) -> %zu bytes native\n", (size_t)(w - code));
+    }
 #endif
 }

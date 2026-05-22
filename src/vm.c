@@ -332,47 +332,25 @@ static Value *make_iter_state(Value *iterable) {
     return state;
 }
 
-/* ---- JIT templates (called from JIT-emitted trampolines) ----
+/* ---- JIT inline-emit layout (Stage 3b) ----
  *
- * Each helper natively executes a single opcode at the top-of-frame
- * and advances the topmost frame's ip by the opcode's byte length.
- * The JIT emits `movabs $&helper, %rax; call *%rax` per opcode in a
- * supported chunk-start prefix. Helpers live here because they need
- * direct access to g_vm (thread-local, static to this TU).
- *
- * Stage 3a covers opcodes that don't mutate frame_count or branch:
- * OP_NULL, OP_NUM_ZERO, OP_NUM_ONE, OP_LINE. The control-flow
- * contract is "advance ip; return". After the thunk returns, the
- * interpreter reloads ip from frame->ip and resumes dispatch. */
-void eigs_jit_tmpl_null(void);
-void eigs_jit_tmpl_num_zero(void);
-void eigs_jit_tmpl_num_one(void);
-void eigs_jit_tmpl_line(int line);
+ * vm.c owns g_vm (static __thread), so it is the only TU that can
+ * compute the TLS @tpoff for it. The JIT emitter reads this layout
+ * once per process and uses it to emit native loads/stores against
+ * g_vm fields without indirection through helper functions. */
+#include <stddef.h>
 
-void eigs_jit_tmpl_null(void) {
-    g_vm.stack[g_vm.sp++] = slot_null();
-    CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
-    f->ip += 1;
-}
-void eigs_jit_tmpl_num_zero(void) {
-    g_vm.stack[g_vm.sp++] = slot_from_num(0.0);
-    CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
-    f->ip += 1;
-}
-void eigs_jit_tmpl_num_one(void) {
-    g_vm.stack[g_vm.sp++] = slot_from_num(1.0);
-    CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
-    f->ip += 1;
-}
-void eigs_jit_tmpl_line(int line) {
-    g_vm.current_line = line;
-    CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
-    f->ip += 3;
-}
-void eigs_jit_tmpl_pop(void) {
-    slot_decref(g_vm.stack[--g_vm.sp]);
-    CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
-    f->ip += 1;
+void eigs_jit_get_layout(EigsJitLayout *out) {
+    void *tp;
+    __asm__ __volatile__("mov %%fs:0, %0" : "=r"(tp));
+    out->g_vm_tpoff       = (long)((char *)&g_vm - (char *)tp);
+    out->off_sp           = (int)offsetof(VM, sp);
+    out->off_stack        = (int)offsetof(VM, stack);
+    out->off_frame_count  = (int)offsetof(VM, frame_count);
+    out->off_frames       = (int)offsetof(VM, frames);
+    out->off_current_line = (int)offsetof(VM, current_line);
+    out->off_callframe_ip = (int)offsetof(CallFrame, ip);
+    out->sizeof_callframe = (int)sizeof(CallFrame);
 }
 
 /* ---- Main execution loop ---- */
@@ -1177,12 +1155,13 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->try_count = 0;
 
             /* JIT hook: compile lazily, run native prefix if available.
-             * Thunk advances frame->ip and may set g_vm.current_line; the
-             * interpreter mirrors current_line into the register-local
-             * copy before resuming dispatch. */
+             * Thunk runs side-effects on g_vm only; caller advances
+             * frame->ip by chunk->jit_advance and mirrors current_line
+             * into the register-local copy before resuming dispatch. */
             if (fn_chunk->jit_state == 0) jit_try_compile_chunk(fn_chunk);
             if (fn_chunk->jit_code) {
-                ((JitChunkFn)fn_chunk->jit_code)(fn_chunk);
+                ((JitChunkFn)fn_chunk->jit_code)();
+                frame->ip += fn_chunk->jit_advance;
                 current_line = g_vm.current_line;
             }
 
@@ -2146,7 +2125,9 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             /* JIT hook (mirror of OP_CALL bytecode-fn path). */
             if (fn_chunk->jit_state == 0) jit_try_compile_chunk(fn_chunk);
             if (fn_chunk->jit_code) {
-                ((JitChunkFn)fn_chunk->jit_code)(fn_chunk);
+                ((JitChunkFn)fn_chunk->jit_code)();
+                frame->ip += fn_chunk->jit_advance;
+                current_line = g_vm.current_line;
             }
 
             ip = frame->ip;

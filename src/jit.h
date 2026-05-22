@@ -58,11 +58,13 @@ JitConstFn jit_emit_const_return(EigsJitCache *jc, int64_t value);
  * defined in vm.h. */
 struct EigsChunk;
 
-/* Signature of a chunk-level JITed entry point. The thunk reads the
- * thread-local VM state, executes the prefix of `chunk`'s opcodes it
- * supports, points `g_vm.frames[frame_count-1].ip` at the next byte
- * the interpreter should resume from, and returns. */
-typedef void (*JitChunkFn)(struct EigsChunk *chunk);
+/* Signature of a chunk-level JITed entry point. The thunk has no
+ * arguments and no return value: it executes a prefix of the chunk's
+ * opcodes against `g_vm` (stack, sp, current_line) and returns. The
+ * caller advances `frame->ip` by `chunk->jit_advance` after invocation
+ * — keeping the frame-ip math out of the thunk saves ~15 cycles per
+ * call and shrinks the emitted body. */
+typedef void (*JitChunkFn)(void);
 
 /* Try to compile `chunk` into native code. On success, sets
  * chunk->jit_state = 2 and chunk->jit_code to a JitChunkFn pointer.
@@ -75,5 +77,25 @@ void jit_try_compile_chunk(struct EigsChunk *chunk);
  * optional (process exit reclaims pages anyway) but useful in tests. */
 void jit_module_init(void);
 void jit_module_shutdown(void);
+
+/* ---- Stage 3b inline-emit layout descriptor ----
+ *
+ * vm.c owns g_vm (static __thread) so it is the only TU that can
+ * compute the TLS @tpoff for that symbol and the VM/CallFrame field
+ * offsets. The JIT emitter reads this once at first compile and uses
+ * it to inline native loads/stores against g_vm without going through
+ * helper functions. */
+typedef struct {
+    long g_vm_tpoff;       /* &g_vm - %fs:0, signed bytes */
+    int  off_sp;
+    int  off_stack;
+    int  off_frame_count;
+    int  off_frames;
+    int  off_current_line;
+    int  off_callframe_ip;
+    int  sizeof_callframe;
+} EigsJitLayout;
+
+void eigs_jit_get_layout(EigsJitLayout *out);
 
 #endif /* EIGS_JIT_H */
