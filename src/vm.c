@@ -1051,22 +1051,22 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             if (param_count > 1 && argc > 0) {
                 int bound = param_count < (int)argc ? param_count : (int)argc;
                 for (int i = 0; i < bound; i++) {
-                    uint32_t ph = phashes ? phashes[i] : 0;
-                    env_set_local_hashed_slot(call_env,
+                    uint32_t ph = phashes ? phashes[i] : env_hash_name(fn_val->data.fn.params[i]);
+                    env_bind_fresh_param_slot(call_env,
                         fn_val->data.fn.params[i], ph,
                         g_vm.stack[g_vm.sp - argc + i]);
                 }
             } else if (param_count == 1) {
-                uint32_t ph = phashes ? phashes[0] : 0;
+                uint32_t ph = phashes ? phashes[0] : env_hash_name(fn_val->data.fn.params[0]);
                 if (argc == 1) {
-                    env_set_local_hashed_slot(call_env,
+                    env_bind_fresh_param_slot(call_env,
                         fn_val->data.fn.params[0], ph,
                         g_vm.stack[g_vm.sp - 1]);
                 } else {
                     Value *arg_list = make_list(argc);
                     for (int i = 0; i < argc; i++)
                         list_append(arg_list, STK_AS_VAL(g_vm.sp - argc + i));
-                    env_set_local_hashed_slot(call_env,
+                    env_bind_fresh_param_slot(call_env,
                         fn_val->data.fn.params[0], ph,
                         slot_from_heap(arg_list));
                     val_decref(arg_list);
@@ -2030,8 +2030,9 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             EigsChunk *fn_chunk = (EigsChunk *)fn->data.fn.body;
             Env *call_env = env_new(fn->data.fn.closure);
             if (fn->data.fn.param_count > 0) {
-                uint32_t ph = fn->data.fn.param_hashes ? fn->data.fn.param_hashes[0] : 0;
-                env_set_local_hashed_slot(call_env,
+                uint32_t ph = fn->data.fn.param_hashes ? fn->data.fn.param_hashes[0]
+                                                       : env_hash_name(fn->data.fn.params[0]);
+                env_bind_fresh_param_slot(call_env,
                     fn->data.fn.params[0], ph, arg_s);
             } else {
                 slot_decref(arg_s);

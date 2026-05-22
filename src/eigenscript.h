@@ -350,6 +350,10 @@ void env_set_local_hashed_slot(Env *env, const char *name, uint32_t h, EigsSlot 
  * VM uses this with chunk->const_interns[idx] in the hot SET_NAME paths. */
 void env_set_local_pre_interned_slot(Env *env, const char *interned,
                                      uint32_t h, EigsSlot s);
+/* Bind a parameter into a freshly-created call env. Skips env_hash_find;
+ * caller guarantees the name does not collide with an earlier binding. */
+void env_bind_fresh_param_slot(Env *env, const char *interned,
+                               uint32_t h, EigsSlot s);
 EigsSlot env_get_hashed_slot(Env *env, const char *name, uint32_t h, int *found);
 /* Direct slot store with arena promotion; used by VM inline-cache fast paths
  * after the slot index has been resolved out-of-band. Caller must update

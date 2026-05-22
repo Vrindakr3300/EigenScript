@@ -291,8 +291,7 @@ void free_value(Value *v) {
             break;
         case VAL_FN:
             free(v->data.fn.name);
-            for (int i = 0; i < v->data.fn.param_count; i++)
-                free(v->data.fn.params[i]);
+            /* params[i] are interned (lifetime owned by intern map); only free the array. */
             free(v->data.fn.params);
             free(v->data.fn.param_hashes);
             if (v->data.fn.body_count != -1) {
@@ -545,7 +544,7 @@ Value* make_fn(const char *name, char **params, int param_count, ASTNode **body,
     v->data.fn.param_hashes = xmalloc_array(param_count, sizeof(uint32_t));
     v->data.fn.param_count = param_count;
     for (int i = 0; i < param_count; i++) {
-        v->data.fn.params[i] = xstrdup(params[i]);
+        v->data.fn.params[i] = env_intern_name(params[i]);
         v->data.fn.param_hashes[i] = env_hash_name(params[i]);
     }
     v->data.fn.body = clone_ast_array(body, body_count);
@@ -1035,6 +1034,51 @@ store:
 void env_set_local_hashed_slot(Env *env, const char *name, uint32_t h, EigsSlot s) {
     if (h == 0) h = env_hash_name(name);
     env_set_local_pre_interned_slot(env, env_intern_name(name), h, s);
+}
+
+/* Bind a parameter into a freshly-created call env. Caller guarantees:
+ *   - env was just returned by env_new (heap_allocated=1, count=N with N<param)
+ *   - `interned` came from env_intern_name (or VAL_FN.params, now interned)
+ *   - the param name does not collide with any earlier param in this env
+ *     (compiler rejects duplicate params)
+ * Skips env_hash_find. */
+void env_bind_fresh_param_slot(Env *env, const char *interned,
+                               uint32_t h, EigsSlot s) {
+    if (env->count >= env->capacity) {
+        int new_cap = env->capacity * 2;
+        size_t nsz = new_cap * sizeof(char *);
+        size_t vsz = new_cap * sizeof(EigsSlot);
+        env->names = realloc(env->names, nsz);
+        env->values = realloc(env->values, vsz);
+        env->assign_counts = realloc(env->assign_counts, new_cap * sizeof(int));
+        if (!env->names || !env->values) {
+            fprintf(stderr, "Out of memory growing env\n");
+            exit(1);
+        }
+        env->capacity = new_cap;
+    }
+    env->names[env->count] = (char*)interned;
+    EigsSlot stored = s;
+    if (slot_is_ptr(s)) {
+        Value *v = slot_as_ptr(s);
+        if (v && v->arena) {
+            Value *promoted = promote_if_arena(v);
+            if (promoted && promoted != v) {
+                stored = slot_from_value(promoted);
+                goto store;
+            }
+        }
+    }
+    slot_incref(s);
+store:
+    env->values[env->count] = stored;
+    if (env->assign_counts) env->assign_counts[env->count] = 1;
+    env->count++;
+    env->binding_version++;
+    if (env->count * 10 > (env->hash.mask + 1) * 7)
+        env_hash_rebuild(&env->hash, env->names, env->count);
+    else
+        env_hash_insert(&env->hash, h, env->count - 1);
 }
 
 /* Walk the env chain for `name`. On hit, returns target env, slot index in
