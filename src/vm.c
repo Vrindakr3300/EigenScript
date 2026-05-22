@@ -1103,27 +1103,34 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     }
 
     CASE(LOCAL_IDX_DOT_GET): {
-        /* Fused local[idx].field — the DMG hot path (ctx[0].a, ctx[1].data, etc) */
+        /* Fused local[idx].field — the DMG hot path (ctx[0].a, ctx[1].data, etc).
+         * Error semantics match unfused INDEX_GET + DOT_GET path. */
         uint16_t slot = read_u16(ip); ip += 2;
         uint16_t list_idx = read_u16(ip); ip += 2;
         uint16_t name_idx = read_u16(ip); ip += 2;
         Env *e = frame->fn_env;
         Value *target = (slot < (uint16_t)e->count) ? e->values[slot] : NULL;
         Value *result = make_null();
-        if (target && target->type == VAL_LIST && list_idx < (uint16_t)target->data.list.count) {
-            Value *dict = target->data.list.items[list_idx];
-            if (dict && dict->type == VAL_DICT) {
-                const char *key = chunk->constants[name_idx]->data.str;
-                uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
-                if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
-                Value *v = dict_get_cached(dict, key, h);
-                if (v) { result = v; val_incref(result); }
-            } else if (dict && dict->type != VAL_NULL) {
-                const char *key = chunk->constants[name_idx]->data.str;
-                runtime_error(current_line, "cannot access field '%s' on %s",
-                    key, val_type_name(dict->type));
+        int i = (int)list_idx;
+        if (target && target->type == VAL_LIST) {
+            if (i < target->data.list.count) {
+                Value *dict = target->data.list.items[i];
+                if (dict && dict->type == VAL_DICT) {
+                    const char *key = chunk->constants[name_idx]->data.str;
+                    uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
+                    if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
+                    Value *v = dict_get_cached(dict, key, h);
+                    if (v) { result = v; val_incref(result); }
+                } else if (dict && dict->type != VAL_NULL) {
+                    const char *key = chunk->constants[name_idx]->data.str;
+                    runtime_error(current_line, "cannot access field '%s' on %s",
+                        key, val_type_name(dict->type));
+                }
+            } else {
+                runtime_error(current_line, "index %d out of range (list length %d)",
+                              i, target->data.list.count);
             }
-        } else if (target && target->type != VAL_LIST && target->type != VAL_NULL) {
+        } else if (target && target->type != VAL_NULL) {
             runtime_error(current_line, "cannot index %s", val_type_name(target->type));
         }
         vm_push(result);
@@ -1131,21 +1138,35 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     }
 
     CASE(LOCAL_IDX_DOT_SET): {
-        /* Fused local[idx].field = TOS — the DMG hot path (ctx[0].a is X) */
+        /* Fused local[idx].field = TOS — the DMG hot path (ctx[0].a is X).
+         * Error semantics match unfused INDEX_SET + DOT_SET path. */
         uint16_t slot = read_u16(ip); ip += 2;
         uint16_t list_idx = read_u16(ip); ip += 2;
         uint16_t name_idx = read_u16(ip); ip += 2;
         Value *val = vm_peek(0);
         Env *e = frame->fn_env;
         Value *target = (slot < (uint16_t)e->count) ? e->values[slot] : NULL;
-        if (target && target->type == VAL_LIST && list_idx < (uint16_t)target->data.list.count) {
-            Value *dict = target->data.list.items[list_idx];
-            if (dict && dict->type == VAL_DICT) {
-                const char *key = chunk->constants[name_idx]->data.str;
-                uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
-                if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
-                dict_set_cached(dict, key, h, val);
+        int i = (int)list_idx;
+        if (target && target->type == VAL_LIST) {
+            if (i < target->data.list.count) {
+                Value *dict = target->data.list.items[i];
+                if (dict && dict->type == VAL_DICT) {
+                    const char *key = chunk->constants[name_idx]->data.str;
+                    uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
+                    if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
+                    dict_set_cached(dict, key, h, val);
+                } else if (dict && dict->type != VAL_NULL) {
+                    const char *key = chunk->constants[name_idx]->data.str;
+                    runtime_error(current_line, "cannot assign field '%s' on %s",
+                        key, val_type_name(dict->type));
+                }
+            } else {
+                runtime_error(current_line, "index %d out of range (list length %d)",
+                              i, target->data.list.count);
             }
+        } else if (target && target->type != VAL_NULL) {
+            runtime_error(current_line, "cannot index %s for assignment",
+                          val_type_name(target->type));
         }
         DISPATCH();
     }
