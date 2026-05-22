@@ -367,18 +367,9 @@ static void compile_node(Compiler *c, ASTNode *node) {
 
         if (c->enclosing) {
             int slot = resolve_local(c, name, h);
-            if (slot >= 0) {
-                /* Known local (param or declared) — use SET_LOCAL */
+            if (slot >= 0 && slot < c->param_count) {
+                /* Known param — safe to use SET_LOCAL */
                 emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
-            } else if (node->data.assign.local_only && c->loop_depth == 0) {
-                /* New local at function scope — register slot, use SET_LOCAL */
-                slot = add_local(c, name, h);
-                if (slot >= 0) {
-                    emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
-                } else {
-                    int idx = add_string_constant(c, name);
-                    emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);
-                }
             } else if (node->data.assign.local_only) {
                 int idx = add_string_constant(c, name);
                 emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);
@@ -556,10 +547,8 @@ static void compile_node(Compiler *c, ASTNode *node) {
         int exit_jump = emit_jump(c, OP_ITER_NEXT, node->line);
         /* ITER_NEXT pushes element on non-exit (+1) */
 
-        /* Create fresh loop env only if loop body has closures */
-        int needs_loop_env = block_has_closure(node->data.forloop.body, node->data.forloop.body_count);
-        if (needs_loop_env)
-            emit(c, OP_LOOP_ENV_FRESH, node->line);
+        /* Create fresh loop env for each iteration (required for correct scoping) */
+        emit(c, OP_LOOP_ENV_FRESH, node->line);
 
         /* Bind loop variable via Env (ITER_NEXT pushed element on stack) */
         {
@@ -572,8 +561,7 @@ static void compile_node(Compiler *c, ASTNode *node) {
         emit(c, OP_POP, node->line); /* discard body result */
 
         /* Restore parent env */
-        if (needs_loop_env)
-            emit(c, OP_LOOP_ENV_END, node->line);
+        emit(c, OP_LOOP_ENV_END, node->line);
 
         /* Reset depth for back-edge (same as loop start) */
         c->stack_depth = depth_before_loop;

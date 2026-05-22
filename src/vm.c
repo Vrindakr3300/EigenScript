@@ -570,24 +570,6 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             val_incref(v);
             val_decref(e->values[slot]);
             e->values[slot] = v;
-        } else {
-            /* Grow env to accommodate compiler-assigned local slots */
-            while (slot >= (uint16_t)e->capacity) {
-                int new_cap = e->capacity ? e->capacity * 2 : 8;
-                e->names  = realloc(e->names, new_cap * sizeof(char *));
-                e->values = realloc(e->values, new_cap * sizeof(Value *));
-                memset(e->names + e->capacity, 0, (new_cap - e->capacity) * sizeof(char *));
-                memset(e->values + e->capacity, 0, (new_cap - e->capacity) * sizeof(Value *));
-                e->capacity = new_cap;
-            }
-            /* Fill any gap slots with null */
-            while (e->count <= slot) {
-                e->names[e->count] = NULL;
-                e->values[e->count] = NULL;
-                e->count++;
-            }
-            val_incref(v);
-            e->values[slot] = v;
         }
         DISPATCH();
     }
@@ -1023,6 +1005,10 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
             Value *v = dict_get_cached(target, key, h);
             if (v) { result = v; val_incref(result); }
+        } else if (target && target->type != VAL_NULL) {
+            const char *key = chunk->constants[name_idx]->data.str;
+            runtime_error(current_line, "cannot access field '%s' on %s",
+                key, val_type_name(target->type));
         }
         vm_push(result);
         DISPATCH();
@@ -1040,6 +1026,10 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
             if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
             dict_set_cached(target, key, h, val);
+        } else if (target && target->type != VAL_NULL) {
+            const char *key = chunk->constants[name_idx]->data.str;
+            runtime_error(current_line, "cannot set field '%s' on %s",
+                key, val_type_name(target->type));
         }
         DISPATCH();
     }
@@ -1079,7 +1069,13 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
                 Value *v = dict_get_cached(dict, key, h);
                 if (v) { result = v; val_incref(result); }
+            } else if (dict && dict->type != VAL_NULL) {
+                const char *key = chunk->constants[name_idx]->data.str;
+                runtime_error(current_line, "cannot access field '%s' on %s",
+                    key, val_type_name(dict->type));
             }
+        } else if (target && target->type != VAL_LIST && target->type != VAL_NULL) {
+            runtime_error(current_line, "cannot index %s", val_type_name(target->type));
         }
         vm_push(result);
         DISPATCH();
