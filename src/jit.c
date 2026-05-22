@@ -133,31 +133,49 @@ static void ensure_layout(void) {
 /* Scan a chunk-start prefix of opcodes we can natively translate.
  * Returns the prefix length in *bytes* (0 = nothing compilable).
  *
- * Stage 3b inline emission: the trampoline is ~15-cycle setup + ~3
- * cycles per opcode, so even a 3-op prefix amortizes vs the
- * interpreter's ~8 cycles per dispatched opcode. We still require at
- * least 3 ops AND at least one non-LINE op so the prologue/epilogue
- * fixed cost is recovered.
- *
- * Supported set:
+ * Stage 4 supported set:
  *   OP_NULL, OP_NUM_ZERO, OP_NUM_ONE — inline immediate push.
  *   OP_LINE                          — inline 32-bit store to current_line.
- *   OP_POP                           — peephole `dec %ecx` (safe because
- *                                      our supported predecessors push
- *                                      immediates whose slot_decref is
- *                                      a no-op).
- */
+ *   OP_CONST [idx:16]                — inline push of pre-encoded slot;
+ *                                      heap constants emit a one-shot
+ *                                      atomic incref (skipped statically
+ *                                      when v->arena == 1).
+ *   OP_POP                           — peephole `dec %ecx`, valid only
+ *                                      when the most recent push was an
+ *                                      immediate (number/null) whose
+ *                                      slot_decref is a no-op.
+ *
+ * Requires ≥3 ops AND ≥1 non-LINE op so the prologue/epilogue fixed
+ * cost is recovered. */
 static int jit_supported_prefix(const struct EigsChunk *chunk) {
     int i = 0, ops = 0, non_line_ops = 0;
     int last_good = 0;
+    int last_push_immediate = 0;  /* most recent push was a non-refcounted slot */
     while (i < chunk->code_len) {
         uint8_t op = chunk->code[i];
-        if (op == OP_NULL || op == OP_NUM_ZERO || op == OP_NUM_ONE ||
-            op == OP_POP) {
+        if (op == OP_NULL || op == OP_NUM_ZERO || op == OP_NUM_ONE) {
             i += 1; ops++; non_line_ops++;
+            last_push_immediate = 1;
+        } else if (op == OP_CONST) {
+            if (i + 3 > chunk->code_len) break;
+            uint16_t idx = (uint16_t)(chunk->code[i + 1] |
+                                      ((uint16_t)chunk->code[i + 2] << 8));
+            if (idx >= chunk->const_count) break;
+            Value *v = chunk->constants[idx];
+            if (!v) break;
+            i += 3; ops++; non_line_ops++;
+            /* Numeric constants flow as immediates; heap constants need
+             * a runtime incref but still don't grow the stack with a
+             * refcounted slot (the bits are the same — heap slot). */
+            last_push_immediate = (v->type == VAL_NUM && v->obs_age == 0);
+        } else if (op == OP_POP) {
+            if (!last_push_immediate) break;
+            i += 1; ops++; non_line_ops++;
+            last_push_immediate = 0;
         } else if (op == OP_LINE) {
             if (i + 3 > chunk->code_len) break;
             i += 3; ops++;
+            /* OP_LINE doesn't touch the stack — preserve last_push_immediate */
         } else {
             break;
         }
@@ -168,11 +186,12 @@ static int jit_supported_prefix(const struct EigsChunk *chunk) {
 }
 
 /* Upper bound on emitted bytes:
- *   prologue 23 + epilogue 10 + 20 bytes/op worst case (immediate push).
+ *   prologue 23 + epilogue 10 + 40 bytes/op worst case (OP_CONST heap
+ *   with incref: movabs+store+inc + movabs %rdi + lock addl).
  *   The caller advances frame->ip by chunk->jit_advance, so the thunk
  *   only writes %ecx back to g_vm.sp before returning. */
 static size_t jit_estimate_size(int prefix) {
-    return 23 + 10 + 20 * (size_t)prefix;
+    return 23 + 10 + 40 * (size_t)prefix;
 }
 
 /* ---- x86-64 encoding helpers ---- */
@@ -230,6 +249,20 @@ static uint8_t *emit_movl_imm_at_disp32_rbx(uint8_t *w, int32_t disp,
 static uint8_t *emit_inc_ecx(uint8_t *w) { *w++ = 0xFF; *w++ = 0xC1; return w; }
 /* dec %ecx (2 bytes) */
 static uint8_t *emit_dec_ecx(uint8_t *w) { *w++ = 0xFF; *w++ = 0xC9; return w; }
+
+/* movabs $imm64, %rdi  (10 bytes) */
+static uint8_t *emit_movabs_rdi(uint8_t *w, uint64_t imm) {
+    *w++ = 0x48; *w++ = 0xBF;
+    return emit_u64(w, imm);
+}
+
+/* lock addl $1, disp32(%rdi)  — atomic refcount increment (8 bytes) */
+static uint8_t *emit_lock_addl_1_disp32_rdi(uint8_t *w, int32_t disp) {
+    *w++ = 0xF0; *w++ = 0x83; *w++ = 0x87;
+    w = emit_u32(w, (uint32_t)disp);
+    *w++ = 0x01;
+    return w;
+}
 #endif
 
 void jit_try_compile_chunk(struct EigsChunk *chunk) {
@@ -299,9 +332,33 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             w = emit_store_rax_at_stack(w, g_layout.off_stack);
             w = emit_inc_ecx(w);
             i += 1;
+        } else if (op == OP_CONST) {
+            uint16_t idx = (uint16_t)(chunk->code[i + 1] |
+                                      ((uint16_t)chunk->code[i + 2] << 8));
+            Value *v = chunk->constants[idx];
+            uint64_t bits;
+            int needs_incref = 0;
+            if (v->type == VAL_NUM && v->obs_age == 0) {
+                /* Immediate-num: same shape as NUM_ZERO. */
+                memcpy(&bits, &v->data.num, 8);
+            } else {
+                /* Heap slot: TAG_HEAP | payload. Incref unless arena. */
+                bits = 0xFFFB000000000000ULL |
+                       ((uint64_t)(uintptr_t)v & 0x0000FFFFFFFFFFFFULL);
+                needs_incref = !v->arena;
+            }
+            w = emit_movabs_rax(w, bits);
+            w = emit_store_rax_at_stack(w, g_layout.off_stack);
+            w = emit_inc_ecx(w);
+            if (needs_incref) {
+                w = emit_movabs_rdi(w, (uint64_t)(uintptr_t)v);
+                w = emit_lock_addl_1_disp32_rdi(
+                        w, (int32_t)offsetof(Value, refcount));
+            }
+            i += 3;
         } else if (op == OP_POP) {
-            /* Peephole: prior op pushed an immediate (NULL/NUM_*),
-             * whose slot_decref is a no-op. Just dec the cached sp. */
+            /* Peephole: prior op pushed an immediate, whose slot_decref
+             * is a no-op. Just dec the cached sp. */
             w = emit_dec_ecx(w);
             i += 1;
         } else { /* OP_LINE */
