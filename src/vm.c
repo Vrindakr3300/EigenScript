@@ -332,6 +332,49 @@ static Value *make_iter_state(Value *iterable) {
     return state;
 }
 
+/* ---- JIT templates (called from JIT-emitted trampolines) ----
+ *
+ * Each helper natively executes a single opcode at the top-of-frame
+ * and advances the topmost frame's ip by the opcode's byte length.
+ * The JIT emits `movabs $&helper, %rax; call *%rax` per opcode in a
+ * supported chunk-start prefix. Helpers live here because they need
+ * direct access to g_vm (thread-local, static to this TU).
+ *
+ * Stage 3a covers opcodes that don't mutate frame_count or branch:
+ * OP_NULL, OP_NUM_ZERO, OP_NUM_ONE, OP_LINE. The control-flow
+ * contract is "advance ip; return". After the thunk returns, the
+ * interpreter reloads ip from frame->ip and resumes dispatch. */
+void eigs_jit_tmpl_null(void);
+void eigs_jit_tmpl_num_zero(void);
+void eigs_jit_tmpl_num_one(void);
+void eigs_jit_tmpl_line(int line);
+
+void eigs_jit_tmpl_null(void) {
+    g_vm.stack[g_vm.sp++] = slot_null();
+    CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
+    f->ip += 1;
+}
+void eigs_jit_tmpl_num_zero(void) {
+    g_vm.stack[g_vm.sp++] = slot_from_num(0.0);
+    CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
+    f->ip += 1;
+}
+void eigs_jit_tmpl_num_one(void) {
+    g_vm.stack[g_vm.sp++] = slot_from_num(1.0);
+    CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
+    f->ip += 1;
+}
+void eigs_jit_tmpl_line(int line) {
+    g_vm.current_line = line;
+    CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
+    f->ip += 3;
+}
+void eigs_jit_tmpl_pop(void) {
+    slot_decref(g_vm.stack[--g_vm.sp]);
+    CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
+    f->ip += 1;
+}
+
 /* ---- Main execution loop ---- */
 
 static Value *vm_run(EigsChunk *chunk, Env *env) {
@@ -1133,10 +1176,14 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->is_try = 0;
             frame->try_count = 0;
 
-            /* JIT hook: compile lazily, run native prefix if available. */
+            /* JIT hook: compile lazily, run native prefix if available.
+             * Thunk advances frame->ip and may set g_vm.current_line; the
+             * interpreter mirrors current_line into the register-local
+             * copy before resuming dispatch. */
             if (fn_chunk->jit_state == 0) jit_try_compile_chunk(fn_chunk);
             if (fn_chunk->jit_code) {
                 ((JitChunkFn)fn_chunk->jit_code)(fn_chunk);
+                current_line = g_vm.current_line;
             }
 
             /* Switch to new frame's bytecode */

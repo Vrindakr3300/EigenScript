@@ -12,6 +12,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* Stage 3a helpers live in vm.c — stub them so the standalone smoke
+ * binary links. The smoke test never invokes jit_try_compile_chunk,
+ * so these stubs are unreachable. */
+void eigs_jit_tmpl_null(void)        {}
+void eigs_jit_tmpl_num_zero(void)    {}
+void eigs_jit_tmpl_num_one(void)     {}
+void eigs_jit_tmpl_pop(void)         {}
+void eigs_jit_tmpl_line(int line)    { (void)line; }
+
 static int run_case(int64_t expected) {
     EigsJitCache *jc = jit_cache_new(1);
     if (!jc) {

@@ -36,6 +36,12 @@ void *jit_cache_alloc(EigsJitCache *jc, size_t bytes);
  * 0 on success, -1 if mprotect failed. Idempotent. */
 int jit_cache_seal(EigsJitCache *jc);
 
+/* Flip the entire cache back to RW for amend-and-reseal. Returns 0 on
+ * success, -1 if mprotect failed. Idempotent. Must NOT be called while
+ * another thread is executing code in the cache (single-thread cache
+ * is enforced by `__thread` ownership). */
+int jit_cache_unseal(EigsJitCache *jc);
+
 /* Bytes currently allocated from the cache. */
 size_t jit_cache_used(const EigsJitCache *jc);
 
