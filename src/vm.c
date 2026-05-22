@@ -1142,9 +1142,14 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             if (target->type == VAL_LIST) {
                 if (i >= 0 && i < target->data.list.count) {
                     Value *r = target->data.list.items[i];
-                    val_incref(r);
-                    slot_decref(tgt_s);
-                    vm_push(r);
+                    if (r && r->type == VAL_NUM && r->obs_age == 0) {
+                        slot_decref(tgt_s);
+                        vm_push_slot(slot_from_num(r->data.num));
+                    } else {
+                        val_incref(r);
+                        slot_decref(tgt_s);
+                        vm_push(r);
+                    }
                 } else {
                     runtime_error(current_line, "index %d out of range (list length %d)",
                                   i, target->data.list.count);
@@ -1241,16 +1246,26 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
         if (h == 0) { h = env_hash_name(key); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
         Value *target = vm_pop();
-        Value *result = make_null();
         if (target->type == VAL_DICT) {
             Value *v = dict_get_cached(target, key, h);
-            if (v) { result = v; val_incref(result); }
+            if (v) {
+                if (v->type == VAL_NUM && v->obs_age == 0) {
+                    double n = v->data.num;
+                    val_decref(target);
+                    vm_push_slot(slot_from_num(n));
+                    DISPATCH();
+                }
+                val_incref(v);
+                val_decref(target);
+                vm_push(v);
+                DISPATCH();
+            }
         } else if (target->type != VAL_NULL) {
             runtime_error(current_line, "cannot access field '%s' on %s",
                 key, val_type_name(target->type));
         }
         val_decref(target);
-        vm_push(result);
+        vm_push_slot(slot_null());
         DISPATCH();
     }
 
