@@ -28,7 +28,10 @@
 
 #include <stdint.h>
 
+#ifndef EIGENSCRIPT_EIGSSLOT_UNION_DEFINED
+#define EIGENSCRIPT_EIGSSLOT_UNION_DEFINED
 typedef union { double d; uint64_t u; } EigsSlot;
+#endif
 
 #define SLOT_QNAN_MASK     0xFFF8000000000000ULL
 #define SLOT_TAG_MASK      0xFFFF000000000000ULL

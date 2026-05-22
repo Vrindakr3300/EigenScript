@@ -837,7 +837,7 @@ Env* env_new(Env *parent) {
         e = xcalloc(1, sizeof(Env));
         e->capacity = ENV_INIT_CAP;
         e->names  = xcalloc(ENV_INIT_CAP, sizeof(char *));
-        e->values = xcalloc(ENV_INIT_CAP, sizeof(Value *));
+        e->values = xcalloc(ENV_INIT_CAP, sizeof(EigsSlot));
         e->assign_counts = xcalloc(ENV_INIT_CAP, sizeof(int));
         env_hash_init(&e->hash, ENV_HASH_INIT_CAP);
     }
@@ -855,14 +855,10 @@ void env_set_hashed(Env *env, const char *name, uint32_t h, Value *val) {
         int idx = env_hash_find(&e->hash, name, h, e->names);
         if (idx >= 0) {
             Value *promoted = promote_if_arena(val);
-            if (promoted != val) {
-                val_decref(e->values[idx]);
-                e->values[idx] = promoted;
-            } else {
-                val_incref(val);
-                val_decref(e->values[idx]);
-                e->values[idx] = val;
-            }
+            if (promoted == val) val_incref(promoted);
+            EigsSlot new_s = slot_from_value(promoted);
+            slot_decref(e->values[idx]);
+            e->values[idx] = new_s;
             if (e->assign_counts) e->assign_counts[idx]++;
             return;
         }
@@ -880,26 +876,22 @@ void env_set_local_hashed(Env *env, const char *name, uint32_t h, Value *val) {
     int idx = env_hash_find(&env->hash, name, h, env->names);
     if (idx >= 0) {
         Value *promoted = promote_if_arena(val);
-        if (promoted != val) {
-            val_decref(env->values[idx]);
-            env->values[idx] = promoted;
-        } else {
-            val_incref(val);
-            val_decref(env->values[idx]);
-            env->values[idx] = val;
-        }
+        if (promoted == val) val_incref(promoted);
+        EigsSlot new_s = slot_from_value(promoted);
+        slot_decref(env->values[idx]);
+        env->values[idx] = new_s;
         if (env->assign_counts) env->assign_counts[idx]++;
         return;
     }
     if (env->count >= env->capacity) {
         int new_cap = env->capacity * 2;
         size_t nsz = new_cap * sizeof(char *);
-        size_t vsz = new_cap * sizeof(Value *);
+        size_t vsz = new_cap * sizeof(EigsSlot);
         if (!env->heap_allocated) {
             char **nn  = arena_alloc(nsz);
-            Value **nv = arena_alloc(vsz);
+            EigsSlot *nv = arena_alloc(vsz);
             memcpy(nn, env->names, env->count * sizeof(char *));
-            memcpy(nv, env->values, env->count * sizeof(Value *));
+            memcpy(nv, env->values, env->count * sizeof(EigsSlot));
             env->names  = nn;
             env->values = nv;
         } else {
@@ -915,9 +907,9 @@ void env_set_local_hashed(Env *env, const char *name, uint32_t h, Value *val) {
     }
     env->names[env->count] = env_intern_name(name);
     Value *promoted = promote_if_arena(val);
-    env->values[env->count] = promoted;
+    if (promoted == val) val_incref(promoted);
+    env->values[env->count] = slot_from_value(promoted);
     if (env->assign_counts) env->assign_counts[env->count] = 1;
-    if (promoted == val) val_incref(val);
     env->count++;
 
     /* Insert into hash; rebuild if load factor > 70% */
@@ -925,6 +917,113 @@ void env_set_local_hashed(Env *env, const char *name, uint32_t h, Value *val) {
         env_hash_rebuild(&env->hash, env->names, env->count);
     else
         env_hash_insert(&env->hash, h, env->count - 1);
+}
+
+/* ---- Slot-flavored env helpers (Phase B-5 hot path) ----
+ * env borrows the input slot and slot_incref's internally to take a ref.
+ * Promotion: an arena-tracked pointer slot is materialized to heap via
+ * slot_to_value + promote_if_arena to preserve the existing arena-safety
+ * contract that env never holds arena Values across arena reset. */
+static void env_store_slot(Env *env, int idx, EigsSlot s) {
+    if (slot_is_ptr(s)) {
+        Value *v = slot_as_ptr(s);
+        if (v && v->arena) {
+            Value *promoted = promote_if_arena(v);
+            if (promoted && promoted != v) {
+                /* promoted is fresh (refcount=1); env takes it. */
+                EigsSlot new_s = slot_from_value(promoted);
+                slot_decref(env->values[idx]);
+                env->values[idx] = new_s;
+                return;
+            }
+        }
+    }
+    slot_incref(s);
+    slot_decref(env->values[idx]);
+    env->values[idx] = s;
+}
+
+void env_set_hashed_slot(Env *env, const char *name, uint32_t h, EigsSlot s) {
+    if (h == 0) h = env_hash_name(name);
+    Env *e = env;
+    while (e) {
+        int idx = env_hash_find(&e->hash, name, h, e->names);
+        if (idx >= 0) {
+            env_store_slot(e, idx, s);
+            if (e->assign_counts) e->assign_counts[idx]++;
+            return;
+        }
+        e = e->parent;
+    }
+    env_set_local_hashed_slot(env, name, h, s);
+}
+
+void env_set_local_hashed_slot(Env *env, const char *name, uint32_t h, EigsSlot s) {
+    if (h == 0) h = env_hash_name(name);
+    int idx = env_hash_find(&env->hash, name, h, env->names);
+    if (idx >= 0) {
+        env_store_slot(env, idx, s);
+        if (env->assign_counts) env->assign_counts[idx]++;
+        return;
+    }
+    if (env->count >= env->capacity) {
+        int new_cap = env->capacity * 2;
+        size_t nsz = new_cap * sizeof(char *);
+        size_t vsz = new_cap * sizeof(EigsSlot);
+        if (!env->heap_allocated) {
+            char **nn = arena_alloc(nsz);
+            EigsSlot *nv = arena_alloc(vsz);
+            memcpy(nn, env->names, env->count * sizeof(char *));
+            memcpy(nv, env->values, env->count * sizeof(EigsSlot));
+            env->names = nn;
+            env->values = nv;
+        } else {
+            env->names = realloc(env->names, nsz);
+            env->values = realloc(env->values, vsz);
+            env->assign_counts = realloc(env->assign_counts, new_cap * sizeof(int));
+            if (!env->names || !env->values) {
+                fprintf(stderr, "Out of memory growing env\n");
+                exit(1);
+            }
+        }
+        env->capacity = new_cap;
+    }
+    env->names[env->count] = env_intern_name(name);
+    EigsSlot stored = s;
+    if (slot_is_ptr(s)) {
+        Value *v = slot_as_ptr(s);
+        if (v && v->arena) {
+            Value *promoted = promote_if_arena(v);
+            if (promoted && promoted != v) {
+                stored = slot_from_value(promoted);
+                goto store;
+            }
+        }
+    }
+    slot_incref(s);
+store:
+    env->values[env->count] = stored;
+    if (env->assign_counts) env->assign_counts[env->count] = 1;
+    env->count++;
+    if (env->count * 10 > (env->hash.mask + 1) * 7)
+        env_hash_rebuild(&env->hash, env->names, env->count);
+    else
+        env_hash_insert(&env->hash, h, env->count - 1);
+}
+
+EigsSlot env_get_hashed_slot(Env *env, const char *name, uint32_t h, int *found) {
+    if (h == 0) h = env_hash_name(name);
+    Env *e = env;
+    while (e) {
+        int idx = env_hash_find(&e->hash, name, h, e->names);
+        if (idx >= 0) {
+            if (found) *found = 1;
+            return e->values[idx];
+        }
+        e = e->parent;
+    }
+    if (found) *found = 0;
+    return slot_null();
 }
 
 int env_get_assign_count(Env *env, const char *name, uint32_t h) {
@@ -946,8 +1045,7 @@ void env_free(Env *env) {
     if (!env || !env->heap_allocated) return;
     if (env->captured && __atomic_load_n(&env->env_refcount, __ATOMIC_ACQUIRE) > 0) return;
     for (int i = 0; i < env->count; i++) {
-        if (env->values[i] && !env->values[i]->arena)
-            val_decref(env->values[i]);
+        slot_decref(env->values[i]);
     }
     if (env->capacity <= ENV_FREELIST_MAX_BINDINGS &&
         g_env_freelist_count < ENV_FREELIST_CAP) {
@@ -976,7 +1074,7 @@ void env_reserve_slots(Env *env, int total) {
         int new_cap = env->capacity ? env->capacity : ENV_INIT_CAP;
         while (new_cap < total) new_cap *= 2;
         size_t nsz = new_cap * sizeof(char *);
-        size_t vsz = new_cap * sizeof(Value *);
+        size_t vsz = new_cap * sizeof(EigsSlot);
         if (env->heap_allocated) {
             env->names  = realloc(env->names,  nsz);
             env->values = realloc(env->values, vsz);
@@ -987,20 +1085,20 @@ void env_reserve_slots(Env *env, int total) {
             }
         } else {
             char **nn  = arena_alloc(nsz);
-            Value **nv = arena_alloc(vsz);
+            EigsSlot *nv = arena_alloc(vsz);
             memcpy(nn, env->names,  env->count * sizeof(char *));
-            memcpy(nv, env->values, env->count * sizeof(Value *));
+            memcpy(nv, env->values, env->count * sizeof(EigsSlot));
             env->names  = nn;
             env->values = nv;
         }
         env->capacity = new_cap;
     }
-    /* Zero new slots: names NULL, values NULL, assign_counts 0.
+    /* Zero new slots: names NULL, values immediate-null, assign_counts 0.
      * Non-captured local slots aren't hash-inserted — they're addressed
      * purely by slot index via OP_GET_LOCAL/OP_SET_LOCAL. */
     for (int i = env->count; i < total; i++) {
         env->names[i]  = NULL;
-        env->values[i] = NULL;
+        env->values[i] = slot_null();
         if (env->assign_counts) env->assign_counts[i] = 0;
     }
     env->count = total;
@@ -1009,8 +1107,7 @@ void env_reserve_slots(Env *env, int total) {
 void env_clear(Env *env) {
     if (!env) return;
     for (int i = 0; i < env->count; i++) {
-        if (env->values[i] && !env->values[i]->arena)
-            val_decref(env->values[i]);
+        slot_decref(env->values[i]);
     }
     env->count = 0;
     memset(env->hash.hashes, 0, (env->hash.mask + 1) * sizeof(uint32_t));
@@ -1021,7 +1118,17 @@ Value* env_get_hashed(Env *env, const char *name, uint32_t h) {
     Env *e = env;
     while (e) {
         int idx = env_hash_find(&e->hash, name, h, e->names);
-        if (idx >= 0) return e->values[idx];
+        if (idx >= 0) {
+            EigsSlot s = e->values[idx];
+            if (slot_is_ptr(s)) return slot_as_ptr(s);
+            /* immediate — materialize a borrowed Value* in the env slot
+             * itself so the returned pointer's lifetime matches the slot.
+             * This mirrors the legacy semantics where env owned the ref. */
+            Value *v = slot_to_value(s);
+            slot_decref(e->values[idx]);  /* drop immediate (no-op) */
+            e->values[idx] = slot_from_heap(v);  /* env now owns v */
+            return v;
+        }
         e = e->parent;
     }
     return NULL;
@@ -1031,7 +1138,14 @@ Value* env_get_local_hashed(Env *env, const char *name, uint32_t h) {
     if (!env) return NULL;
     if (h == 0) h = env_hash_name(name);
     int idx = env_hash_find(&env->hash, name, h, env->names);
-    if (idx >= 0) return env->values[idx];
+    if (idx >= 0) {
+        EigsSlot s = env->values[idx];
+        if (slot_is_ptr(s)) return slot_as_ptr(s);
+        Value *v = slot_to_value(s);
+        slot_decref(env->values[idx]);
+        env->values[idx] = slot_from_heap(v);
+        return v;
+    }
     return NULL;
 }
 

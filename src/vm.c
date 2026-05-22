@@ -142,6 +142,22 @@ static inline int dict_set_cached_immediate(Value *dict, const char *key, uint32
     return 0;
 }
 
+/* Local-slot target lift: for LOCAL_DOT and LOCAL_IDX superinstructions
+ * whose targets must be heap values (list/dict/etc). If the slot holds
+ * an immediate, materialize it into a heap Value and stash it back in
+ * the env so the next access sees a stable pointer (and so legacy
+ * type-name error reporting works — "cannot index num"). Returns NULL
+ * for null / out-of-range, otherwise a Value* the env owns a ref to. */
+static inline Value *vm_local_lift(Env *e, uint16_t slot) {
+    if ((int)slot >= e->count) return NULL;
+    EigsSlot s = e->values[slot];
+    if (slot_is_ptr(s)) return slot_as_ptr(s);
+    if (slot_is_null(s)) return NULL;
+    Value *v = slot_to_value(s);
+    e->values[slot] = slot_from_heap(v);
+    return v;
+}
+
 /* ---- VM helpers ---- */
 
 static void vm_init(void) {
@@ -734,20 +750,14 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(GET_LOCAL): {
         uint16_t slot = read_u16(ip); ip += 2;
-        /* Read from the function's original env (not loop-fresh child) */
+        /* Read from the function's original env (not loop-fresh child).
+         * Slot-direct: an immediate-num binding pushes immediate (no
+         * allocation); a heap binding pushes by incref. */
         Env *e = frame->fn_env;
         if ((int)slot < e->count) {
-            Value *v = e->values[slot];
-            if (v) {
-                if (v->type == VAL_NUM && v->obs_age == 0) {
-                    vm_push_slot(slot_from_num(v->data.num));
-                } else {
-                    val_incref(v);
-                    vm_push(v);
-                }
-            } else {
-                vm_push_slot(slot_null());
-            }
+            EigsSlot s = e->values[slot];
+            slot_incref(s);
+            vm_push_slot(s);
         } else {
             vm_push_slot(slot_null());
         }
@@ -758,20 +768,25 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         uint16_t slot = read_u16(ip); ip += 2;
         Env *e = frame->fn_env;
         if ((int)slot < e->count) {
-            /* Immediate-num + exclusive-num-binding fast path: mutate
-             * data.num in place so a hot counter never allocates. */
             EigsSlot tos = g_vm.stack[g_vm.sp - 1];
-            Value *existing = e->values[slot];
-            if (slot_is_num(tos) && existing &&
-                existing->type == VAL_NUM && existing->refcount == 1 &&
-                existing->obs_age == 0 && !existing->arena) {
-                existing->data.num = tos.d;
-                DISPATCH();
+            /* In-place mutation: writing an immediate into a slot that
+             * already holds an exclusive non-observed VAL_NUM rewrites
+             * the existing Value's data.num instead of swapping pointers. */
+            if (slot_is_num(tos)) {
+                EigsSlot ex_s = e->values[slot];
+                if (slot_is_heap(ex_s) || slot_is_tracked(ex_s)) {
+                    Value *existing = slot_as_ptr(ex_s);
+                    if (existing && existing->type == VAL_NUM &&
+                        existing->refcount == 1 &&
+                        existing->obs_age == 0 && !existing->arena) {
+                        existing->data.num = tos.d;
+                        DISPATCH();
+                    }
+                }
             }
-            Value *v = vm_slot_lift(g_vm.sp - 1);
-            val_incref(v);
-            val_decref(existing);
-            e->values[slot] = v;
+            slot_incref(tos);
+            slot_decref(e->values[slot]);
+            e->values[slot] = tos;
         }
         DISPATCH();
     }
@@ -781,15 +796,14 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         const char *name = chunk->constants[idx]->data.str;
         uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
         if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
-        Value *v = env_get_hashed(frame->env, name, h);
-        if (!v) {
+        int found = 0;
+        EigsSlot s = env_get_hashed_slot(frame->env, name, h, &found);
+        if (!found) {
             runtime_error(current_line, "undefined variable '%s'", name);
             vm_push_slot(slot_null());
-        } else if (v->type == VAL_NUM && v->obs_age == 0) {
-            vm_push_slot(slot_from_num(v->data.num));
         } else {
-            val_incref(v);
-            vm_push(v);
+            slot_incref(s);
+            vm_push_slot(s);
         }
         DISPATCH();
     }
@@ -799,8 +813,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         const char *name = chunk->constants[idx]->data.str;
         uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
         if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
-        Value *v = vm_peek(0);
-        env_set_hashed(frame->env, name, h, v);
+        EigsSlot s = g_vm.stack[g_vm.sp - 1];
+        env_set_hashed_slot(frame->env, name, h, s);
         DISPATCH();
     }
 
@@ -809,8 +823,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         const char *name = chunk->constants[idx]->data.str;
         uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
         if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
-        Value *v = vm_peek(0);
-        env_set_local_hashed(frame->env, name, h, v);
+        EigsSlot s = g_vm.stack[g_vm.sp - 1];
+        env_set_local_hashed_slot(frame->env, name, h, s);
         DISPATCH();
     }
 
@@ -934,10 +948,10 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                     list_append(arg, STK_AS_VAL(g_vm.sp - argc + i));
                 }
             }
-            /* Pop args + fn from stack */
+            /* Pop args + fn from stack (slot-direct). */
             for (int i = 0; i < argc; i++)
-                val_decref(vm_pop());
-            val_decref(vm_pop()); /* fn */
+                slot_decref(g_vm.stack[--g_vm.sp]);
+            slot_decref(g_vm.stack[--g_vm.sp]); /* fn */
 
             Env *saved = g_builtin_call_env;
             g_builtin_call_env = frame->env;
@@ -967,20 +981,28 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             Env *call_env = env_new(fn_val->data.fn.closure);
 
             int param_count = fn_val->data.fn.param_count;
+            uint32_t *phashes = fn_val->data.fn.param_hashes;
             if (param_count > 1 && argc > 0) {
                 int bound = param_count < (int)argc ? param_count : (int)argc;
-                for (int i = 0; i < bound; i++)
-                    env_set_local(call_env, fn_val->data.fn.params[i],
-                                  STK_AS_VAL(g_vm.sp - argc + i));
+                for (int i = 0; i < bound; i++) {
+                    uint32_t ph = phashes ? phashes[i] : 0;
+                    env_set_local_hashed_slot(call_env,
+                        fn_val->data.fn.params[i], ph,
+                        g_vm.stack[g_vm.sp - argc + i]);
+                }
             } else if (param_count == 1) {
+                uint32_t ph = phashes ? phashes[0] : 0;
                 if (argc == 1) {
-                    env_set_local(call_env, fn_val->data.fn.params[0],
-                                  STK_AS_VAL(g_vm.sp - 1));
+                    env_set_local_hashed_slot(call_env,
+                        fn_val->data.fn.params[0], ph,
+                        g_vm.stack[g_vm.sp - 1]);
                 } else {
                     Value *arg_list = make_list(argc);
                     for (int i = 0; i < argc; i++)
                         list_append(arg_list, STK_AS_VAL(g_vm.sp - argc + i));
-                    env_set_local(call_env, fn_val->data.fn.params[0], arg_list);
+                    env_set_local_hashed_slot(call_env,
+                        fn_val->data.fn.params[0], ph,
+                        slot_from_heap(arg_list));
                     val_decref(arg_list);
                 }
             }
@@ -990,10 +1012,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             if (fn_chunk->local_count > param_count)
                 env_reserve_slots(call_env, fn_chunk->local_count);
 
-            /* Pop args + fn from stack */
+            /* Pop args + fn from stack (slot-direct; immediates never
+             * round-trip through make_num + free_value). */
             for (int i = 0; i < argc; i++)
-                val_decref(vm_pop());
-            val_decref(vm_pop());
+                slot_decref(g_vm.stack[--g_vm.sp]);
+            slot_decref(g_vm.stack[--g_vm.sp]);
 
             /* Save current frame and push new one */
             frame->ip = ip;
@@ -1109,7 +1132,46 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     }
 
     CASE(INDEX_GET): {
-        Value *idx = vm_pop(); Value *target = vm_pop();
+        /* Slot-aware: an immediate-num index never materializes. */
+        EigsSlot idx_s = g_vm.stack[g_vm.sp - 1];
+        EigsSlot tgt_s = g_vm.stack[g_vm.sp - 2];
+        g_vm.sp -= 2;
+        if (slot_is_num(idx_s) && slot_is_ptr(tgt_s)) {
+            Value *target = slot_as_ptr(tgt_s);
+            int i = (int)idx_s.d;
+            if (target->type == VAL_LIST) {
+                if (i >= 0 && i < target->data.list.count) {
+                    Value *r = target->data.list.items[i];
+                    val_incref(r);
+                    slot_decref(tgt_s);
+                    vm_push(r);
+                } else {
+                    runtime_error(current_line, "index %d out of range (list length %d)",
+                                  i, target->data.list.count);
+                    slot_decref(tgt_s);
+                    vm_push_slot(slot_null());
+                }
+                DISPATCH();
+            }
+            if (target->type == VAL_BUFFER) {
+                if (i >= 0 && i < target->data.buffer.count) {
+                    double v = target->data.buffer.data[i];
+                    slot_decref(tgt_s);
+                    vm_push_slot(slot_from_num(v));
+                } else {
+                    runtime_error(current_line, "buffer index %d out of range (length %d)",
+                                  i, target->data.buffer.count);
+                    slot_decref(tgt_s);
+                    vm_push_slot(slot_null());
+                }
+                DISPATCH();
+            }
+        }
+        /* Slow path: materialize both via slot_to_value for unified handling. */
+        Value *idx = slot_to_value(idx_s);
+        slot_decref(idx_s);
+        Value *target = slot_to_value(tgt_s);
+        slot_decref(tgt_s);
         Value *result = make_null();
         if (target->type == VAL_LIST && idx->type == VAL_NUM) {
             int i = (int)idx->data.num;
@@ -1217,7 +1279,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         uint16_t slot = read_u16(ip); ip += 2;
         uint16_t name_idx = read_u16(ip); ip += 2;
         Env *e = frame->fn_env;
-        Value *target = ((int)slot < e->count) ? e->values[slot] : NULL;
+        Value *target = vm_local_lift(e, slot);
         if (target && target->type == VAL_DICT) {
             const char *key = chunk->constants[name_idx]->data.str;
             uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
@@ -1251,7 +1313,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         uint16_t slot = read_u16(ip); ip += 2;
         uint16_t name_idx = read_u16(ip); ip += 2;
         Env *e = frame->fn_env;
-        Value *target = ((int)slot < e->count) ? e->values[slot] : NULL;
+        Value *target = vm_local_lift(e, slot);
         if (target && target->type == VAL_DICT) {
             const char *key = chunk->constants[name_idx]->data.str;
             uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
@@ -1278,7 +1340,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         uint16_t slot = read_u16(ip); ip += 2;
         uint16_t idx = read_u16(ip); ip += 2;
         Env *e = frame->fn_env;
-        Value *target = ((int)slot < e->count) ? e->values[slot] : NULL;
+        Value *target = vm_local_lift(e, slot);
         Value *result = make_null();
         if (target) {
             int i = (int)idx;
@@ -1321,7 +1383,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         uint16_t list_idx = read_u16(ip); ip += 2;
         uint16_t name_idx = read_u16(ip); ip += 2;
         Env *e = frame->fn_env;
-        Value *target = ((int)slot < e->count) ? e->values[slot] : NULL;
+        Value *target = vm_local_lift(e, slot);
         int i = (int)list_idx;
         if (target && target->type == VAL_LIST) {
             if (i < target->data.list.count) {
@@ -1365,7 +1427,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         uint16_t list_idx = read_u16(ip); ip += 2;
         uint16_t name_idx = read_u16(ip); ip += 2;
         Env *e = frame->fn_env;
-        Value *target = ((int)slot < e->count) ? e->values[slot] : NULL;
+        Value *target = vm_local_lift(e, slot);
         int i = (int)list_idx;
         if (target && target->type == VAL_LIST) {
             if (i < target->data.list.count) {
@@ -1724,7 +1786,9 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         Value *mod_dict = make_dict(mod_env->count);
         for (int mi = 0; mi < mod_env->count; mi++) {
             if (mod_env->names[mi][0] == '_') continue;
-            dict_set(mod_dict, mod_env->names[mi], mod_env->values[mi]);
+            Value *mv = slot_to_value(mod_env->values[mi]);
+            dict_set(mod_dict, mod_env->names[mi], mv);
+            val_decref(mv);
         }
         vm_push(mod_dict);
         DISPATCH();

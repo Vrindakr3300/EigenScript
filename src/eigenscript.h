@@ -156,6 +156,14 @@ typedef enum {
 typedef struct Value Value;
 typedef Value* (*BuiltinFn)(Value* arg);
 
+/* EigsSlot union — full inline helpers in value_slot.h, which is
+ * included below after the Value struct is fully declared. We need the
+ * raw union here because Env::values is EigsSlot*. */
+#ifndef EIGENSCRIPT_EIGSSLOT_UNION_DEFINED
+#define EIGENSCRIPT_EIGSSLOT_UNION_DEFINED
+typedef union { double d; uint64_t u; } EigsSlot;
+#endif
+
 /* Hash index for O(1) variable lookup.  Sits alongside the linear
  * names/values arrays so iteration order and env_free are unchanged. */
 #define ENV_HASH_INIT_CAP 32  /* must be power of 2 */
@@ -168,7 +176,7 @@ typedef struct {
 
 struct Env {
     char **names;
-    Value **values;
+    EigsSlot *values;   /* slot-typed bindings (immediates live in-place) */
     int *assign_counts; /* per-slot assignment counter for 'when is' */
     int count;
     int capacity;
@@ -326,6 +334,13 @@ void env_set_hashed(Env *env, const char *name, uint32_t h, Value *val);
 Value* env_get_hashed(Env *env, const char *name, uint32_t h);
 Value* env_get_local_hashed(Env *env, const char *name, uint32_t h);
 void env_set_local_hashed(Env *env, const char *name, uint32_t h, Value *val);
+/* Slot-flavored fast paths: take/produce EigsSlot directly so immediates
+ * never round-trip through make_num + val_decref. Reference-count
+ * semantics match the Value* variants: env *borrows* the input slot and
+ * incref's internally, *_get returns a slot the caller must slot_decref. */
+void env_set_hashed_slot(Env *env, const char *name, uint32_t h, EigsSlot s);
+void env_set_local_hashed_slot(Env *env, const char *name, uint32_t h, EigsSlot s);
+EigsSlot env_get_hashed_slot(Env *env, const char *name, uint32_t h, int *found);
 void dict_set_hashed(Value *dict, const char *key, uint32_t h, Value *val);
 Value* dict_get_hashed(Value *dict, const char *key, uint32_t h);
 void env_free(Env *env);
