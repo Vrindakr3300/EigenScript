@@ -2,6 +2,44 @@
 
 All notable changes to EigenScript are documented here.
 
+## [0.11.2] — 2026-05-22
+
+### Bug Fixes
+- **`break` in `while` loop corrupted stack**: AST_LOOP patched break
+  jumps to land *after* its trailing OP_NULL, so the break path skipped
+  the loop's result push while the compile-time tracker (and AST_BREAK's
+  +1 phantom) assumed it was there. A statement following the loop then
+  popped a stale heap pointer and segfaulted. Patch break jumps before
+  OP_NULL so all exit paths agree.
+- **`break` in `while` loop freed the global env**: AST_BREAK
+  unconditionally emitted OP_LOOP_ENV_END, but only AST_FOR allocates a
+  per-iteration env. Breaking out of a `while` therefore released the
+  surrounding (often global) env. Track `has_fresh_env` per loop and emit
+  OP_LOOP_ENV_END only when set.
+- **`local[const]` indexing silently masked errors**: OP_LOCAL_IDX_GET
+  (the fused fast path for `arr[i]` on a local slot) returned null on
+  out-of-range or wrong-type targets instead of raising runtime_error.
+  This made try/catch around errors-inside-functions appear broken
+  (error never propagated; function silently returned null). Bring its
+  error semantics in line with unfused INDEX_GET.
+- **`local[const].field` silently masked errors**: same class of bug in
+  OP_LOCAL_IDX_DOT_GET / OP_LOCAL_IDX_DOT_SET. Out-of-range list index
+  silently returned null / no-op; non-list non-null targets silently
+  failed. Now error like unfused INDEX_GET/INDEX_SET + DOT_GET/SET.
+- **64K buffer index truncation**: `idx < (uint16_t)count` truncated
+  count to 16 bits — a 65536-byte buffer (e.g. a Game Boy 64K address
+  space) reported every index as out-of-range. Compare as int.
+
+### Cleanups
+- Drop redundant `slot < (uint16_t)e->count` casts across 7 slot-bounds
+  checks in GET_LOCAL / SET_LOCAL / LOCAL_DOT_GET/SET / LOCAL_IDX_GET /
+  LOCAL_IDX_DOT_GET/SET. Compare `(int)slot < e->count` directly.
+
+### Test Suite
+- Full suite now reaches **1030/1030 PASS, 0 FAIL** (previously halted
+  at `[29/31] Break & Continue` on the segfault above, reporting 141
+  PASS).
+
 ## [0.11.1] — 2026-05-21
 
 ### Performance (DMG benchmark: 0.318 → 0.384 MHz, +21%)
