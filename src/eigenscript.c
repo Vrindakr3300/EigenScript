@@ -365,6 +365,91 @@ Value* make_num_permanent(double n) {
     return v;
 }
 
+/* Forward decl of the VAL_NULL singleton — defined below near make_null. */
+static Value g_null_singleton;
+
+/* ---- NaN-boxing boundary shims ----
+ *
+ * make_tracked_num: heap-allocated VAL_NUM that survives arena reset.
+ * Used when a previously-immediate slot must be promoted because the
+ * binding becomes observer-tracked.
+ */
+Value* make_tracked_num(double n) {
+    n = num_guard(n);
+    Value *v;
+    if (g_num_freelist) {
+        v = g_num_freelist;
+        memcpy(&g_num_freelist, &v->data, sizeof(Value *));
+        g_num_freelist_count--;
+        memset(v, 0, sizeof(Value));
+    } else {
+        v = xcalloc(1, sizeof(Value));
+    }
+    v->type = VAL_NUM;
+    v->data.num = n;
+    v->refcount = 1;
+    v->arena = 0;
+    return v;
+}
+
+/* slot_from_value: takes ownership of the input ref.
+ *   - NULL or VAL_NULL singleton -> immediate null (input is borrowed)
+ *   - VAL_NUM with no observer state -> immediate; input released
+ *   - VAL_NUM with observer state -> TAG_TRACKED; ref transferred
+ *   - any other type -> TAG_HEAP; ref transferred
+ *
+ * Arena-allocated VAL_NUM cannot be tracked (it would die at arena
+ * reset). For Phase A's safety, an arena VAL_NUM with observer state
+ * is promoted to heap via make_tracked_num.
+ */
+EigsSlot slot_from_value(Value *v) {
+    if (!v || v->type == VAL_NULL) {
+        if (v && !v->arena && v != &g_null_singleton) val_decref(v);
+        return slot_null();
+    }
+    if (v->type == VAL_NUM) {
+        if (v->obs_age == 0 && !v->dirty
+            && v->entropy == 0.0 && v->dH == 0.0
+            && v->last_entropy == 0.0 && v->prev_dH == 0.0) {
+            double n = v->data.num;
+            val_decref(v);
+            return slot_from_num(n);
+        }
+        /* Observer-tracked number: must be heap so it survives arena reset. */
+        if (v->arena) {
+            Value *h = make_tracked_num(v->data.num);
+            h->entropy = v->entropy;
+            h->dH = v->dH;
+            h->last_entropy = v->last_entropy;
+            h->prev_dH = v->prev_dH;
+            h->obs_age = v->obs_age;
+            h->dirty = v->dirty;
+            /* arena copy: nothing to decref */
+            return slot_from_tracked(h);
+        }
+        return slot_from_tracked(v);
+    }
+    return slot_from_heap(v);
+}
+
+/* slot_to_value: produces a Value* the caller owns a ref to.
+ *   - immediate number/bool -> make_num
+ *   - immediate null -> g_null_singleton
+ *   - heap/tracked pointer -> incref and return
+ */
+Value* slot_to_value(EigsSlot s) {
+    if (slot_is_num(s)) return make_num(s.d);
+    if (slot_is_null(s)) return &g_null_singleton;
+    if (slot_is_bool(s)) return make_num(slot_as_bool(s) ? 1.0 : 0.0);
+    if (slot_is_heap(s) || slot_is_tracked(s)) {
+        Value *v = slot_as_ptr(s);
+        val_incref(v);
+        return v;
+    }
+    /* unknown tag: fall back to null */
+    return &g_null_singleton;
+}
+
 Value* promote_if_arena(Value *v) {
     if (!v || !v->arena) return v;
     if (v->type == VAL_NUM) {
@@ -417,6 +502,7 @@ Value* make_str_owned(char *s) {
 }
 
 static Value g_null_singleton = { .type = VAL_NULL, .refcount = 1000000, .arena = 1 };
+/* forward decl resolved here */
 
 Value* make_null(void) {
     return &g_null_singleton;

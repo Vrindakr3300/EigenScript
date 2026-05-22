@@ -313,6 +313,8 @@ static inline void val_decref(Value *v) {
     }
 }
 
+#include "value_slot.h"
+
 /* ---- Environment ---- */
 
 Env* env_new(Env *parent);
