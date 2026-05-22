@@ -1,8 +1,8 @@
 print of "=== LOOP EXIT TEST ==="
 
 print of "--- LE1: Normal exit ---"
-x is 10
-x is 10
+x is 1
+x is 100
 loop while not converged:
     x is x * 2
 print of __loop_exit__

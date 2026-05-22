@@ -822,7 +822,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         }
 
         /* Not callable */
-        runtime_error(current_line, "attempt to call non-function value");
+        runtime_error(current_line, "cannot call %s", val_type_name(fn_val->type));
         for (int i = 0; i < argc; i++) val_decref(vm_pop());
         val_decref(vm_pop());
         vm_push(make_null());
@@ -1210,9 +1210,22 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     /* ---- Observer ---- */
 
     CASE(OBSERVE_ASSIGN): {
-        /* uint16_t name_idx = */ read_u16(ip); ip += 2;
+        uint16_t name_idx = read_u16(ip); ip += 2;
         Value *v = vm_peek(0);
         if (g_unobserved_depth == 0 && v) {
+            /* Transfer observer history from previous value of this binding */
+            const char *name = chunk->constants[name_idx]->data.str;
+            uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
+            if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
+            Value *prev = env_get_hashed(frame->env, name, h);
+            if (prev && prev != v) {
+                observer_ensure_fresh(prev);
+                v->last_entropy = prev->last_entropy;
+                v->entropy = prev->entropy;
+                v->obs_age = prev->obs_age;
+                v->dH = prev->dH;
+                v->prev_dH = prev->prev_dH;
+            }
             v->dirty = 1;
             g_last_observer = v;
         }
@@ -1330,14 +1343,16 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             g_loop_exit_reason = "limit";
             should_exit = 1;
         }
-        if (should_exit) {
-            /* Set __loop_exit__ and __loop_iterations__ in env */
-            Value *exit_val = make_str(g_loop_exit_reason);
-            env_set_local(frame->env, "__loop_exit__", exit_val);
-            val_decref(exit_val);
+        /* Always expose iteration count */
+        {
             Value *iter_val = make_num(g_loop_iterations);
             env_set_local(frame->env, "__loop_iterations__", iter_val);
             val_decref(iter_val);
+        }
+        if (should_exit) {
+            Value *exit_val = make_str(g_loop_exit_reason);
+            env_set_local(frame->env, "__loop_exit__", exit_val);
+            val_decref(exit_val);
             g_loop_stall_count = 0;
             g_loop_iterations = 0;
             g_loop_exit_reason = "normal";

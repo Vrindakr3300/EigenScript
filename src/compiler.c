@@ -370,6 +370,12 @@ static void compile_node(Compiler *c, ASTNode *node) {
         uint32_t h = node->name_hash;
         if (h == 0) h = env_hash_name(name);
 
+        /* Observer: transfer history from old value BEFORE the SET overwrites it */
+        {
+            int name_idx = add_string_constant(c, name);
+            emit_op_u16(c, OP_OBSERVE_ASSIGN, (uint16_t)name_idx, node->line);
+        }
+
         if (c->enclosing) {
             int slot = resolve_local(c, name, h);
             if (slot >= 0 && slot < c->param_count) {
@@ -390,11 +396,6 @@ static void compile_node(Compiler *c, ASTNode *node) {
             } else {
                 emit_op_u16(c, OP_SET_NAME, (uint16_t)idx, node->line);
             }
-        }
-        /* Observer update */
-        {
-            int name_idx = add_string_constant(c, name);
-            emit_op_u16(c, OP_OBSERVE_ASSIGN, (uint16_t)name_idx, node->line);
         }
         break;
     }
@@ -507,18 +508,13 @@ static void compile_node(Compiler *c, ASTNode *node) {
          * For stall exit, LOOP_STALL_CHECK already set them.
          * For normal exit, emit code to set them. */
         patch_jump(c, exit_jump);
-        /* Normal exit — set exit vars from stall counters */
+        /* Normal exit — set __loop_exit__ only; __loop_iterations__ already
+         * set by LOOP_STALL_CHECK on each iteration */
         {
             int exit_idx = add_string_constant(c, "__loop_exit__");
-            int iter_idx = add_string_constant(c, "__loop_iterations__");
             int normal_idx = add_string_constant(c, "normal");
-            /* Push "normal", set __loop_exit__, pop */
             emit_op_u16(c, OP_CONST, (uint16_t)normal_idx, node->line);
             emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)exit_idx, node->line);
-            emit(c, OP_POP, node->line);
-            /* Push 0 for iterations (approximation), set __loop_iterations__, pop */
-            emit(c, OP_NUM_ZERO, node->line);
-            emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)iter_idx, node->line);
             emit(c, OP_POP, node->line);
         }
         patch_jump(c, stall_jump);

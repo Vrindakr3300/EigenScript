@@ -230,7 +230,12 @@ void update_observer(Value *v) {
     if (!v) return;
     double new_entropy = compute_entropy(v);
     v->prev_dH = v->dH;
-    v->dH = new_entropy - v->last_entropy;
+    if (v->obs_age == 0) {
+        /* First observation — no delta yet */
+        v->dH = 0;
+    } else {
+        v->dH = new_entropy - v->last_entropy;
+    }
     v->entropy = new_entropy;
     v->last_entropy = new_entropy;
     v->obs_age++;
