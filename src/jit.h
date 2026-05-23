@@ -101,4 +101,10 @@ typedef struct {
 
 void eigs_jit_get_layout(EigsJitLayout *out);
 
+/* Stage 4k: out-of-line helper invoked by JIT-emitted OP_GET_NAME
+ * sites. Doing the IC walk inline would cost ~80 bytes of native
+ * code per call site; one funcall fits in ~30 bytes and the IC still
+ * lives inside the helper. */
+void jit_helper_get_name(struct EigsChunk *chunk, int idx);
+
 #endif /* EIGS_JIT_H */

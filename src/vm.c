@@ -340,6 +340,53 @@ static Value *make_iter_state(Value *iterable) {
  * g_vm fields without indirection through helper functions. */
 #include <stddef.h>
 
+/* JIT Stage 4k: out-of-line helper for OP_GET_NAME.
+ *
+ * Mirrors CASE(GET_NAME) below exactly — IC fast path then chain-walk
+ * slow path with IC populate. Lives in vm.c so it can reach static
+ * `g_vm` and the inline `vm_push_slot`. The JIT emits a 6-instruction
+ * call site (sp sync + arg setup + aligned call + sp reload) instead
+ * of trying to emit ~80 bytes of IC-walk-and-incref inline. The IC
+ * itself still does its job — the helper just front-ends it. */
+void jit_helper_get_name(EigsChunk *chunk, int idx) {
+    EnvIC *ic = &chunk->env_ic[idx];
+    CallFrame *frame = &g_vm.frames[g_vm.frame_count - 1];
+    Env *start = frame->env;
+    if (__builtin_expect(ic->starting_env == start &&
+                         ic->starting_ver == start->binding_version, 1)) {
+        Env *target = ic->walk_depth ? start->parent : start;
+        if (__builtin_expect(target && target->binding_version == ic->target_ver, 1)) {
+            EigsSlot s = target->values[ic->slot_idx];
+            slot_incref(s);
+            vm_push_slot(s);
+            return;
+        }
+    }
+    const char *name = chunk->const_interns[idx];
+    uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
+    if (h == 0) {
+        h = env_hash_name(name);
+        if (chunk->const_hashes) chunk->const_hashes[idx] = h;
+    }
+    int slot_idx, depth;
+    Env *target = env_resolve_chain(start, name, h, &slot_idx, &depth);
+    if (!target) {
+        runtime_error(g_vm.current_line, "undefined variable '%s'", name);
+        vm_push_slot(slot_null());
+        return;
+    }
+    if (depth <= 1) {
+        ic->starting_env = start;
+        ic->starting_ver = start->binding_version;
+        ic->target_ver   = target->binding_version;
+        ic->slot_idx     = slot_idx;
+        ic->walk_depth   = (uint8_t)depth;
+    }
+    EigsSlot s = target->values[slot_idx];
+    slot_incref(s);
+    vm_push_slot(s);
+}
+
 void eigs_jit_get_layout(EigsJitLayout *out) {
     void *tp;
     __asm__ __volatile__("mov %%fs:0, %0" : "=r"(tp));

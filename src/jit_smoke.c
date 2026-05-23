@@ -28,6 +28,14 @@ void free_value(Value *v) { (void)v; }
  * EIGS_JIT_STOPS is not set, but the linker still needs a definition. */
 const char *op_name(uint8_t op) { (void)op; return "?"; }
 
+/* Stage 4k references &jit_helper_get_name as an immediate in the
+ * OP_GET_NAME emitter. Smoke test never invokes that emitter, but
+ * the linker needs a definition. */
+struct EigsChunk;
+void jit_helper_get_name(struct EigsChunk *chunk, int idx) {
+    (void)chunk; (void)idx;
+}
+
 static int run_case(int64_t expected) {
     EigsJitCache *jc = jit_cache_new(1);
     if (!jc) {

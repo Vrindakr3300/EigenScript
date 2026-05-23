@@ -242,6 +242,22 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             i += 3; ops++; non_line_ops++;
             *needs_env_cache = 1;
             last_push_immediate = 0;
+        } else if (op == OP_GET_NAME) {
+            if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
+            uint16_t idx = (uint16_t)(chunk->code[i + 1] |
+                                      ((uint16_t)chunk->code[i + 2] << 8));
+            /* Helper needs chunk->env_ic and chunk->const_interns to be
+             * non-NULL; the compiler always allocates env_ic when there
+             * are any string constants, but guard anyway. */
+            if (!chunk->env_ic || !chunk->const_interns ||
+                idx >= chunk->const_count) {
+                *stop_op = op; *stop_offset = i; break;
+            }
+            i += 3; ops++; non_line_ops++;
+            *has_bail_op = 1;
+            /* Result could be any slot type (whatever the binding holds).
+             * Subsequent OP_POP cannot use the immediate peephole. */
+            last_push_immediate = 0;
         } else if (op == OP_SET_LOCAL) {
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
@@ -580,6 +596,18 @@ static uint8_t *emit_pop_r14(uint8_t *w)   { *w++=0x41; *w++=0x5E; return w; }
 static uint8_t *emit_movabs_r14(uint8_t *w, uint64_t imm) {
     *w++ = 0x49; *w++ = 0xBE;
     return emit_u64(w, imm);
+}
+
+/* mov %r14, %rdi  (3 bytes) — pass chunk pointer to a helper. */
+static uint8_t *emit_mov_r14_rdi(uint8_t *w) {
+    *w++ = 0x4C; *w++ = 0x89; *w++ = 0xF7;
+    return w;
+}
+
+/* mov $imm32, %esi  (5 bytes) — pass a 32-bit immediate as 2nd helper arg. */
+static uint8_t *emit_mov_imm32_esi(uint8_t *w, uint32_t imm) {
+    *w++ = 0xBE;
+    return emit_u32(w, imm);
 }
 
 /* mov $imm32, %r13d  (6 bytes) — set advance tracker. */
@@ -1141,6 +1169,26 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             }
             w = emit_store_rax_at_stack(w, g_layout.off_stack);
             w = emit_inc_ecx(w);
+            i += 3;
+        } else if (op == OP_GET_NAME) {
+            /* Stage 4k: out-of-line call to jit_helper_get_name(chunk, idx).
+             * The helper does the EnvIC walk and slot push via vm_push_slot
+             * — both touch g_vm.sp directly, so we sync our %ecx cache to
+             * g_vm.sp before the call and reload after. Stack alignment:
+             * body is at 8-mod-16; `push %rcx` carries us to 0-mod-16 (the
+             * pushed value is junk, since we reload %ecx from g_vm.sp on
+             * return). chunk pointer comes from %r14 (always set when
+             * has_bail_op, which OP_GET_NAME forces). */
+            uint16_t idx = (uint16_t)(chunk->code[i + 1] |
+                                      ((uint16_t)chunk->code[i + 2] << 8));
+            w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+            w = emit_mov_r14_rdi(w);
+            w = emit_mov_imm32_esi(w, (uint32_t)idx);
+            w = emit_push_rcx(w);
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_get_name);
+            w = emit_call_rax(w);
+            w = emit_pop_rcx(w);
+            w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
             i += 3;
         } else if (op == OP_DUP) {
             /* %rax = stack[sp-1] */
