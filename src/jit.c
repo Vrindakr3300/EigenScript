@@ -158,6 +158,12 @@ static void ensure_layout(void) {
  *                              check fail. Div-by-zero produces ±Inf
  *                              or NaN, both caught by the overflow
  *                              check — no separate divisor guard.
+ *   OP_EQ / OP_NE / OP_LT /
+ *   OP_GT / OP_LE / OP_GE    — load both, type-check (immediate-num),
+ *                              ucomisd + cmovcc to materialize 0.0 or
+ *                              1.0 bits as the result slot. No output
+ *                              overflow check needed (bounded). Type-
+ *                              check is the only bail.
  *   OP_POP                   — peephole `dec %ecx`, valid only when the
  *                              most recent push was an immediate whose
  *                              slot_decref is a no-op. GET_LOCAL/DUP/
@@ -206,6 +212,13 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             *has_bail_op = 1;
             /* Result type at runtime is num (when not bailed), so
              * subsequent OP_POP is still a no-op-decref. */
+            last_push_immediate = 1;
+        } else if (op == OP_EQ || op == OP_NE || op == OP_LT ||
+                   op == OP_GT || op == OP_LE || op == OP_GE) {
+            i += 1; ops++; non_line_ops++;
+            *has_bail_op = 1;
+            /* Result is bit-exact 0.0 or 1.0 (an immediate-num), so
+             * OP_POP after a comparison remains a no-op peephole. */
             last_push_immediate = 1;
         } else if (op == OP_POP) {
             if (!last_push_immediate) break;
@@ -560,6 +573,33 @@ static uint8_t *emit_mulsd_xmm0_xmm1(uint8_t *w) {
 /* divsd %xmm0, %xmm1  (4 bytes): F2 0F 5E C8  (xmm1 = xmm1 / xmm0) */
 static uint8_t *emit_divsd_xmm0_xmm1(uint8_t *w) {
     *w++ = 0xF2; *w++ = 0x0F; *w++ = 0x5E; *w++ = 0xC8; return w;
+}
+
+/* ucomisd %xmm0, %xmm1  (4 bytes: 66 0F 2E C8) — AT&T order: compares
+ * %xmm1 (= a) with %xmm0 (= b). Sets ZF/PF/CF per IEEE-754 ordered
+ * comparison (PF=1 if either is NaN — accepted imprecision: num_guard
+ * prevents NaN from reaching the stack in normal operation). */
+static uint8_t *emit_ucomisd_xmm0_xmm1(uint8_t *w) {
+    *w++ = 0x66; *w++ = 0x0F; *w++ = 0x2E; *w++ = 0xC8; return w;
+}
+
+/* xor %rax, %rax  (3 bytes: 48 31 C0) — clears %rax (bits of +0.0). */
+static uint8_t *emit_xor_rax_rax(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x31; *w++ = 0xC0; return w;
+}
+
+/* movabs $imm64, %rdx  (10 bytes) */
+static uint8_t *emit_movabs_rdx(uint8_t *w, uint64_t imm) {
+    *w++ = 0x48; *w++ = 0xBA;
+    return emit_u64(w, imm);
+}
+
+/* cmovcc %rdx, %rax  (4 bytes: 48 0F 4X C2) — conditional 64-bit move
+ * of %rdx into %rax when CC holds. `cc_byte` is the second opcode
+ * byte: 0x44=cmove, 0x45=cmovne, 0x42=cmovb, 0x43=cmovae,
+ * 0x46=cmovbe, 0x47=cmova. */
+static uint8_t *emit_cmovcc_rdx_rax(uint8_t *w, uint8_t cc_byte) {
+    *w++ = 0x48; *w++ = 0x0F; *w++ = cc_byte; *w++ = 0xC2; return w;
 }
 
 /* jae rel32  (6 bytes): 0F 83 disp32. Returns patch pointer to disp32. */
@@ -942,6 +982,60 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             w = emit_store_rax_at_disp_stack(w, g_layout.off_stack - 16);
             w = emit_dec_ecx(w);
             i += 1;
+        } else if (op == OP_EQ || op == OP_NE || op == OP_LT ||
+                   op == OP_GT || op == OP_LE || op == OP_GE) {
+            /* Two type-check bail slots; no overflow check (result is
+             * bounded to {0.0, 1.0}). */
+            if (bail_count + 2 > (int)(sizeof bail_patches /
+                                       sizeof bail_patches[0])) {
+                chunk->jit_state = 1; chunk->jit_code = NULL;
+                jit_cache_seal(g_jit_cache); return;
+            }
+            uint8_t *p_b, *p_a;
+            /* Load both, type-check (immediate-num). NaN inputs would
+             * give incorrect comparison results (PF=1 makes setcc
+             * paths fire), but num_guard prevents NaN from reaching a
+             * stack slot in normal operation — so we accept the same
+             * input-NaN imprecision as ADD/SUB do. */
+            w = emit_load_stack_to_rax(w, g_layout.off_stack - 8);
+            w = emit_load_stack_to_rdx(w, g_layout.off_stack - 16);
+            w = emit_immediate_num_check_rax(w, &p_b);
+            bail_patches[bail_count++] = p_b;
+            w = emit_immediate_num_check_rdx(w, &p_a);
+            bail_patches[bail_count++] = p_a;
+            /* Move operands into xmm regs, then materialize the cmov
+             * operands (%rax=0.0 bits, %rdx=1.0 bits) BEFORE ucomisd.
+             * The materialization uses `xor %rax,%rax` which clobbers
+             * ZF, so it must come before the comparison — otherwise
+             * cmove would always fire (ZF=1 from the xor). movabs
+             * does not touch flags, and movq/ucomisd between the xor
+             * and cmovcc are the only flag-affecting ops left in this
+             * sequence — ucomisd's flags are exactly what cmovcc sees. */
+            w = emit_movq_rax_xmm0(w);   /* xmm0 = b */
+            w = emit_movq_rdx_xmm1(w);   /* xmm1 = a */
+            w = emit_xor_rax_rax(w);     /* rax = 0.0 bits */
+            {
+                uint64_t one_bits;
+                double one = 1.0;
+                memcpy(&one_bits, &one, 8);
+                w = emit_movabs_rdx(w, one_bits); /* rdx = 1.0 bits */
+            }
+            w = emit_ucomisd_xmm0_xmm1(w);
+            /* cmovcc %rdx → %rax when condition holds. */
+            uint8_t cc_byte;
+            switch (op) {
+            case OP_EQ: cc_byte = 0x44; break; /* cmove */
+            case OP_NE: cc_byte = 0x45; break; /* cmovne */
+            case OP_LT: cc_byte = 0x42; break; /* cmovb */
+            case OP_GT: cc_byte = 0x47; break; /* cmova */
+            case OP_LE: cc_byte = 0x46; break; /* cmovbe */
+            default:    cc_byte = 0x43; break; /* OP_GE → cmovae */
+            }
+            w = emit_cmovcc_rdx_rax(w, cc_byte);
+            /* Commit: store result at stack[sp-2], dec sp. */
+            w = emit_store_rax_at_disp_stack(w, g_layout.off_stack - 16);
+            w = emit_dec_ecx(w);
+            i += 1;
         } else if (op == OP_POP) {
             /* Peephole: prior op pushed an immediate, whose slot_decref
              * is a no-op. Just dec the cached sp. */
@@ -1011,6 +1105,14 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
         for (int j = 0; j < prefix; j++)
             fprintf(stderr, " %02x", chunk->code[j]);
         fprintf(stderr, " ) -> %zu bytes native\n", (size_t)(w - code));
+        if (getenv("EIGS_JIT_DUMP_NATIVE")) {
+            fprintf(stderr, "[jit] native:");
+            for (size_t j = 0; j < (size_t)(w - code); j++) {
+                if (j % 16 == 0) fprintf(stderr, "\n  ");
+                fprintf(stderr, " %02x", code[j]);
+            }
+            fprintf(stderr, "\n");
+        }
     }
 #endif
 }
