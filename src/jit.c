@@ -151,9 +151,13 @@ static void ensure_layout(void) {
  *   OP_DUP                   — duplicate TOS, conditional incref.
  *   OP_DUP2                  — duplicate top two slots, conditional
  *                              incref of each.
- *   OP_ADD / OP_SUB          — load both, type-check (immediate-num),
- *                              addsd/subsd, NaN/overflow check via abs-
- *                              bits >|1e308|; bail on any check fail.
+ *   OP_ADD / OP_SUB /
+ *   OP_MUL / OP_DIV          — load both, type-check (immediate-num),
+ *                              addsd/subsd/mulsd/divsd, NaN/overflow
+ *                              check via abs-bits >|1e308|; bail on any
+ *                              check fail. Div-by-zero produces ±Inf
+ *                              or NaN, both caught by the overflow
+ *                              check — no separate divisor guard.
  *   OP_POP                   — peephole `dec %ecx`, valid only when the
  *                              most recent push was an immediate whose
  *                              slot_decref is a no-op. GET_LOCAL/DUP/
@@ -196,7 +200,8 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
         } else if (op == OP_DUP2) {
             i += 1; ops++; non_line_ops++;
             last_push_immediate = 0;
-        } else if (op == OP_ADD || op == OP_SUB) {
+        } else if (op == OP_ADD || op == OP_SUB ||
+                   op == OP_MUL || op == OP_DIV) {
             i += 1; ops++; non_line_ops++;
             *has_bail_op = 1;
             /* Result type at runtime is num (when not bailed), so
@@ -548,6 +553,14 @@ static uint8_t *emit_addsd_xmm0_xmm1(uint8_t *w) {
 static uint8_t *emit_subsd_xmm0_xmm1(uint8_t *w) {
     *w++ = 0xF2; *w++ = 0x0F; *w++ = 0x5C; *w++ = 0xC8; return w;
 }
+/* mulsd %xmm0, %xmm1  (4 bytes): F2 0F 59 C8  (xmm1 = xmm1 * xmm0) */
+static uint8_t *emit_mulsd_xmm0_xmm1(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x0F; *w++ = 0x59; *w++ = 0xC8; return w;
+}
+/* divsd %xmm0, %xmm1  (4 bytes): F2 0F 5E C8  (xmm1 = xmm1 / xmm0) */
+static uint8_t *emit_divsd_xmm0_xmm1(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x0F; *w++ = 0x5E; *w++ = 0xC8; return w;
+}
 
 /* jae rel32  (6 bytes): 0F 83 disp32. Returns patch pointer to disp32. */
 static uint8_t *emit_jae_rel32(uint8_t *w, uint8_t **patch) {
@@ -886,7 +899,8 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
                 jit_cache_seal(g_jit_cache); return;
             }
             i += 3;
-        } else if (op == OP_ADD || op == OP_SUB) {
+        } else if (op == OP_ADD || op == OP_SUB ||
+                   op == OP_MUL || op == OP_DIV) {
             /* Reserve patch slots: two type checks + one overflow check.
              * Bail-out budget headroom enforced statically (256 slots
              * vs prefix * 3 ≥ 3 * 128 = 384 worst case theoretical, but
@@ -908,9 +922,15 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             /* Move into XMM: xmm0 = b, xmm1 = a. */
             w = emit_movq_rax_xmm0(w);
             w = emit_movq_rdx_xmm1(w);
-            /* xmm1 = xmm1 OP xmm0 (a + b or a - b). */
-            if (op == OP_ADD) w = emit_addsd_xmm0_xmm1(w);
-            else              w = emit_subsd_xmm0_xmm1(w);
+            /* xmm1 = xmm1 OP xmm0 (a OP b). divsd by-zero produces
+             * ±Inf or NaN — the overflow check below catches both, so
+             * we don't need a separate divisor check. */
+            switch (op) {
+            case OP_ADD: w = emit_addsd_xmm0_xmm1(w); break;
+            case OP_SUB: w = emit_subsd_xmm0_xmm1(w); break;
+            case OP_MUL: w = emit_mulsd_xmm0_xmm1(w); break;
+            default:     w = emit_divsd_xmm0_xmm1(w); break;
+            }
             /* Result -> %rax for storage + overflow check. */
             w = emit_movq_xmm1_rax(w);
             /* |result| > 1e308 → bail (catches NaN, ±Inf, num_guard
