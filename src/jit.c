@@ -231,6 +231,28 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             i += 1; ops++; non_line_ops++;
             *has_bail_op = 1;
             last_push_immediate = 1;
+        } else if (op == OP_JUMP || op == OP_JUMP_BACK) {
+            if (i + 3 > chunk->code_len) break;
+            i += 3; ops++; non_line_ops++;
+            /* Uses r13d/r14 machinery to either chain into native code at
+             * the target or bail with jit_advance = target. */
+            *has_bail_op = 1;
+            /* Stack TOS at the jump target is whatever the predecessor
+             * left — opaque to this scanner. */
+            last_push_immediate = 0;
+        } else if (op == OP_JUMP_IF_FALSE || op == OP_JUMP_IF_TRUE) {
+            if (i + 3 > chunk->code_len) break;
+            i += 3; ops++; non_line_ops++;
+            *has_bail_op = 1;
+            /* TOS was popped — new TOS is unknown to us. */
+            last_push_immediate = 0;
+        } else if (op == OP_JUMP_IF_FALSE_PEEK || op == OP_JUMP_IF_TRUE_PEEK) {
+            if (i + 3 > chunk->code_len) break;
+            i += 3; ops++; non_line_ops++;
+            *has_bail_op = 1;
+            /* Type-check at runtime proved TOS is immediate-num — so a
+             * subsequent OP_POP can use the peephole `dec ecx`. */
+            last_push_immediate = 1;
         } else if (op == OP_POP) {
             if (!last_push_immediate) break;
             i += 1; ops++; non_line_ops++;
@@ -714,6 +736,24 @@ static uint8_t *emit_ja_rel32(uint8_t *w, uint8_t **patch) {
     *w++ = 0; *w++ = 0; *w++ = 0; *w++ = 0;
     return w;
 }
+/* jmp rel32  (5 bytes): E9 disp32 — unconditional. */
+static uint8_t *emit_jmp_rel32(uint8_t *w, uint8_t **patch) {
+    *w++ = 0xE9; *patch = w;
+    *w++ = 0; *w++ = 0; *w++ = 0; *w++ = 0;
+    return w;
+}
+/* je rel32  (6 bytes): 0F 84 disp32 — jump if ZF=1 (was zero / equal). */
+static uint8_t *emit_je_rel32(uint8_t *w, uint8_t **patch) {
+    *w++ = 0x0F; *w++ = 0x84; *patch = w;
+    *w++ = 0; *w++ = 0; *w++ = 0; *w++ = 0;
+    return w;
+}
+/* jne rel32  (6 bytes): 0F 85 disp32 — jump if ZF=0 (non-zero). */
+static uint8_t *emit_jne_rel32(uint8_t *w, uint8_t **patch) {
+    *w++ = 0x0F; *w++ = 0x85; *patch = w;
+    *w++ = 0; *w++ = 0; *w++ = 0; *w++ = 0;
+    return w;
+}
 /* Patch a previously-emitted rel32 conditional/unconditional jmp.
  * `patch` is the address of the 4-byte displacement (returned by the
  * emit_* function). `target` is the destination address. */
@@ -874,6 +914,36 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
     uint8_t *bail_patches[256];
     int bail_count = 0;
 
+    /* Stage 4i: forward/backward intra-prefix jump bookkeeping.
+     *   byte_to_native[i] = native offset (from `code`) where bytecode
+     *                       byte i begins. -1 means not yet emitted (or
+     *                       outside the prefix).
+     *   pending[k]         = (target_bytecode_offset, rel32_patch_site).
+     *                       Resolved after the body to point either into
+     *                       compiled code or to the common epilogue.
+     *
+     * One entry per intra-prefix jump op. 256 is sufficient: each jump
+     * is at least 3 bytecode bytes, so a 256-op prefix caps out before
+     * we run out of slots. */
+    int *byte_to_native = NULL;
+    struct { int target; uint8_t *patch; } pending[256];
+    int pending_count = 0;
+    if (prefix > 0) {
+        byte_to_native = malloc((size_t)prefix * sizeof(int));
+        if (!byte_to_native) {
+            chunk->jit_state = 1; chunk->jit_code = NULL;
+            jit_cache_seal(g_jit_cache); return;
+        }
+        for (int k = 0; k < prefix; k++) byte_to_native[k] = -1;
+    }
+    /* Bail-out helper for the compile path so all the seal/free dance
+     * stays in one place. */
+    #define JIT_BAIL_AND_RETURN() do { \
+        free(byte_to_native); \
+        chunk->jit_state = 1; chunk->jit_code = NULL; \
+        jit_cache_seal(g_jit_cache); return; \
+    } while (0)
+
     /* Prologue: preserve %rbx + %r12 (+ %r13/%r14 when has_bail_op),
      * point %rbx at &g_vm, cache sp.
      *
@@ -922,6 +992,15 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
     int i = 0;
     while (i < prefix) {
         uint8_t op = chunk->code[i];
+        /* Record the native entry point for this bytecode byte so that
+         * later intra-prefix jumps can target it. We capture this BEFORE
+         * emitting the op; backward JUMP_BACK to byte 0 thus lands at
+         * the start of the body (after env-cache setup), not at the
+         * thunk prologue — re-running the prologue would clobber %rcx. */
+        if (byte_to_native) byte_to_native[i] = (int)(w - code);
+        /* Unconditional jumps suppress the trailing `mov $i, %r13d`
+         * advance writeback because the next bytes are unreachable. */
+        int skip_post_op_advance = 0;
         if (op == OP_NULL || op == OP_NUM_ZERO || op == OP_NUM_ONE) {
             uint64_t bits;
             if (op == OP_NULL) {
@@ -998,8 +1077,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             w = emit_load_stack_to_rax(w, g_layout.off_stack - 16);
             w = emit_conditional_incref_rax(w, &bail);
             if (bail) {
-                chunk->jit_state = 1; chunk->jit_code = NULL;
-                jit_cache_seal(g_jit_cache); return;
+                JIT_BAIL_AND_RETURN();
             }
             w = emit_store_rax_at_stack(w, g_layout.off_stack);
             w = emit_inc_ecx(w);
@@ -1008,8 +1086,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             w = emit_load_stack_to_rax(w, g_layout.off_stack - 16);
             w = emit_conditional_incref_rax(w, &bail);
             if (bail) {
-                chunk->jit_state = 1; chunk->jit_code = NULL;
-                jit_cache_seal(g_jit_cache); return;
+                JIT_BAIL_AND_RETURN();
             }
             w = emit_store_rax_at_stack(w, g_layout.off_stack);
             w = emit_inc_ecx(w);
@@ -1028,15 +1105,13 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             int bail = 0;
             w = emit_conditional_incref_rax(w, &bail);
             if (bail) {
-                chunk->jit_state = 1; chunk->jit_code = NULL;
-                jit_cache_seal(g_jit_cache); return;
+                JIT_BAIL_AND_RETURN();
             }
             /* Decref old (%rsi). Note: bounds check on slot < e->count
              * is omitted — compiler-emitted bytecode never overruns. */
             w = emit_conditional_decref_rsi(w, &bail);
             if (bail) {
-                chunk->jit_state = 1; chunk->jit_code = NULL;
-                jit_cache_seal(g_jit_cache); return;
+                JIT_BAIL_AND_RETURN();
             }
             i += 3;
         } else if (op == OP_ADD || op == OP_SUB ||
@@ -1047,8 +1122,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
              * in practice prefix * 3 ≪ 256 for compiled chunks). */
             if (bail_count + 3 > (int)(sizeof bail_patches /
                                        sizeof bail_patches[0])) {
-                chunk->jit_state = 1; chunk->jit_code = NULL;
-                jit_cache_seal(g_jit_cache); return;
+                JIT_BAIL_AND_RETURN();
             }
             uint8_t *p_b, *p_a, *p_ov;
             /* %rax = stack[sp-1] = b ; %rdx = stack[sp-2] = a */
@@ -1088,8 +1162,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
              * bounded to {0.0, 1.0}). */
             if (bail_count + 2 > (int)(sizeof bail_patches /
                                        sizeof bail_patches[0])) {
-                chunk->jit_state = 1; chunk->jit_code = NULL;
-                jit_cache_seal(g_jit_cache); return;
+                JIT_BAIL_AND_RETURN();
             }
             uint8_t *p_b, *p_a;
             /* Load both, type-check (immediate-num). NaN inputs would
@@ -1144,8 +1217,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
              * its truncation semantics. Two bail slots for type check. */
             if (bail_count + 2 > (int)(sizeof bail_patches /
                                        sizeof bail_patches[0])) {
-                chunk->jit_state = 1; chunk->jit_code = NULL;
-                jit_cache_seal(g_jit_cache); return;
+                JIT_BAIL_AND_RETURN();
             }
             uint8_t *p_b, *p_a;
             w = emit_load_stack_to_rax(w, g_layout.off_stack - 8);
@@ -1187,8 +1259,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
              * back at TOS. One bail slot, sp unchanged. */
             if (bail_count + 1 > (int)(sizeof bail_patches /
                                        sizeof bail_patches[0])) {
-                chunk->jit_state = 1; chunk->jit_code = NULL;
-                jit_cache_seal(g_jit_cache); return;
+                JIT_BAIL_AND_RETURN();
             }
             uint8_t *p_t;
             w = emit_load_stack_to_rax(w, g_layout.off_stack - 8);
@@ -1225,6 +1296,94 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
                 w = emit_store_rax_at_disp_stack(w, g_layout.off_stack - 8);
             }
             i += 1;
+        } else if (op == OP_JUMP || op == OP_JUMP_BACK) {
+            /* Unconditional intra-prefix jump. Compute the bytecode
+             * target, set r13d (so an out-of-prefix target carries the
+             * right jit_advance into the epilogue), then emit jmp rel32.
+             * Backward targets resolve immediately from byte_to_native;
+             * forward targets register a pending patch resolved at the
+             * end of body emission. */
+            if (pending_count + 1 > (int)(sizeof pending /
+                                          sizeof pending[0])) {
+                JIT_BAIL_AND_RETURN();
+            }
+            uint16_t off = (uint16_t)(chunk->code[i + 1] |
+                                      ((uint16_t)chunk->code[i + 2] << 8));
+            int target = (op == OP_JUMP) ? (i + 3 + (int)off)
+                                         : (i + 3 - (int)off);
+            w = emit_mov_imm32_r13d(w, (uint32_t)target);
+            uint8_t *patch;
+            w = emit_jmp_rel32(w, &patch);
+            pending[pending_count].target = target;
+            pending[pending_count].patch = patch;
+            pending_count++;
+            /* Suppress the post-op `mov $i+3, %r13d` — the bytes after
+             * this jmp are unreachable until a backward branch loops
+             * back here. */
+            skip_post_op_advance = 1;
+            i += 3;
+        } else if (op == OP_JUMP_IF_FALSE || op == OP_JUMP_IF_TRUE ||
+                   op == OP_JUMP_IF_FALSE_PEEK ||
+                   op == OP_JUMP_IF_TRUE_PEEK) {
+            /* Conditional jump. Fast path handles only immediate-num
+             * TOS: bail on any other tag so the interpreter can apply
+             * the full slot_truthy rules. Layout:
+             *   load TOS -> %rax
+             *   type-check (bail if not immediate-num)
+             *   [non-PEEK only] dec %ecx          ; pop
+             *   btr $63, %rax                     ; clear sign bit
+             *   test %rax, %rax                   ; ZF=1 iff ±0.0
+             *   jne/je skip_taken                 ; falsy/truthy → skip
+             *   mov $target, %r13d                ; advance writeback
+             *   jmp <target or epilogue>          ; pending patch
+             *  skip_taken:
+             *
+             * For JIF_*  (jump on falsy): take when ZF=1; skip when ZF=0 → jne
+             * For JIT_*  (jump on truthy): take when ZF=0; skip when ZF=1 → je
+             *
+             * Type check fires before the pop, so the stack/IC state on
+             * bail matches the interpreter's view at the start of the
+             * op (r13d still holds the op's own bytecode offset). */
+            if (bail_count + 1 > (int)(sizeof bail_patches /
+                                       sizeof bail_patches[0]) ||
+                pending_count + 1 > (int)(sizeof pending /
+                                          sizeof pending[0])) {
+                JIT_BAIL_AND_RETURN();
+            }
+            int is_peek = (op == OP_JUMP_IF_FALSE_PEEK ||
+                           op == OP_JUMP_IF_TRUE_PEEK);
+            int take_on_falsy = (op == OP_JUMP_IF_FALSE ||
+                                 op == OP_JUMP_IF_FALSE_PEEK);
+            uint16_t off = (uint16_t)(chunk->code[i + 1] |
+                                      ((uint16_t)chunk->code[i + 2] << 8));
+            int target = i + 3 + (int)off;
+
+            uint8_t *p_t;
+            w = emit_load_stack_to_rax(w, g_layout.off_stack - 8);
+            w = emit_immediate_num_check_rax(w, &p_t);
+            bail_patches[bail_count++] = p_t;
+            if (!is_peek) w = emit_dec_ecx(w);
+            w = emit_btr_63_rax(w);
+            w = emit_test_rax_rax(w);
+
+            uint8_t *skip_patch;
+            if (take_on_falsy) {
+                /* Take when ZF=1; skip taken-arm when ZF=0. */
+                w = emit_jne_rel32(w, &skip_patch);
+            } else {
+                /* Take when ZF=0; skip taken-arm when ZF=1. */
+                w = emit_je_rel32(w, &skip_patch);
+            }
+            /* Taken arm. */
+            w = emit_mov_imm32_r13d(w, (uint32_t)target);
+            uint8_t *jump_patch;
+            w = emit_jmp_rel32(w, &jump_patch);
+            pending[pending_count].target = target;
+            pending[pending_count].patch = jump_patch;
+            pending_count++;
+            /* skip_taken: */
+            patch_rel32(skip_patch, w);
+            i += 3;
         } else if (op == OP_POP) {
             /* Peephole: prior op pushed an immediate, whose slot_decref
              * is a no-op. Just dec the cached sp. */
@@ -1239,8 +1398,11 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
         }
         /* Update the advance tracker: if the next op bails, the caller
          * will resume at bytecode offset `i` (just past the op we just
-         * emitted). */
-        if (has_bail_op) {
+         * emitted). Unconditional jumps already wrote r13d=target and
+         * the bytes after them are unreachable until a backward branch
+         * loops back — emitting another writeback would either be dead
+         * code or worse, clobber the target-correct advance value. */
+        if (has_bail_op && !skip_post_op_advance) {
             w = emit_mov_imm32_r13d(w, (uint32_t)i);
         }
     }
@@ -1269,9 +1431,25 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
         patch_rel32(bail_patches[j], epilogue_start);
     }
 
+    /* Resolve intra-prefix jump patches. Targets inside the compiled
+     * prefix patch to native code; out-of-prefix targets patch to the
+     * epilogue so the runtime resumes via jit_advance = target. */
+    for (int j = 0; j < pending_count; j++) {
+        int t = pending[j].target;
+        uint8_t *target_native;
+        if (t >= 0 && t < prefix && byte_to_native &&
+            byte_to_native[t] >= 0) {
+            target_native = code + byte_to_native[t];
+        } else {
+            target_native = epilogue_start;
+        }
+        patch_rel32(pending[j].patch, target_native);
+    }
+
     /* Sanity: did we stay within the allocation? */
     if ((size_t)(w - code) > size) {
         /* Catastrophic — we wrote past `used`. Abandon. */
+        free(byte_to_native);
         chunk->jit_state = 1;
         chunk->jit_code = NULL;
         jit_cache_seal(g_jit_cache);
@@ -1279,11 +1457,13 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
     }
 
     if (jit_cache_seal(g_jit_cache) != 0) {
+        free(byte_to_native);
         chunk->jit_state = 1;
         chunk->jit_code = NULL;
         return;
     }
 
+    free(byte_to_native);
     chunk->jit_state = 2;
     chunk->jit_code = code;
     chunk->jit_advance = prefix;
