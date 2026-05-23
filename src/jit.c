@@ -227,6 +227,10 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             /* Result is a double (whole-number-valued), so a subsequent
              * OP_POP stays a no-op peephole. */
             last_push_immediate = 1;
+        } else if (op == OP_NEG || op == OP_NOT || op == OP_BNOT) {
+            i += 1; ops++; non_line_ops++;
+            *has_bail_op = 1;
+            last_push_immediate = 1;
         } else if (op == OP_POP) {
             if (!last_push_immediate) break;
             i += 1; ops++; non_line_ops++;
@@ -629,6 +633,46 @@ static uint8_t *emit_shl_cl_rdx(uint8_t *w) {
  * — so SAR is the correct match, not SHR. */
 static uint8_t *emit_sar_cl_rdx(uint8_t *w) {
     *w++ = 0x48; *w++ = 0xD3; *w++ = 0xFA; return w;
+}
+
+/* xor %rdx, %rax  (3 bytes: 48 31 D0) — rax ^= rdx. Used by OP_NEG to
+ * flip the IEEE-754 sign bit (rdx holds 0x8000000000000000). */
+static uint8_t *emit_xor_rdx_rax(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x31; *w++ = 0xD0; return w;
+}
+/* btr $63, %rax  (5 bytes: 48 0F BA F0 3F) — clear sign bit of %rax.
+ * Used by OP_NOT so ±0.0 both compare as zero. ModRM /6 = BTR; /7 is
+ * BTC (flip), which is a subtle one-bit difference and a tempting trap. */
+static uint8_t *emit_btr_63_rax(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x0F; *w++ = 0xBA; *w++ = 0xF0; *w++ = 0x3F;
+    return w;
+}
+/* test %rax, %rax  (3 bytes: 48 85 C0) — sets ZF=1 iff %rax == 0. */
+static uint8_t *emit_test_rax_rax(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x85; *w++ = 0xC0; return w;
+}
+/* cmove %rsi, %rdx  (4 bytes: 48 0F 44 D6) — if ZF=1, rdx ← rsi. */
+static uint8_t *emit_cmove_rsi_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x0F; *w++ = 0x44; *w++ = 0xD6; return w;
+}
+/* not %rax  (3 bytes: 48 F7 D0) — rax = ~rax. */
+static uint8_t *emit_not_rax(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0xF7; *w++ = 0xD0; return w;
+}
+/* cvtsi2sd %rax, %xmm0  (5 bytes: F2 48 0F 2A C0) — int64 → double,
+ * the inverse of cvttsd2si. Used by OP_BNOT to box the integer back. */
+static uint8_t *emit_cvtsi2sd_rax_xmm0(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x48; *w++ = 0x0F; *w++ = 0x2A; *w++ = 0xC0; return w;
+}
+/* mov %rdx, disp32(%rbx, %rcx, 8)  — store rdx-typed result at
+ * stack[sp-k]. Pair with disp = off_stack - k*8. (8 bytes) */
+static uint8_t *emit_store_rdx_at_disp_stack(uint8_t *w, int32_t disp) {
+    *w++ = 0x48; *w++ = 0x89; *w++ = 0x94; *w++ = 0xCB;
+    return emit_u32(w, (uint32_t)disp);
+}
+/* xor %rdx, %rdx  (3 bytes: 48 31 D2) — clear %rdx (bits of +0.0). */
+static uint8_t *emit_xor_rdx_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x31; *w++ = 0xD2; return w;
 }
 
 /* ucomisd %xmm0, %xmm1  (4 bytes: 66 0F 2E C8) — AT&T order: compares
@@ -1137,6 +1181,49 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             w = emit_movq_xmm0_rax(w);
             w = emit_store_rax_at_disp_stack(w, g_layout.off_stack - 16);
             w = emit_dec_ecx(w);
+            i += 1;
+        } else if (op == OP_NEG || op == OP_NOT || op == OP_BNOT) {
+            /* Unary: load TOS, type-check, compute in place, store
+             * back at TOS. One bail slot, sp unchanged. */
+            if (bail_count + 1 > (int)(sizeof bail_patches /
+                                       sizeof bail_patches[0])) {
+                chunk->jit_state = 1; chunk->jit_code = NULL;
+                jit_cache_seal(g_jit_cache); return;
+            }
+            uint8_t *p_t;
+            w = emit_load_stack_to_rax(w, g_layout.off_stack - 8);
+            w = emit_immediate_num_check_rax(w, &p_t);
+            bail_patches[bail_count++] = p_t;
+            if (op == OP_NEG) {
+                /* Flip the IEEE-754 sign bit: rax ^= 0x8000…0. */
+                w = emit_movabs_rdx(w, 0x8000000000000000ULL);
+                w = emit_xor_rdx_rax(w);
+                w = emit_store_rax_at_disp_stack(w, g_layout.off_stack - 8);
+            } else if (op == OP_NOT) {
+                /* Logical not over an immediate num: result is 1.0 iff
+                 * the input is ±0.0, else 0.0. btr clears the sign bit
+                 * so -0.0 and +0.0 both test as zero. Materialize the
+                 * cmov operands BEFORE the test (xor clobbers ZF). */
+                w = emit_btr_63_rax(w);
+                w = emit_xor_rdx_rdx(w);          /* rdx = 0.0 bits */
+                {
+                    uint64_t one_bits;
+                    double one = 1.0;
+                    memcpy(&one_bits, &one, 8);
+                    w = emit_movabs_rsi(w, one_bits); /* rsi = 1.0 bits */
+                }
+                w = emit_test_rax_rax(w);         /* ZF=1 iff input was ±0 */
+                w = emit_cmove_rsi_rdx(w);        /* rdx = ZF ? rsi : rdx */
+                w = emit_store_rdx_at_disp_stack(w, g_layout.off_stack - 8);
+            } else { /* OP_BNOT */
+                /* (double)(~(int64_t)d): cvttsd2si, not, cvtsi2sd back. */
+                w = emit_movq_rax_xmm0(w);
+                w = emit_cvttsd2si_xmm0_rax(w);
+                w = emit_not_rax(w);
+                w = emit_cvtsi2sd_rax_xmm0(w);
+                w = emit_movq_xmm0_rax(w);
+                w = emit_store_rax_at_disp_stack(w, g_layout.off_stack - 8);
+            }
             i += 1;
         } else if (op == OP_POP) {
             /* Peephole: prior op pushed an immediate, whose slot_decref
