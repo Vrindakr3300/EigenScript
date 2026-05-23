@@ -220,6 +220,13 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             /* Result is bit-exact 0.0 or 1.0 (an immediate-num), so
              * OP_POP after a comparison remains a no-op peephole. */
             last_push_immediate = 1;
+        } else if (op == OP_BAND || op == OP_BOR || op == OP_BXOR ||
+                   op == OP_SHL || op == OP_SHR) {
+            i += 1; ops++; non_line_ops++;
+            *has_bail_op = 1;
+            /* Result is a double (whole-number-valued), so a subsequent
+             * OP_POP stays a no-op peephole. */
+            last_push_immediate = 1;
         } else if (op == OP_POP) {
             if (!last_push_immediate) break;
             i += 1; ops++; non_line_ops++;
@@ -573,6 +580,55 @@ static uint8_t *emit_mulsd_xmm0_xmm1(uint8_t *w) {
 /* divsd %xmm0, %xmm1  (4 bytes): F2 0F 5E C8  (xmm1 = xmm1 / xmm0) */
 static uint8_t *emit_divsd_xmm0_xmm1(uint8_t *w) {
     *w++ = 0xF2; *w++ = 0x0F; *w++ = 0x5E; *w++ = 0xC8; return w;
+}
+
+/* cvttsd2si %xmm0, %rax  (5 bytes: F2 48 0F 2C C0) — truncating
+ * double→int64. Used by INT_BINOP arms to mirror `(int64_t)d`. */
+static uint8_t *emit_cvttsd2si_xmm0_rax(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x48; *w++ = 0x0F; *w++ = 0x2C; *w++ = 0xC0; return w;
+}
+/* cvttsd2si %xmm1, %rdx  (5 bytes: F2 48 0F 2C D1) */
+static uint8_t *emit_cvttsd2si_xmm1_rdx(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x48; *w++ = 0x0F; *w++ = 0x2C; *w++ = 0xD1; return w;
+}
+/* cvtsi2sd %rdx, %xmm0  (5 bytes: F2 48 0F 2A C2) — int64→double. */
+static uint8_t *emit_cvtsi2sd_rdx_xmm0(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x48; *w++ = 0x0F; *w++ = 0x2A; *w++ = 0xC2; return w;
+}
+/* movq %xmm0, %rax  (5 bytes: 66 48 0F 7E C0) — extract low qword of
+ * xmm0 (which now holds the converted double result) into rax for
+ * storage at stack[sp-2]. */
+static uint8_t *emit_movq_xmm0_rax(uint8_t *w) {
+    *w++ = 0x66; *w++ = 0x48; *w++ = 0x0F; *w++ = 0x7E; *w++ = 0xC0; return w;
+}
+/* and %rax, %rdx  (3 bytes: 48 21 C2) — rdx &= rax */
+static uint8_t *emit_and_rax_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x21; *w++ = 0xC2; return w;
+}
+/* or %rax, %rdx  (3 bytes: 48 09 C2) — rdx |= rax */
+static uint8_t *emit_or_rax_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x09; *w++ = 0xC2; return w;
+}
+/* xor %rax, %rdx  (3 bytes: 48 31 C2) — rdx ^= rax */
+static uint8_t *emit_xor_rax_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x31; *w++ = 0xC2; return w;
+}
+/* mov %rax, %rcx  (3 bytes: 48 89 C1) — copy rax → rcx so cl carries
+ * the shift count for shl/shr by %cl. Caller must push %rcx first
+ * (we use %rcx as the sp cache) and pop after. */
+static uint8_t *emit_mov_rax_rcx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x89; *w++ = 0xC1; return w;
+}
+/* shl %cl, %rdx  (3 bytes: 48 D3 E2) — rdx <<= cl */
+static uint8_t *emit_shl_cl_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0xD3; *w++ = 0xE2; return w;
+}
+/* sar %cl, %rdx  (3 bytes: 48 D3 FA) — arithmetic right shift, used
+ * for OP_SHR. The VM's `INT_BINOP(SHR, >>)` casts to int64_t before
+ * shifting, and GCC defines signed `>>` as arithmetic (sign-extending)
+ * — so SAR is the correct match, not SHR. */
+static uint8_t *emit_sar_cl_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0xD3; *w++ = 0xFA; return w;
 }
 
 /* ucomisd %xmm0, %xmm1  (4 bytes: 66 0F 2E C8) — AT&T order: compares
@@ -1033,6 +1089,52 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             }
             w = emit_cmovcc_rdx_rax(w, cc_byte);
             /* Commit: store result at stack[sp-2], dec sp. */
+            w = emit_store_rax_at_disp_stack(w, g_layout.off_stack - 16);
+            w = emit_dec_ecx(w);
+            i += 1;
+        } else if (op == OP_BAND || op == OP_BOR || op == OP_BXOR ||
+                   op == OP_SHL || op == OP_SHR) {
+            /* Bitwise INT_BINOP family: cast both doubles to int64,
+             * apply the integer op, cast back. No overflow check —
+             * the VM doesn't apply num_guard here either, so we match
+             * its truncation semantics. Two bail slots for type check. */
+            if (bail_count + 2 > (int)(sizeof bail_patches /
+                                       sizeof bail_patches[0])) {
+                chunk->jit_state = 1; chunk->jit_code = NULL;
+                jit_cache_seal(g_jit_cache); return;
+            }
+            uint8_t *p_b, *p_a;
+            w = emit_load_stack_to_rax(w, g_layout.off_stack - 8);
+            w = emit_load_stack_to_rdx(w, g_layout.off_stack - 16);
+            w = emit_immediate_num_check_rax(w, &p_b);
+            bail_patches[bail_count++] = p_b;
+            w = emit_immediate_num_check_rdx(w, &p_a);
+            bail_patches[bail_count++] = p_a;
+            /* xmm0 = (double)b, xmm1 = (double)a → rax = (int64)b,
+             * rdx = (int64)a. */
+            w = emit_movq_rax_xmm0(w);
+            w = emit_movq_rdx_xmm1(w);
+            w = emit_cvttsd2si_xmm0_rax(w);
+            w = emit_cvttsd2si_xmm1_rdx(w);
+            /* Apply op: rdx = rdx OP rax. For SHL/SHR the shift count
+             * must be in %cl, but %rcx holds our sp cache — save it,
+             * move rax→rcx, shift, restore rcx. */
+            if (op == OP_BAND) {
+                w = emit_and_rax_rdx(w);
+            } else if (op == OP_BOR) {
+                w = emit_or_rax_rdx(w);
+            } else if (op == OP_BXOR) {
+                w = emit_xor_rax_rdx(w);
+            } else {
+                w = emit_push_rcx(w);
+                w = emit_mov_rax_rcx(w);
+                if (op == OP_SHL) w = emit_shl_cl_rdx(w);
+                else              w = emit_sar_cl_rdx(w);
+                w = emit_pop_rcx(w);
+            }
+            /* Cast back: xmm0 = (double)rdx, rax = xmm0 bits, store. */
+            w = emit_cvtsi2sd_rdx_xmm0(w);
+            w = emit_movq_xmm0_rax(w);
             w = emit_store_rax_at_disp_stack(w, g_layout.off_stack - 16);
             w = emit_dec_ecx(w);
             i += 1;
