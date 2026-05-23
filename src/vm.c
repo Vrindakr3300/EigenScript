@@ -387,6 +387,67 @@ void jit_helper_get_name(EigsChunk *chunk, int idx) {
     vm_push_slot(s);
 }
 
+/* JIT Stage 4l: out-of-line helper for OP_LOCAL_IDX_GET.
+ *
+ * Mirrors CASE(LOCAL_IDX_GET) below — buffer / list / string indexing
+ * with the same error semantics so try/catch behavior is preserved.
+ * No chunk pointer required (unlike GET_NAME): the slot is enough to
+ * reach fn_env via g_vm.frames[]. */
+void jit_helper_local_idx_get(int slot, int idx) {
+    CallFrame *frame = &g_vm.frames[g_vm.frame_count - 1];
+    Env *e = frame->fn_env;
+    Value *target = vm_local_lift(e, (uint16_t)slot);
+    if (target) {
+        int i = idx;
+        if (target->type == VAL_BUFFER) {
+            if (i < target->data.buffer.count) {
+                vm_push_slot(slot_from_num(target->data.buffer.data[i]));
+            } else {
+                runtime_error(g_vm.current_line,
+                    "buffer index %d out of range (length %d)",
+                    i, target->data.buffer.count);
+                vm_push_slot(slot_null());
+            }
+            return;
+        }
+        if (target->type == VAL_LIST) {
+            if (i < target->data.list.count) {
+                Value *item = target->data.list.items[i];
+                if (item && item->type == VAL_NUM && item->obs_age == 0) {
+                    vm_push_slot(slot_from_num(item->data.num));
+                } else {
+                    val_incref(item);
+                    vm_push(item);
+                }
+            } else {
+                runtime_error(g_vm.current_line,
+                    "index %d out of range (list length %d)",
+                    i, target->data.list.count);
+                vm_push_slot(slot_null());
+            }
+            return;
+        }
+        if (target->type == VAL_STR) {
+            int len = (int)strlen(target->data.str);
+            if (i < len) {
+                char buf[2] = { target->data.str[i], 0 };
+                vm_push(make_str(buf));
+            } else {
+                runtime_error(g_vm.current_line,
+                    "string index %d out of range (length %d)",
+                    i, len);
+                vm_push_slot(slot_null());
+            }
+            return;
+        }
+        if (target->type != VAL_NULL) {
+            runtime_error(g_vm.current_line,
+                "cannot index %s", val_type_name(target->type));
+        }
+    }
+    vm_push_slot(slot_null());
+}
+
 void eigs_jit_get_layout(EigsJitLayout *out) {
     void *tp;
     __asm__ __volatile__("mov %%fs:0, %0" : "=r"(tp));

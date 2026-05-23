@@ -36,6 +36,12 @@ void jit_helper_get_name(struct EigsChunk *chunk, int idx) {
     (void)chunk; (void)idx;
 }
 
+/* Stage 4l: same shape — emitter takes &jit_helper_local_idx_get as an
+ * immediate. Smoke binary never invokes the emit path. */
+void jit_helper_local_idx_get(int slot, int idx) {
+    (void)slot; (void)idx;
+}
+
 static int run_case(int64_t expected) {
     EigsJitCache *jc = jit_cache_new(1);
     if (!jc) {

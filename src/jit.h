@@ -107,4 +107,8 @@ void eigs_jit_get_layout(EigsJitLayout *out);
  * lives inside the helper. */
 void jit_helper_get_name(struct EigsChunk *chunk, int idx);
 
+/* Stage 4l: out-of-line helper for OP_LOCAL_IDX_GET. Mirrors the
+ * VAL_BUFFER/VAL_LIST/VAL_STR dispatch in CASE(LOCAL_IDX_GET). */
+void jit_helper_local_idx_get(int slot, int idx);
+
 #endif /* EIGS_JIT_H */

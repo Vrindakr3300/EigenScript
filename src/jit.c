@@ -258,6 +258,14 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             /* Result could be any slot type (whatever the binding holds).
              * Subsequent OP_POP cannot use the immediate peephole. */
             last_push_immediate = 0;
+        } else if (op == OP_LOCAL_IDX_GET) {
+            /* 5-byte op: [op][slot:16][idx:16]. Helper handles VAL_BUFFER/
+             * VAL_LIST/VAL_STR dispatch; on error it pushes null and
+             * sets g_vm.had_error so the interpreter CHECK_ERROR fires
+             * once execution resumes after the JIT thunk. */
+            if (i + 5 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
+            i += 5; ops++; non_line_ops++;
+            last_push_immediate = 0;
         } else if (op == OP_SET_LOCAL) {
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
@@ -607,6 +615,12 @@ static uint8_t *emit_mov_r14_rdi(uint8_t *w) {
 /* mov $imm32, %esi  (5 bytes) — pass a 32-bit immediate as 2nd helper arg. */
 static uint8_t *emit_mov_imm32_esi(uint8_t *w, uint32_t imm) {
     *w++ = 0xBE;
+    return emit_u32(w, imm);
+}
+
+/* mov $imm32, %edi  (5 bytes) — pass a 32-bit immediate as 1st helper arg. */
+static uint8_t *emit_mov_imm32_edi(uint8_t *w, uint32_t imm) {
+    *w++ = 0xBF;
     return emit_u32(w, imm);
 }
 
@@ -994,7 +1008,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
     }
 
     if (!g_jit_cache) {
-        g_jit_cache = jit_cache_new(64); /* 64 pages = 256 KB */
+        g_jit_cache = jit_cache_new(256); /* 256 pages = 1 MB */
         if (!g_jit_cache) {
             chunk->jit_state = 1;
             chunk->jit_code = NULL;
@@ -1190,6 +1204,24 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             w = emit_pop_rcx(w);
             w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
             i += 3;
+        } else if (op == OP_LOCAL_IDX_GET) {
+            /* Stage 4l: out-of-line call to jit_helper_local_idx_get(slot, idx).
+             * Helper resolves the frame's local, dispatches on container type,
+             * and pushes the result via vm_push_slot/vm_push. Same sp sync/
+             * reload pattern as OP_GET_NAME; %r14 not needed. */
+            uint16_t slot = (uint16_t)(chunk->code[i + 1] |
+                                       ((uint16_t)chunk->code[i + 2] << 8));
+            uint16_t idx = (uint16_t)(chunk->code[i + 3] |
+                                      ((uint16_t)chunk->code[i + 4] << 8));
+            w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+            w = emit_mov_imm32_edi(w, (uint32_t)slot);
+            w = emit_mov_imm32_esi(w, (uint32_t)idx);
+            w = emit_push_rcx(w);
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_local_idx_get);
+            w = emit_call_rax(w);
+            w = emit_pop_rcx(w);
+            w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
+            i += 5;
         } else if (op == OP_DUP) {
             /* %rax = stack[sp-1] */
             w = emit_load_stack_to_rax(w, g_layout.off_stack - 8);
