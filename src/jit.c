@@ -2,6 +2,7 @@
 #include "eigenscript.h"
 #include "vm.h"
 
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,6 +111,29 @@ static __thread uint32_t g_jit_stop_counts[256];
 static __thread uint32_t g_jit_stop_at_zero = 0;
 static __thread uint32_t g_jit_compiled_count = 0;
 
+/* Per-thread chunk registry for the EIGS_JIT_HOT dump. Chunks self-
+ * register via jit_register_chunk on first JIT visit (CALL paths) and
+ * on top-level entry (vm_run). Idempotent via a linear scan — only
+ * called once per chunk lifetime so the O(n²) registration is fine. */
+static __thread struct EigsChunk **g_chunks = NULL;
+static __thread int g_chunks_count = 0;
+static __thread int g_chunks_cap = 0;
+
+void jit_register_chunk(struct EigsChunk *chunk) {
+    if (!chunk) return;
+    for (int i = 0; i < g_chunks_count; i++) {
+        if (g_chunks[i] == chunk) return;
+    }
+    if (g_chunks_count == g_chunks_cap) {
+        int new_cap = g_chunks_cap ? g_chunks_cap * 2 : 64;
+        struct EigsChunk **p = realloc(g_chunks, new_cap * sizeof(*p));
+        if (!p) return;
+        g_chunks = p;
+        g_chunks_cap = new_cap;
+    }
+    g_chunks[g_chunks_count++] = chunk;
+}
+
 void jit_module_init(void) {
     /* Defer cache creation until the first compile request. */
 }
@@ -155,6 +179,46 @@ void jit_module_shutdown(void) {
             const char *name = (op == OP_COUNT) ? "OP_<end-of-chunk>"
                                                 : op_name((uint8_t)op);
             fprintf(stderr, "  %6u  %-22s (%.1f%%)\n", c, name, pct);
+        }
+    }
+    if (getenv("EIGS_JIT_HOT") && g_chunks_count > 0) {
+        /* Selection sort top-N by exec_count. Small registry (~80 on
+         * DMG), one-shot at exit, no need for a real sort. */
+        int top = g_chunks_count < 30 ? g_chunks_count : 30;
+        int *order = malloc(g_chunks_count * sizeof(int));
+        if (order) {
+            for (int i = 0; i < g_chunks_count; i++) order[i] = i;
+            for (int a = 0; a < top; a++) {
+                int best = a;
+                for (int b = a + 1; b < g_chunks_count; b++) {
+                    if (g_chunks[order[b]]->exec_count >
+                        g_chunks[order[best]]->exec_count) best = b;
+                }
+                int tmp = order[a]; order[a] = order[best]; order[best] = tmp;
+            }
+            uint64_t total_exec = 0;
+            for (int i = 0; i < g_chunks_count; i++)
+                total_exec += g_chunks[i]->exec_count;
+            fprintf(stderr, "\n=== Hot chunks (top %d of %d) ===\n",
+                    top, g_chunks_count);
+            fprintf(stderr, "total chunk entries: %" PRIu64 "\n", total_exec);
+            fprintf(stderr,
+                "%-28s %12s  %3s  %s\n",
+                "chunk", "exec", "jit", "pct");
+            for (int a = 0; a < top; a++) {
+                struct EigsChunk *c = g_chunks[order[a]];
+                if (c->exec_count == 0) break;
+                const char *jstate =
+                    c->jit_state == 2 ? "yes" :
+                    c->jit_state == 1 ? "no " : "?  ";
+                double pct = total_exec
+                    ? (100.0 * (double)c->exec_count / (double)total_exec)
+                    : 0.0;
+                fprintf(stderr, "%-28s %12" PRIu64 "  %s  %5.1f%%\n",
+                        c->name ? c->name : "<anon>",
+                        c->exec_count, jstate, pct);
+            }
+            free(order);
         }
     }
     if (g_jit_cache) {
@@ -976,6 +1040,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
     if (!chunk) return;
     if (chunk->jit_state != 0) return;
     g_jit_scanned_chunks++;
+    jit_register_chunk(chunk);
 #if !defined(__x86_64__)
     chunk->jit_state = 1;
     chunk->jit_code = NULL;

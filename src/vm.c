@@ -484,6 +484,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     frame->owns_env = 0;
     frame->is_try = 0;
     frame->try_count = 0;
+    chunk->exec_count++;
+    jit_register_chunk(chunk);
 
     uint8_t *ip = frame->ip;
     int current_line = 0;
@@ -1264,6 +1266,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->owns_env = 1; /* OP_CALL created this env, free on return */
             frame->is_try = 0;
             frame->try_count = 0;
+            fn_chunk->exec_count++;
 
             /* JIT hook: compile lazily, run native prefix if available.
              * Thunk runs side-effects on g_vm only; caller advances
@@ -2232,6 +2235,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->owns_env = 1;
             frame->is_try = 0;
             frame->try_count = 0;
+            fn_chunk->exec_count++;
 
             /* JIT hook (mirror of OP_CALL bytecode-fn path). */
             if (fn_chunk->jit_state == 0) jit_try_compile_chunk(fn_chunk);

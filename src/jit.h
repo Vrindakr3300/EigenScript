@@ -78,6 +78,11 @@ void jit_try_compile_chunk(struct EigsChunk *chunk);
 void jit_module_init(void);
 void jit_module_shutdown(void);
 
+/* Register a chunk so its exec_count can be dumped at shutdown when
+ * EIGS_JIT_HOT=1. Idempotent. Called from vm_run on top-level entry
+ * and from jit_try_compile_chunk on every first JIT visit. */
+void jit_register_chunk(struct EigsChunk *chunk);
+
 /* ---- Stage 3b inline-emit layout descriptor ----
  *
  * vm.c owns g_vm (static __thread) so it is the only TU that can

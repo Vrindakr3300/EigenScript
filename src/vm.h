@@ -186,6 +186,11 @@ typedef struct EigsChunk {
     uint8_t  jit_state;
     int      jit_advance;
     void    *jit_code;
+
+    /* Diagnostic: incremented on every frame entry (vm_run + both CALL
+     * paths). Dumped at shutdown when EIGS_JIT_HOT=1 so we can correlate
+     * chunk hotness with jit_state and the stop-opcode histogram. */
+    uint64_t exec_count;
 } EigsChunk;
 
 /* ---- Call Frame ---- */
