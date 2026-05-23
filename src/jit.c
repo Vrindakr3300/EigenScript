@@ -132,10 +132,11 @@ static void ensure_layout(void) {
 
 /* Scan a chunk-start prefix of opcodes we can natively translate.
  * Returns prefix length in *bytes* (0 = nothing compilable). Sets
- * *needs_env_cache nonzero if the prefix contains any op that reads or
- * writes fn_env->values[] (OP_GET_LOCAL / OP_SET_LOCAL) — the emitter
- * uses this to decide whether to emit the env-cache slice of the
- * prologue (worth ~25 bytes, paid once).
+ * *needs_env_cache when the prefix touches fn_env->values[]; sets
+ * *has_bail_op when the prefix contains an op that can bail at runtime
+ * (currently OP_ADD / OP_SUB on non-num or overflowing operands). The
+ * emitter uses these to size the prologue and to decide whether to
+ * thread an advance-tracker register.
  *
  * Stage 4 supported set:
  *   OP_NULL/NUM_ZERO/NUM_ONE — inline immediate push.
@@ -150,18 +151,21 @@ static void ensure_layout(void) {
  *   OP_DUP                   — duplicate TOS, conditional incref.
  *   OP_DUP2                  — duplicate top two slots, conditional
  *                              incref of each.
+ *   OP_ADD / OP_SUB          — load both, type-check (immediate-num),
+ *                              addsd/subsd, NaN/overflow check via abs-
+ *                              bits >|1e308|; bail on any check fail.
  *   OP_POP                   — peephole `dec %ecx`, valid only when the
  *                              most recent push was an immediate whose
  *                              slot_decref is a no-op. GET_LOCAL/DUP/
- *                              DUP2/SET_LOCAL break the chain (dynamic
- *                              slot type).
+ *                              DUP2/SET_LOCAL/ADD/SUB break the chain.
  */
 static int jit_supported_prefix(const struct EigsChunk *chunk,
-                                int *needs_env_cache) {
+                                int *needs_env_cache, int *has_bail_op) {
     int i = 0, ops = 0, non_line_ops = 0;
     int last_good = 0;
     int last_push_immediate = 0;
     *needs_env_cache = 0;
+    *has_bail_op = 0;
     while (i < chunk->code_len) {
         uint8_t op = chunk->code[i];
         if (op == OP_NULL || op == OP_NUM_ZERO || op == OP_NUM_ONE) {
@@ -185,15 +189,19 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             if (i + 3 > chunk->code_len) break;
             i += 3; ops++; non_line_ops++;
             *needs_env_cache = 1;
-            /* SET_LOCAL keeps TOS; type-tracking conservatively reset. */
             last_push_immediate = 0;
         } else if (op == OP_DUP) {
             i += 1; ops++; non_line_ops++;
-            /* DUP'd value type unknown statically. */
             last_push_immediate = 0;
         } else if (op == OP_DUP2) {
             i += 1; ops++; non_line_ops++;
             last_push_immediate = 0;
+        } else if (op == OP_ADD || op == OP_SUB) {
+            i += 1; ops++; non_line_ops++;
+            *has_bail_op = 1;
+            /* Result type at runtime is num (when not bailed), so
+             * subsequent OP_POP is still a no-op-decref. */
+            last_push_immediate = 1;
         } else if (op == OP_POP) {
             if (!last_push_immediate) break;
             i += 1; ops++; non_line_ops++;
@@ -211,13 +219,18 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
 }
 
 /* Upper bound on emitted bytes:
- *   prologue 23 (always) + 35 (env-cache extra when needs_env_cache) +
- *   epilogue 10 + 128 bytes/op worst case (OP_SET_LOCAL with both
- *   inline incref/decref plus possible free_value call site). The
- *   caller advances frame->ip by chunk->jit_advance, so the thunk only
- *   writes %ecx back to g_vm.sp before returning. */
-static size_t jit_estimate_size(int prefix, int needs_env_cache) {
-    return 23 + (needs_env_cache ? 35 : 0) + 10 + 128 * (size_t)prefix;
+ *   prologue 23 (always) + 35 (env-cache when needs_env_cache) +
+ *                          17 (advance tracker init when has_bail_op) +
+ *   epilogue 10 (always) +  7 (advance writeback when has_bail_op) +
+ *   128 bytes/op worst case + 7 bytes/op advance update when
+ *   has_bail_op. The caller advances frame->ip by chunk->jit_advance,
+ *   which is initialized at compile time to the full prefix but may be
+ *   overwritten by the thunk on bail. */
+static size_t jit_estimate_size(int prefix, int needs_env_cache,
+                                int has_bail_op) {
+    return 25 + (needs_env_cache ? 35 : 0) + (has_bail_op ? 17 : 0) +
+           10 + (has_bail_op ? 11 : 0) +
+           (size_t)prefix * (128 + (has_bail_op ? 6 : 0));
 }
 
 /* ---- x86-64 encoding helpers ---- */
@@ -450,6 +463,155 @@ static uint8_t *emit_conditional_incref_rax(uint8_t *w, int *bail) {
     return w;
 }
 
+/* ---- Stage 4d: SSE / bail helpers ---- */
+
+/* push %r13 (2 bytes), pop %r13 (2 bytes). Advance tracker. */
+static uint8_t *emit_push_r13(uint8_t *w)  { *w++=0x41; *w++=0x55; return w; }
+static uint8_t *emit_pop_r13(uint8_t *w)   { *w++=0x41; *w++=0x5D; return w; }
+/* push %r14 (2 bytes), pop %r14 (2 bytes). Chunk pointer. */
+static uint8_t *emit_push_r14(uint8_t *w)  { *w++=0x41; *w++=0x56; return w; }
+static uint8_t *emit_pop_r14(uint8_t *w)   { *w++=0x41; *w++=0x5E; return w; }
+
+/* movabs $imm64, %r14  (10 bytes) — chunk pointer. */
+static uint8_t *emit_movabs_r14(uint8_t *w, uint64_t imm) {
+    *w++ = 0x49; *w++ = 0xBE;
+    return emit_u64(w, imm);
+}
+
+/* mov $imm32, %r13d  (6 bytes) — set advance tracker. */
+static uint8_t *emit_mov_imm32_r13d(uint8_t *w, uint32_t imm) {
+    *w++ = 0x41; *w++ = 0xBD;
+    return emit_u32(w, imm);
+}
+
+/* mov %r13d, disp32(%r14)  (7 bytes) — write advance to chunk. */
+static uint8_t *emit_mov_r13d_to_disp32_r14(uint8_t *w, int32_t disp) {
+    *w++ = 0x45; *w++ = 0x89; *w++ = 0xAE;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* movabs $imm64, %rsi  (10 bytes) — generic 64-bit immediate to rsi. */
+static uint8_t *emit_movabs_rsi(uint8_t *w, uint64_t imm) {
+    *w++ = 0x48; *w++ = 0xBE;
+    return emit_u64(w, imm);
+}
+
+/* cmp $imm32, %esi  (6 bytes) */
+static uint8_t *emit_cmp_imm32_esi(uint8_t *w, uint32_t imm) {
+    *w++ = 0x81; *w++ = 0xFE;
+    return emit_u32(w, imm);
+}
+
+/* shr $48, %rsi  (4 bytes) */
+static uint8_t *emit_shr_48_rsi(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0xC1; *w++ = 0xEE; *w++ = 0x30; return w;
+}
+
+/* mov %rax, %rsi  (3 bytes) */
+static uint8_t *emit_mov_rax_rsi(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x89; *w++ = 0xC6; return w;
+}
+/* mov %rdx, %rsi  (3 bytes) */
+static uint8_t *emit_mov_rdx_rsi(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x89; *w++ = 0xD6; return w;
+}
+
+/* mov disp32(%rbx, %rcx, 8), %rdx  (8 bytes) — load stack slot to rdx. */
+static uint8_t *emit_load_stack_to_rdx(uint8_t *w, int32_t disp) {
+    *w++ = 0x48; *w++ = 0x8B; *w++ = 0x94; *w++ = 0xCB;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov %rax, disp32(%rbx, %rcx, 8)  (8 bytes) — store at offset+sp*8. */
+static uint8_t *emit_store_rax_at_disp_stack(uint8_t *w, int32_t disp) {
+    *w++ = 0x48; *w++ = 0x89; *w++ = 0x84; *w++ = 0xCB;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* movq %rax, %xmm0  (5 bytes): 66 48 0F 6E C0 */
+static uint8_t *emit_movq_rax_xmm0(uint8_t *w) {
+    *w++ = 0x66; *w++ = 0x48; *w++ = 0x0F; *w++ = 0x6E; *w++ = 0xC0; return w;
+}
+/* movq %rdx, %xmm1  (5 bytes): 66 48 0F 6E CA */
+static uint8_t *emit_movq_rdx_xmm1(uint8_t *w) {
+    *w++ = 0x66; *w++ = 0x48; *w++ = 0x0F; *w++ = 0x6E; *w++ = 0xCA; return w;
+}
+/* movq %xmm1, %rax  (5 bytes): 66 48 0F 7E C8 */
+static uint8_t *emit_movq_xmm1_rax(uint8_t *w) {
+    *w++ = 0x66; *w++ = 0x48; *w++ = 0x0F; *w++ = 0x7E; *w++ = 0xC8; return w;
+}
+/* addsd %xmm0, %xmm1  (4 bytes): F2 0F 58 C8  (xmm1 = xmm1 + xmm0) */
+static uint8_t *emit_addsd_xmm0_xmm1(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x0F; *w++ = 0x58; *w++ = 0xC8; return w;
+}
+/* subsd %xmm0, %xmm1  (4 bytes): F2 0F 5C C8  (xmm1 = xmm1 - xmm0) */
+static uint8_t *emit_subsd_xmm0_xmm1(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x0F; *w++ = 0x5C; *w++ = 0xC8; return w;
+}
+
+/* jae rel32  (6 bytes): 0F 83 disp32. Returns patch pointer to disp32. */
+static uint8_t *emit_jae_rel32(uint8_t *w, uint8_t **patch) {
+    *w++ = 0x0F; *w++ = 0x83; *patch = w;
+    *w++ = 0; *w++ = 0; *w++ = 0; *w++ = 0;
+    return w;
+}
+/* ja rel32  (6 bytes): 0F 87 disp32 */
+static uint8_t *emit_ja_rel32(uint8_t *w, uint8_t **patch) {
+    *w++ = 0x0F; *w++ = 0x87; *patch = w;
+    *w++ = 0; *w++ = 0; *w++ = 0; *w++ = 0;
+    return w;
+}
+/* Patch a previously-emitted rel32 conditional/unconditional jmp.
+ * `patch` is the address of the 4-byte displacement (returned by the
+ * emit_* function). `target` is the destination address. */
+static void patch_rel32(uint8_t *patch, uint8_t *target) {
+    int32_t disp = (int32_t)(target - (patch + 4));
+    memcpy(patch, &disp, 4);
+}
+
+/* xor %r13d, %r13d  (3 bytes: 45 31 ED) — clear advance tracker. */
+static uint8_t *emit_xor_r13d_r13d(uint8_t *w) {
+    *w++ = 0x45; *w++ = 0x31; *w++ = 0xED; return w;
+}
+
+/* btr $63, %rdx  (5 bytes: 48 0F BA F2 3F) — clear sign bit of %rdx. */
+static uint8_t *emit_btr_63_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x0F; *w++ = 0xBA; *w++ = 0xF2; *w++ = 0x3F;
+    return w;
+}
+
+/* cmp %rsi, %rdx  (3 bytes: 48 39 F2) */
+static uint8_t *emit_cmp_rsi_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x39; *w++ = 0xF2; return w;
+}
+
+/* Emit immediate-num type check: copy %rax (or %rdx) to %rsi, shift
+ * down 48, compare to QNaN start (0xFFF8), and jae rel32 → bail patch.
+ * (3 + 4 + 6 + 6 = 19 bytes.) */
+static uint8_t *emit_immediate_num_check_rax(uint8_t *w, uint8_t **patch) {
+    w = emit_mov_rax_rsi(w);
+    w = emit_shr_48_rsi(w);
+    w = emit_cmp_imm32_esi(w, 0xFFF8);
+    return emit_jae_rel32(w, patch);
+}
+static uint8_t *emit_immediate_num_check_rdx(uint8_t *w, uint8_t **patch) {
+    w = emit_mov_rdx_rsi(w);
+    w = emit_shr_48_rsi(w);
+    w = emit_cmp_imm32_esi(w, 0xFFF8);
+    return emit_jae_rel32(w, patch);
+}
+
+/* Emit overflow/NaN check on result in %rax: copy to %rdx, clear sign
+ * bit, compare to bits-of-1e308; ja rel32 → bail. (3+5+10+3+6 = 27 b.) */
+static uint8_t *emit_overflow_check_rax(uint8_t *w, uint64_t max_bits,
+                                        uint8_t **patch) {
+    w = emit_mov_rax_rdx(w);
+    w = emit_btr_63_rdx(w);
+    w = emit_movabs_rsi(w, max_bits);
+    w = emit_cmp_rsi_rdx(w);
+    return emit_ja_rel32(w, patch);
+}
+
 /* Emit inline conditional decref of a slot held in %rsi.
  *
  * Sequence (~58 bytes worst case, including helper call site):
@@ -515,7 +677,8 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
     ensure_layout();
 
     int needs_env_cache = 0;
-    int prefix = jit_supported_prefix(chunk, &needs_env_cache);
+    int has_bail_op = 0;
+    int prefix = jit_supported_prefix(chunk, &needs_env_cache, &has_bail_op);
     if (prefix == 0) {
         chunk->jit_state = 1;
         chunk->jit_code = NULL;
@@ -536,7 +699,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
         return;
     }
 
-    size_t size = jit_estimate_size(prefix, needs_env_cache);
+    size_t size = jit_estimate_size(prefix, needs_env_cache, has_bail_op);
     uint8_t *code = jit_cache_alloc(g_jit_cache, size);
     if (!code) {
         chunk->jit_state = 1;
@@ -547,19 +710,48 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
 
     uint8_t *w = code;
 
-    /* Prologue: preserve %rbx + %r12, point %rbx at &g_vm, cache sp.
+    /* Bit pattern of 1e308 — the maximum finite value num_guard allows.
+     * Any addsd/subsd result whose magnitude bits exceed this (incl.
+     * ±Inf / NaN) bails to the slow interpreter path. */
+    uint64_t max_normal_bits;
+    { double d = 1e308; memcpy(&max_normal_bits, &d, 8); }
+
+    /* Bail-jump rel32 patch sites collected during body emission and
+     * resolved against the epilogue once we know its address. */
+    uint8_t *bail_patches[256];
+    int bail_count = 0;
+
+    /* Prologue: preserve %rbx + %r12 (+ %r13/%r14 when has_bail_op),
+     * point %rbx at &g_vm, cache sp.
      *
      * Register allocation across the thunk:
      *   %rbx = &g_vm                 (callee-saved, set once)
      *   %ecx = g_vm.sp               (live, mutates with pushes/pops)
-     *   %r12 = current_frame->fn_env->values  (set when needs_env_cache)
+     *   %r12 = current_frame->fn_env->values  (when needs_env_cache)
+     *   %r13d = advance tracker      (when has_bail_op): bytecode offset
+     *           just past last successful op. Written to
+     *           chunk->jit_advance in the common epilogue.
+     *   %r14 = &chunk                (when has_bail_op)
      *
-     * %rdx/%rdi/%rsi/%rax are scratch for incref/decref logic. */
+     * %rdx/%rdi/%rsi/%rax are scratch for incref/decref/SSE logic.
+     *
+     * Stack alignment: on entry %rsp = 8 mod 16. We push 2 or 4 callee-
+     * saved regs (16 or 32 bytes), so the body sees %rsp = 8 mod 16 in
+     * both cases — `push %rcx` re-aligns to 0 mod 16 before external
+     * calls (free_value via emit_conditional_decref_rsi). */
     w = emit_u8(w, 0x53);                                       /* push %rbx */
     w = emit_u8(w, 0x41); w = emit_u8(w, 0x54);                 /* push %r12 */
+    if (has_bail_op) {
+        w = emit_push_r13(w);
+        w = emit_push_r14(w);
+    }
     w = emit_load_fs_zero_rbx(w);                               /* mov %fs:0, %rbx */
     w = emit_lea_rbx_disp32_rbx(w, (int32_t)g_layout.g_vm_tpoff);
     w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);         /* mov sp, %ecx */
+    if (has_bail_op) {
+        w = emit_movabs_r14(w, (uint64_t)(uintptr_t)chunk);
+        w = emit_xor_r13d_r13d(w);
+    }
 
     if (needs_env_cache) {
         /* %r12 = &g_vm.frames[frame_count - 1]
@@ -694,6 +886,42 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
                 jit_cache_seal(g_jit_cache); return;
             }
             i += 3;
+        } else if (op == OP_ADD || op == OP_SUB) {
+            /* Reserve patch slots: two type checks + one overflow check.
+             * Bail-out budget headroom enforced statically (256 slots
+             * vs prefix * 3 ≥ 3 * 128 = 384 worst case theoretical, but
+             * in practice prefix * 3 ≪ 256 for compiled chunks). */
+            if (bail_count + 3 > (int)(sizeof bail_patches /
+                                       sizeof bail_patches[0])) {
+                chunk->jit_state = 1; chunk->jit_code = NULL;
+                jit_cache_seal(g_jit_cache); return;
+            }
+            uint8_t *p_b, *p_a, *p_ov;
+            /* %rax = stack[sp-1] = b ; %rdx = stack[sp-2] = a */
+            w = emit_load_stack_to_rax(w, g_layout.off_stack - 8);
+            w = emit_load_stack_to_rdx(w, g_layout.off_stack - 16);
+            /* Both must be immediate-num (upper 16 bits < 0xFFF8). */
+            w = emit_immediate_num_check_rax(w, &p_b);
+            bail_patches[bail_count++] = p_b;
+            w = emit_immediate_num_check_rdx(w, &p_a);
+            bail_patches[bail_count++] = p_a;
+            /* Move into XMM: xmm0 = b, xmm1 = a. */
+            w = emit_movq_rax_xmm0(w);
+            w = emit_movq_rdx_xmm1(w);
+            /* xmm1 = xmm1 OP xmm0 (a + b or a - b). */
+            if (op == OP_ADD) w = emit_addsd_xmm0_xmm1(w);
+            else              w = emit_subsd_xmm0_xmm1(w);
+            /* Result -> %rax for storage + overflow check. */
+            w = emit_movq_xmm1_rax(w);
+            /* |result| > 1e308 → bail (catches NaN, ±Inf, num_guard
+             * clamp boundary). Stack is still untouched here, so bail
+             * leaves the operands in place for the slow path. */
+            w = emit_overflow_check_rax(w, max_normal_bits, &p_ov);
+            bail_patches[bail_count++] = p_ov;
+            /* Commit: store result at stack[sp-2], dec sp. */
+            w = emit_store_rax_at_disp_stack(w, g_layout.off_stack - 16);
+            w = emit_dec_ecx(w);
+            i += 1;
         } else if (op == OP_POP) {
             /* Peephole: prior op pushed an immediate, whose slot_decref
              * is a no-op. Just dec the cached sp. */
@@ -706,14 +934,37 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
                                             (int32_t)line);
             i += 3;
         }
+        /* Update the advance tracker: if the next op bails, the caller
+         * will resume at bytecode offset `i` (just past the op we just
+         * emitted). */
+        if (has_bail_op) {
+            w = emit_mov_imm32_r13d(w, (uint32_t)i);
+        }
     }
 
-    /* Epilogue (10 bytes): write sp back to g_vm, restore %r12 + %rbx,
-     * return. frame->ip advance is the caller's responsibility. */
+    /* Common epilogue. All bail jumps land here. Order:
+     *   1. (has_bail_op) write %r13d → chunk->jit_advance via %r14.
+     *   2. write %ecx → g_vm.sp.
+     *   3. (has_bail_op) pop %r14, %r13.
+     *   4. pop %r12, %rbx, ret. */
+    uint8_t *epilogue_start = w;
+    if (has_bail_op) {
+        w = emit_mov_r13d_to_disp32_r14(
+                w, (int32_t)offsetof(struct EigsChunk, jit_advance));
+    }
     w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+    if (has_bail_op) {
+        w = emit_pop_r14(w);
+        w = emit_pop_r13(w);
+    }
     w = emit_u8(w, 0x41); w = emit_u8(w, 0x5C);                 /* pop %r12 */
     w = emit_u8(w, 0x5B);                                       /* pop %rbx */
     w = emit_u8(w, 0xC3);                                       /* ret */
+
+    /* Resolve all bail rel32 jumps to the common epilogue. */
+    for (int j = 0; j < bail_count; j++) {
+        patch_rel32(bail_patches[j], epilogue_start);
+    }
 
     /* Sanity: did we stay within the allocation? */
     if ((size_t)(w - code) > size) {
