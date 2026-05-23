@@ -23,6 +23,11 @@ void eigs_jit_get_layout(EigsJitLayout *out) { (void)out; }
 typedef struct Value Value;
 void free_value(Value *v) { (void)v; }
 
+/* Diagnostic histogram in jit_module_shutdown references op_name from
+ * chunk.c. The smoke binary never triggers the histogram path because
+ * EIGS_JIT_STOPS is not set, but the linker still needs a definition. */
+const char *op_name(uint8_t op) { (void)op; return "?"; }
+
 static int run_case(int64_t expected) {
     EigsJitCache *jc = jit_cache_new(1);
     if (!jc) {

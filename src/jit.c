@@ -99,6 +99,17 @@ static __thread EigsJitCache *g_jit_cache = NULL;
 static __thread int g_jit_compiled_chunks = 0;
 static __thread int g_jit_scanned_chunks = 0;
 
+/* Stop-opcode histogram. Indexed by OP code (0..OP_COUNT-1) plus an
+ * extra OP_COUNT slot used for "ran off the end" — those chunks fit
+ * the supported set entirely but were short. Counter rules in
+ * jit_try_compile_chunk: every bail bumps g_jit_stop_counts[stop_op];
+ * if prefix==0 we also bump g_jit_stop_at_zero. Compiled chunks bump
+ * g_jit_compiled_count and ALSO record their trailing stop_op (the op
+ * that would unlock further extension). */
+static __thread uint32_t g_jit_stop_counts[256];
+static __thread uint32_t g_jit_stop_at_zero = 0;
+static __thread uint32_t g_jit_compiled_count = 0;
+
 void jit_module_init(void) {
     /* Defer cache creation until the first compile request. */
 }
@@ -113,6 +124,38 @@ void jit_module_shutdown(void) {
         fprintf(stderr, "[jit] scanned=%d compiled=%d cache_used=%zu\n",
                 g_jit_scanned_chunks, g_jit_compiled_chunks,
                 g_jit_cache ? jit_cache_used(g_jit_cache) : 0);
+    }
+    if (getenv("EIGS_JIT_STOPS")) {
+        uint32_t total_stops = 0;
+        for (int i = 0; i < 256; i++) total_stops += g_jit_stop_counts[i];
+        fprintf(stderr, "=== JIT compile stops ===\n");
+        fprintf(stderr, "compiled:        %u\n", g_jit_compiled_count);
+        fprintf(stderr, "total bailouts:  %u\n",
+                total_stops - g_jit_compiled_count);
+        fprintf(stderr, "  stop_at_zero:  %u\n", g_jit_stop_at_zero);
+        fprintf(stderr, "\nstop opcode histogram:\n");
+        /* Selection sort by count, descending. ~256 entries, one-shot. */
+        int order[256];
+        int order_n = 0;
+        for (int i = 0; i < 256; i++) {
+            if (g_jit_stop_counts[i]) order[order_n++] = i;
+        }
+        for (int a = 0; a < order_n; a++) {
+            int best = a;
+            for (int b = a + 1; b < order_n; b++) {
+                if (g_jit_stop_counts[order[b]] >
+                    g_jit_stop_counts[order[best]]) best = b;
+            }
+            int tmp = order[a]; order[a] = order[best]; order[best] = tmp;
+        }
+        for (int a = 0; a < order_n; a++) {
+            int op = order[a];
+            uint32_t c = g_jit_stop_counts[op];
+            double pct = total_stops ? (100.0 * c / total_stops) : 0.0;
+            const char *name = (op == OP_COUNT) ? "OP_<end-of-chunk>"
+                                                : op_name((uint8_t)op);
+            fprintf(stderr, "  %6u  %-22s (%.1f%%)\n", c, name, pct);
+        }
     }
     if (g_jit_cache) {
         jit_cache_free(g_jit_cache);
@@ -171,33 +214,36 @@ static void ensure_layout(void) {
  *                              DUP2/SET_LOCAL/ADD/SUB break the chain.
  */
 static int jit_supported_prefix(const struct EigsChunk *chunk,
-                                int *needs_env_cache, int *has_bail_op) {
+                                int *needs_env_cache, int *has_bail_op,
+                                uint8_t *stop_op, int *stop_offset) {
     int i = 0, ops = 0, non_line_ops = 0;
     int last_good = 0;
     int last_push_immediate = 0;
     *needs_env_cache = 0;
     *has_bail_op = 0;
+    *stop_op = OP_COUNT;   /* sentinel: ran off the end with no break */
+    *stop_offset = 0;
     while (i < chunk->code_len) {
         uint8_t op = chunk->code[i];
         if (op == OP_NULL || op == OP_NUM_ZERO || op == OP_NUM_ONE) {
             i += 1; ops++; non_line_ops++;
             last_push_immediate = 1;
         } else if (op == OP_CONST) {
-            if (i + 3 > chunk->code_len) break;
+            if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             uint16_t idx = (uint16_t)(chunk->code[i + 1] |
                                       ((uint16_t)chunk->code[i + 2] << 8));
-            if (idx >= chunk->const_count) break;
+            if (idx >= chunk->const_count) { *stop_op = op; *stop_offset = i; break; }
             Value *v = chunk->constants[idx];
-            if (!v) break;
+            if (!v) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             last_push_immediate = (v->type == VAL_NUM && v->obs_age == 0);
         } else if (op == OP_GET_LOCAL) {
-            if (i + 3 > chunk->code_len) break;
+            if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             *needs_env_cache = 1;
             last_push_immediate = 0;
         } else if (op == OP_SET_LOCAL) {
-            if (i + 3 > chunk->code_len) break;
+            if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             *needs_env_cache = 1;
             last_push_immediate = 0;
@@ -234,7 +280,7 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             *has_bail_op = 1;
             last_push_immediate = 1;
         } else if (op == OP_JUMP || op == OP_JUMP_BACK) {
-            if (i + 3 > chunk->code_len) break;
+            if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             /* Uses r13d/r14 machinery to either chain into native code at
              * the target or bail with jit_advance = target. */
@@ -243,26 +289,27 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
              * left — opaque to this scanner. */
             last_push_immediate = 0;
         } else if (op == OP_JUMP_IF_FALSE || op == OP_JUMP_IF_TRUE) {
-            if (i + 3 > chunk->code_len) break;
+            if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             *has_bail_op = 1;
             /* TOS was popped — new TOS is unknown to us. */
             last_push_immediate = 0;
         } else if (op == OP_JUMP_IF_FALSE_PEEK || op == OP_JUMP_IF_TRUE_PEEK) {
-            if (i + 3 > chunk->code_len) break;
+            if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             *has_bail_op = 1;
             /* Type-check at runtime proved TOS is immediate-num — so a
              * subsequent OP_POP can use the peephole `dec ecx`. */
             last_push_immediate = 1;
         } else if (op == OP_POP) {
-            if (!last_push_immediate) break;
+            if (!last_push_immediate) { *stop_op = op; *stop_offset = i; break; }
             i += 1; ops++; non_line_ops++;
             last_push_immediate = 0;
         } else if (op == OP_LINE) {
-            if (i + 3 > chunk->code_len) break;
+            if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++;
         } else {
+            *stop_op = op; *stop_offset = i;
             break;
         }
         last_good = i;
@@ -896,8 +943,23 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
 
     int needs_env_cache = 0;
     int has_bail_op = 0;
-    int prefix = jit_supported_prefix(chunk, &needs_env_cache, &has_bail_op);
+    uint8_t stop_op = OP_COUNT;
+    int stop_offset = 0;
+    int prefix = jit_supported_prefix(chunk, &needs_env_cache, &has_bail_op,
+                                      &stop_op, &stop_offset);
+    /* Every scanned chunk contributes one stop_op tally, whether it
+     * ultimately compiles or not. Compiled chunks also bump
+     * g_jit_compiled_count, so total_stops - compiled = bailouts. */
+    g_jit_stop_counts[stop_op]++;
+    if (getenv("EIGS_JIT_DUMP_BAIL") && prefix == 0 &&
+        stop_op != OP_COUNT) {
+        fprintf(stderr,
+                "JIT bail: chunk='%s' stop_op=%s at offset %d (prefix=0 ops)\n",
+                chunk->name ? chunk->name : "<anon>",
+                op_name(stop_op), stop_offset);
+    }
     if (prefix == 0) {
+        g_jit_stop_at_zero++;
         chunk->jit_state = 1;
         chunk->jit_code = NULL;
         return;
@@ -1541,6 +1603,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
     chunk->jit_code = code;
     chunk->jit_advance = prefix;
     g_jit_compiled_chunks++;
+    g_jit_compiled_count++;
     if (getenv("EIGS_JIT_DEBUG")) {
         fprintf(stderr, "[jit] compiled %s: prefix=%d bytes (",
                 chunk->name ? chunk->name : "?", prefix);

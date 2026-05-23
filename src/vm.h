@@ -228,6 +228,7 @@ int        chunk_emit_jump(EigsChunk *chunk, uint8_t op, int line);
 void       chunk_patch_jump(EigsChunk *chunk, int offset);
 int        chunk_add_function(EigsChunk *chunk, EigsChunk *fn);
 void       chunk_disassemble(EigsChunk *chunk, const char *label);
+const char *op_name(uint8_t op);
 
 /* Compiler */
 EigsChunk *compile_ast(ASTNode *ast, Env *env);

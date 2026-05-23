@@ -141,8 +141,11 @@ int chunk_add_function(EigsChunk *chunk, EigsChunk *fn) {
 
 /* ---- Disassembler ---- */
 
-static const char *op_name(uint8_t op) {
-    static const char *names[] = {
+const char *op_name(uint8_t op) {
+    /* Explicit [OP_COUNT] size keeps designated initializers from
+     * shrinking the array — otherwise any opcode above the highest
+     * designator would read out of bounds. */
+    static const char *names[OP_COUNT] = {
         [OP_CONST] = "CONST", [OP_NULL] = "NULL",
         [OP_NUM_ZERO] = "NUM_ZERO", [OP_NUM_ONE] = "NUM_ONE",
         [OP_ADD] = "ADD", [OP_SUB] = "SUB", [OP_MUL] = "MUL",
@@ -160,7 +163,7 @@ static const char *op_name(uint8_t op) {
         [OP_JUMP_IF_TRUE] = "JUMP_IF_TRUE",
         [OP_JUMP_IF_FALSE_PEEK] = "JUMP_IF_FALSE_PEEK",
         [OP_JUMP_IF_TRUE_PEEK] = "JUMP_IF_TRUE_PEEK",
-        [OP_POP] = "POP", [OP_DUP] = "DUP",
+        [OP_POP] = "POP", [OP_DUP] = "DUP", [OP_DUP2] = "DUP2",
         [OP_CLOSURE] = "CLOSURE", [OP_CALL] = "CALL",
         [OP_RETURN] = "RETURN", [OP_RETURN_NULL] = "RETURN_NULL",
         [OP_LIST] = "LIST", [OP_DICT] = "DICT",
@@ -180,6 +183,13 @@ static const char *op_name(uint8_t op) {
         [OP_LISTCOMP_BEGIN] = "LISTCOMP_BEGIN",
         [OP_LISTCOMP_APPEND] = "LISTCOMP_APPEND",
         [OP_LINE] = "LINE", [OP_WIDE] = "WIDE",
+        [OP_DISPATCH] = "DISPATCH",
+        [OP_LOCAL_DOT_GET] = "LOCAL_DOT_GET",
+        [OP_LOCAL_DOT_SET] = "LOCAL_DOT_SET",
+        [OP_LOCAL_IDX_GET] = "LOCAL_IDX_GET",
+        [OP_LOCAL_IDX_DOT_GET] = "LOCAL_IDX_DOT_GET",
+        [OP_LOCAL_IDX_DOT_SET] = "LOCAL_IDX_DOT_SET",
+        [OP_INTERROGATE_NAMED] = "INTERROGATE_NAMED",
     };
     if (op < OP_COUNT && names[op]) return names[op];
     return "???";

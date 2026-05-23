@@ -95,7 +95,7 @@ lsp:
 	@echo "EigenScript LSP $(VERSION) built. Binary: $$(du -sh $(LSP_BINARY) | cut -f1)"
 
 jit-smoke:
-	$(CC) -Wall -Wextra -O2 -o /tmp/jit_smoke $(SRC_DIR)/jit.c $(SRC_DIR)/jit_smoke.c
+	$(CC) -Wall -Wextra -O2 -o /tmp/jit_smoke $(SRC_DIR)/jit.c $(SRC_DIR)/jit_smoke.c -lm
 	/tmp/jit_smoke
 
 clean:
