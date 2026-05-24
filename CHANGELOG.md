@@ -2,6 +2,27 @@
 
 All notable changes to EigenScript are documented here.
 
+## [0.11.3] — 2026-05-23
+
+### Performance
+- **Gate refcount atomics on `g_vm_multithreaded` flag**: on x86 every
+  `__atomic_*_fetch` for refcount work emits a LOCK-prefixed RMW (~20
+  cycles each), regardless of memory order. Added a runtime flag,
+  default 0, flipped to 1 by `builtin_spawn` before `pthread_create`.
+  All `val_incref/decref`, `slot_incref/decref`, and `env_refcount`
+  inc/dec/load sites branch on the flag with `__builtin_expect(0)`
+  and use plain `++/--` in the single-threaded case. DMG `cpu_instrs`
+  (n=10, `--cycles 200000`) went from **0.767 MHz** (0.11.2 baseline)
+  to **0.950 MHz** mean (+24%), clearing the Phase B Gate (0.85 MHz)
+  with 12% margin.
+
+### Diagnostics
+- Per-chunk `jit_stop_op` field + extended `EIGS_JIT_HOT=1` table
+  (adv/len/nat%/stop columns + aggregate native-byte share). Surfaces
+  the static native-bytecode coverage of JIT-compiled chunks; revealed
+  that helper-call prefix extension was hitting diminishing returns
+  (~6% native-byte share across all hot chunks).
+
 ## [0.11.2] — 2026-05-22
 
 ### Bug Fixes
