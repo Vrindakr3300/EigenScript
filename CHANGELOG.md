@@ -2,6 +2,31 @@
 
 All notable changes to EigenScript are documented here.
 
+## [0.11.4] — 2026-05-23
+
+### Performance
+- **Intern dict-stored keys + pointer-equality short-circuit in dict
+  inline cache**: dict keys were previously `xstrdup`'d at insert, while
+  cache callers pass `chunk->const_interns[idx]` (interned strings) —
+  pointer equality never matched, so every dict cache hit paid for a
+  `strcmp`. Callgrind on the 0.11.3 PGO binary showed `__strcmp_sse2` at
+  **4.06%** of retired instructions, dominated by `dict_get_cached` /
+  `dict_set_cached` / `dict_set_cached_immediate`. Switched dict-key
+  storage to `env_intern_name` (single insert site at
+  `eigenscript.c:621`) and added `stored == key || strcmp(...)` to all
+  three cache helpers. Hot DMG field accesses now short-circuit on
+  pointer equality. DMG `cpu_instrs` (n=10, PGO, `--cycles 200000`)
+  went from **1.042 MHz** to **1.094 MHz** mean (+5.0%).
+
+### Build
+- Added `make pgo` target: builds an instrumented binary, runs DMG
+  cpu_instrs as the default training workload, then rebuilds with
+  `-fprofile-use`. ~+8–9% net on the trained workload. `PGO_RUN` and
+  `PGO_DIR` overridable for different training workloads.
+- Fixed `build.sh` drift: missing `jit.c` in `SOURCES` (broke since the
+  VM-layer split) and missing `EIGENSCRIPT_EXT_*` macros in the
+  full-build branch.
+
 ## [0.11.3] — 2026-05-23
 
 ### Performance

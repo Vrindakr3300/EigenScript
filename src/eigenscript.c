@@ -286,7 +286,7 @@ void free_value(Value *v) {
             break;
         case VAL_DICT:
             for (int i = 0; i < v->data.dict.count; i++) {
-                free(v->data.dict.keys[i]);
+                /* keys are interned (env_intern_name) — do not free */
                 val_decref(v->data.dict.vals[i]);
             }
             free(v->data.dict.keys);
@@ -618,7 +618,7 @@ void dict_set_hashed(Value *dict, const char *key, uint32_t h, Value *val) {
         dict->data.dict.vals = xrealloc_array(dict->data.dict.vals, new_cap, sizeof(Value*));
         dict->data.dict.capacity = new_cap;
     }
-    dict->data.dict.keys[dict->data.dict.count] = xstrdup(key);
+    dict->data.dict.keys[dict->data.dict.count] = env_intern_name(key);
     Value *promoted = promote_if_arena(val);
     dict->data.dict.vals[dict->data.dict.count] = promoted;
     if (promoted == val) val_incref(val);
@@ -658,7 +658,7 @@ void dict_remove(Value *dict, const char *key) {
     uint32_t h = env_hash_name(key);
     int idx = env_hash_find(&dict->data.dict.hash, key, h, dict->data.dict.keys);
     if (idx < 0) return;
-    free(dict->data.dict.keys[idx]);
+    /* keys are interned — do not free */
     val_decref(dict->data.dict.vals[idx]);
     /* Shift remaining */
     for (int j = idx; j < dict->data.dict.count - 1; j++) {

@@ -117,7 +117,8 @@ static inline Value *dict_get_cached(Value *dict, const char *key, uint32_t h) {
     int ci = (h ^ (uint32_t)(uintptr_t)dict) & DICT_CACHE_MASK;
     DictCacheEntry *ce = &g_dict_cache[ci];
     if (ce->dict == dict && ce->hash == h && ce->index < dict->data.dict.count) {
-        if (strcmp(dict->data.dict.keys[ce->index], key) == 0)
+        const char *stored = dict->data.dict.keys[ce->index];
+        if (stored == key || strcmp(stored, key) == 0)
             return dict->data.dict.vals[ce->index];
     }
     int idx = env_hash_find_dict(dict, key, h);
@@ -132,7 +133,8 @@ static inline void dict_set_cached(Value *dict, const char *key, uint32_t h, Val
     int ci = (h ^ (uint32_t)(uintptr_t)dict) & DICT_CACHE_MASK;
     DictCacheEntry *ce = &g_dict_cache[ci];
     if (ce->dict == dict && ce->hash == h && ce->index < dict->data.dict.count) {
-        if (strcmp(dict->data.dict.keys[ce->index], key) == 0) {
+        const char *stored = dict->data.dict.keys[ce->index];
+        if (stored == key || strcmp(stored, key) == 0) {
             /* Cache hit — update in place */
             Value *promoted = promote_if_arena(val);
             if (promoted != val) {
@@ -159,7 +161,8 @@ static inline int dict_set_cached_immediate(Value *dict, const char *key, uint32
     int ci = (h ^ (uint32_t)(uintptr_t)dict) & DICT_CACHE_MASK;
     DictCacheEntry *ce = &g_dict_cache[ci];
     if (ce->dict == dict && ce->hash == h && ce->index < dict->data.dict.count) {
-        if (strcmp(dict->data.dict.keys[ce->index], key) == 0) {
+        const char *stored = dict->data.dict.keys[ce->index];
+        if (stored == key || strcmp(stored, key) == 0) {
             Value *existing = dict->data.dict.vals[ce->index];
             if (existing && existing->type == VAL_NUM &&
                 existing->refcount == 1 && existing->obs_age == 0 &&
