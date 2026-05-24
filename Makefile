@@ -17,7 +17,7 @@ LSP_SOURCES := $(SRC_DIR)/eigenlsp.c $(SRC_DIR)/eigenscript.c $(SRC_DIR)/lexer.c
                $(SRC_DIR)/hash.c $(SRC_DIR)/arena.c $(SRC_DIR)/strbuf.c $(SRC_DIR)/ext_store.c
 LSP_BINARY  := $(SRC_DIR)/eigenlsp
 
-.PHONY: all build full http gfx test install install-gfx clean coverage coverage-clean fuzz fuzz-run lsp jit-smoke
+.PHONY: all build full http gfx test install install-gfx clean coverage coverage-clean fuzz fuzz-run lsp jit-smoke pgo
 
 all: build
 
@@ -97,6 +97,31 @@ lsp:
 jit-smoke:
 	$(CC) -Wall -Wextra -O2 -o /tmp/jit_smoke $(SRC_DIR)/jit.c $(SRC_DIR)/jit_smoke.c -lm
 	/tmp/jit_smoke
+
+# Profile-guided optimization. Builds an instrumented binary, runs the
+# DMG cpu_instrs workload to collect branch/edge counters, then rebuilds
+# with -fprofile-use. Net win on cpu_instrs has been ~8%, mostly in the
+# vm_run dispatch loop's branch layout. Override PGO_RUN to use a
+# different workload (e.g. PGO_RUN="$(BINARY) myscript.eigs").
+PGO_DIR ?= /tmp/eigs-pgo
+PGO_RUN ?= cd $(HOME)/DMG && $(CURDIR)/$(BINARY) dmg.eigs roms/cpu_instrs.gb --cycles 200000 >/dev/null
+pgo:
+	@rm -rf $(PGO_DIR) && mkdir -p $(PGO_DIR)
+	$(CC) $(CFLAGS) -fprofile-generate=$(PGO_DIR) -o $(BINARY) $(SOURCES) \
+		-DEIGENSCRIPT_EXT_HTTP=0 \
+		-DEIGENSCRIPT_EXT_MODEL=0 \
+		-DEIGENSCRIPT_EXT_DB=0 \
+		-DEIGENSCRIPT_VERSION='"$(VERSION)"' \
+		$(LDFLAGS)
+	@echo "Instrumented binary built; running PGO workload..."
+	@sh -c '$(PGO_RUN)'
+	$(CC) $(CFLAGS) -fprofile-use=$(PGO_DIR) -fprofile-correction -o $(BINARY) $(SOURCES) \
+		-DEIGENSCRIPT_EXT_HTTP=0 \
+		-DEIGENSCRIPT_EXT_MODEL=0 \
+		-DEIGENSCRIPT_EXT_DB=0 \
+		-DEIGENSCRIPT_VERSION='"$(VERSION)"' \
+		$(LDFLAGS)
+	@echo "EigenScript $(VERSION) (PGO) built. Binary: $$(du -sh $(BINARY) | cut -f1)"
 
 clean:
 	rm -f $(BINARY) $(LSP_BINARY) $(SRC_DIR)/*.o /tmp/jit_smoke

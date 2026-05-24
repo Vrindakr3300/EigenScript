@@ -6,13 +6,16 @@ set -e
 cd "$(dirname "$0")/src"
 
 VERSION=$(cat ../VERSION)
-SOURCES="eigenscript.c lexer.c parser.c builtins.c builtins_tensor.c hash.c arena.c strbuf.c ext_store.c fmt.c lint.c chunk.c compiler.c vm.c main.c"
+SOURCES="eigenscript.c lexer.c parser.c builtins.c builtins_tensor.c hash.c arena.c strbuf.c ext_store.c fmt.c lint.c chunk.c compiler.c vm.c jit.c main.c"
 
 if [ "$1" = "full" ]; then
     # Full build: all extensions. Requires libpq-dev.
     gcc -Wall -Wextra -O2 -fstack-protector-strong -o eigenscript $SOURCES ext_http.c ext_db.c \
         model_io.c model_infer.c model_train.c \
         -I/usr/include/postgresql \
+        -DEIGENSCRIPT_EXT_HTTP=1 \
+        -DEIGENSCRIPT_EXT_MODEL=1 \
+        -DEIGENSCRIPT_EXT_DB=1 \
         -DEIGENSCRIPT_VERSION="\"$VERSION\"" \
         -lm -lpthread -lpq
     echo "EigenScript $VERSION (full) built. Binary: $(du -sh eigenscript | cut -f1)"
