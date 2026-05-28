@@ -1848,8 +1848,11 @@ Value* builtin_build_corpus(Value *arg) {
 
     int top_n = (int)topn_val->data.num;
     int n_files = file_list->data.list.count;
-    const int FIRST_IDENT = 54;
-    const int BASE_VOCAB = 54;
+    /* Source of truth: the size of the TokType enum. Hardcoding 54 (which is
+     * what this was before) silently aliases TOK_LBRACKET (=54) onto the most
+     * common extended ident slot whenever the enum grows. */
+    const int BASE_VOCAB = tok_base_string_id_count();
+    const int FIRST_IDENT = BASE_VOCAB;
 
     /* ---- Pass 1: tokenize all files, count identifier frequencies ---- */
     IdentEntry *idents = NULL;
@@ -1995,11 +1998,30 @@ Value* builtin_build_corpus(Value *arg) {
     fclose(stream_file);
     fprintf(stderr, "\nWritten: %s (%d tokens)\n", stream_path_val->data.str, stream_pos);
 
-    /* ---- Write identifier vocab JSON ---- */
+    /* ---- Write identifier vocab JSON ----
+     * Emits base_names[] (placeholder text for each base TokType, in ID order)
+     * and structural_ids{} (the IDs the detokenizer special-cases). Downstream
+     * scripts read these instead of hardcoding TokType ordinals so the stream
+     * and detokenizer stay aligned when the enum grows. */
     FILE *vocab_file = fopen(vocab_path_val->data.str, "w");
     if (vocab_file) {
-        fprintf(vocab_file, "{\"first_ident_id\": %d, \"ext_vocab_size\": %d, \"top_n\": %d, \"names\": [",
-                FIRST_IDENT, BASE_VOCAB + top_n, top_n);
+        fprintf(vocab_file,
+                "{\"first_ident_id\": %d, \"ext_vocab_size\": %d, \"base_vocab\": %d, \"top_n\": %d",
+                FIRST_IDENT, BASE_VOCAB + actual_top, BASE_VOCAB, actual_top);
+        fprintf(vocab_file, ", \"structural_ids\": {\"newline\": %d, \"indent\": %d, \"dedent\": %d, \"eof\": %d, \"ident_fallback\": %d}",
+                (int)TOK_NEWLINE, (int)TOK_INDENT, (int)TOK_DEDENT, (int)TOK_EOF, (int)TOK_IDENT);
+        fprintf(vocab_file, ", \"base_names\": [");
+        for (int i = 0; i < BASE_VOCAB; i++) {
+            if (i > 0) fprintf(vocab_file, ", ");
+            fprintf(vocab_file, "\"");
+            const char *s = tok_base_string((TokType)i);
+            for (const char *q = s; *q; q++) {
+                if (*q == '"' || *q == '\\') fputc('\\', vocab_file);
+                fputc(*q, vocab_file);
+            }
+            fprintf(vocab_file, "\"");
+        }
+        fprintf(vocab_file, "], \"names\": [");
         for (int i = 0; i < actual_top; i++) {
             if (i > 0) fprintf(vocab_file, ", ");
             fprintf(vocab_file, "\"%s\"", top_names[i]);
@@ -2007,6 +2029,42 @@ Value* builtin_build_corpus(Value *arg) {
         fprintf(vocab_file, "]}");
         fclose(vocab_file);
         fprintf(stderr, "Written: %s\n", vocab_path_val->data.str);
+    }
+
+    /* ---- Optional 5th arg: full identifier histogram JSON ----
+     * Sorted by count descending. Enables exact coverage(top_n) curves
+     * without re-running the full corpus build. */
+    if (arg->data.list.count >= 5) {
+        Value *idents_path_val = arg->data.list.items[4];
+        if (idents_path_val && idents_path_val->type == VAL_STR && n_idents > 0) {
+            /* Build index array, sort descending by count via simple sort */
+            int *order = xmalloc_array(n_idents, sizeof(int));
+            for (int i = 0; i < n_idents; i++) order[i] = i;
+            /* Insertion sort is fine — n_idents is small thousands and runs once */
+            for (int i = 1; i < n_idents; i++) {
+                int key = order[i];
+                int kc = idents[key].count;
+                int j = i - 1;
+                while (j >= 0 && idents[order[j]].count < kc) {
+                    order[j+1] = order[j];
+                    j--;
+                }
+                order[j+1] = key;
+            }
+            FILE *hist_file = fopen(idents_path_val->data.str, "w");
+            if (hist_file) {
+                fprintf(hist_file, "{\"n_idents\": %d, \"entries\": [", n_idents);
+                for (int i = 0; i < n_idents; i++) {
+                    int idx = order[i];
+                    if (i > 0) fprintf(hist_file, ", ");
+                    fprintf(hist_file, "[\"%s\", %d]", idents[idx].name, idents[idx].count);
+                }
+                fprintf(hist_file, "]}");
+                fclose(hist_file);
+                fprintf(stderr, "Written: %s\n", idents_path_val->data.str);
+            }
+            free(order);
+        }
     }
 
     /* ---- Cleanup ---- */

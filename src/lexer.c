@@ -102,6 +102,103 @@ static TokType keyword_type(const char *word) {
     return TOK_IDENT;
 }
 
+int tok_base_string_id_count(void) {
+    return (int)TOK_EOF + 1;
+}
+
+/* Switch deliberately has no `default:` — -Wswitch (in -Wall) then warns
+ * at compile time if a TokType is added without a placeholder here, which
+ * is the load-bearing safety net for keeping the corpus stream and the
+ * detokenizer in sync. */
+const char* tok_base_string(TokType t) {
+    switch (t) {
+        case TOK_NUM:        return "0 ";
+        case TOK_STR:        return "\"s\" ";
+        case TOK_IDENT:      return "x ";
+        case TOK_IS:         return "is ";
+        case TOK_OF:         return "of ";
+        case TOK_DEFINE:     return "define ";
+        case TOK_AS:         return "as ";
+        case TOK_IF:         return "if ";
+        case TOK_ELSE:       return "else ";
+        case TOK_ELIF:       return "elif ";
+        case TOK_LOOP:       return "loop ";
+        case TOK_WHILE:      return "while ";
+        case TOK_RETURN:     return "return ";
+        case TOK_AND:        return "and ";
+        case TOK_OR:         return "or ";
+        case TOK_NOT:        return "not ";
+        case TOK_FOR:        return "for ";
+        case TOK_IN:         return "in ";
+        case TOK_NULL:       return "null ";
+        case TOK_WHAT:       return "what ";
+        case TOK_WHO:        return "who ";
+        case TOK_WHEN:       return "when ";
+        case TOK_WHERE:      return "where ";
+        case TOK_WHY:        return "why ";
+        case TOK_HOW:        return "how ";
+        case TOK_CONVERGED:  return "converged ";
+        case TOK_STABLE:     return "stable ";
+        case TOK_IMPROVING:  return "improving ";
+        case TOK_OSCILLATING:return "oscillating ";
+        case TOK_DIVERGING:  return "diverging ";
+        case TOK_EQUILIBRIUM:return "equilibrium ";
+        case TOK_TRY:        return "try ";
+        case TOK_CATCH:      return "catch ";
+        case TOK_BREAK:      return "break ";
+        case TOK_CONTINUE:   return "continue ";
+        case TOK_IMPORT:     return "import ";
+        case TOK_MATCH:      return "match ";
+        case TOK_CASE:       return "case ";
+        case TOK_UNOBSERVED: return "unobserved ";
+        case TOK_LOCAL:      return "local ";
+        case TOK_PLUS:       return "+ ";
+        case TOK_MINUS:      return "- ";
+        case TOK_STAR:       return "* ";
+        case TOK_SLASH:      return "/ ";
+        case TOK_PERCENT:    return "% ";
+        case TOK_LT:         return "< ";
+        case TOK_GT:         return "> ";
+        case TOK_LE:         return "<= ";
+        case TOK_GE:         return ">= ";
+        case TOK_EQ:         return "== ";
+        case TOK_NE:         return "!= ";
+        case TOK_ASSIGN:     return "= ";
+        case TOK_LPAREN:     return "(";
+        case TOK_RPAREN:     return ") ";
+        case TOK_LBRACKET:   return "[";
+        case TOK_RBRACKET:   return "] ";
+        case TOK_COMMA:      return ", ";
+        case TOK_COLON:      return ": ";
+        case TOK_DOT:        return ".";
+        case TOK_LBRACE:     return "{";
+        case TOK_RBRACE:     return "} ";
+        case TOK_PIPE:       return "|> ";
+        case TOK_ARROW:      return "=> ";
+        case TOK_AMP:        return "& ";
+        case TOK_BITOR:      return "| ";
+        case TOK_CARET:      return "^ ";
+        case TOK_SHL:        return "<< ";
+        case TOK_SHR:        return ">> ";
+        case TOK_TILDE:      return "~ ";
+        case TOK_PLUS_EQ:    return "+= ";
+        case TOK_MINUS_EQ:   return "-= ";
+        case TOK_STAR_EQ:    return "*= ";
+        case TOK_SLASH_EQ:   return "/= ";
+        case TOK_PERCENT_EQ: return "%= ";
+        case TOK_AMP_EQ:     return "&= ";
+        case TOK_BITOR_EQ:   return "|= ";
+        case TOK_CARET_EQ:   return "^= ";
+        case TOK_SHL_EQ:     return "<<= ";
+        case TOK_SHR_EQ:     return ">>= ";
+        case TOK_NEWLINE:    return "";
+        case TOK_INDENT:     return "";
+        case TOK_DEDENT:     return "";
+        case TOK_EOF:        return "";
+    }
+    return "";
+}
+
 TokenList tokenize(const char *source) {
     TokenList tl;
     tl.capacity = MAX_TOKENS;

@@ -398,6 +398,16 @@ extern int g_compile_module_slots;
 
 TokenList tokenize(const char *source);
 void free_tokenlist(TokenList *tl);
+
+/* Number of distinct TokType values; equals the size of the base-token
+ * vocabulary used by build_corpus. Identifier slot IDs start at this value. */
+int tok_base_string_id_count(void);
+
+/* Placeholder text for each base TokType, used by the corpus detokenizer.
+ * Returned strings are static literals. Structural tokens
+ * (NEWLINE/INDENT/DEDENT/EOF) return "" — the detokenizer is expected to
+ * special-case those IDs (see structural_ids in the vocab JSON). */
+const char* tok_base_string(TokType t);
 ASTNode* parse(TokenList *tl);
 ASTNode* clone_ast(ASTNode *node);
 ASTNode** clone_ast_array(ASTNode **nodes, int count);
