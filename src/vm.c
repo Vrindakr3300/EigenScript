@@ -1239,6 +1239,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     CASE(JUMP_BACK): {
         uint16_t offset = read_u16(ip); ip += 2;
         ip -= offset;
+        /* Hotness signal: this is the back-edge of every while/for body.
+         * Tracking iterations here lets jit_try_compile_chunk gate on
+         * "chunk that loops a lot" in addition to "chunk that's called
+         * a lot." Wraparound is benign — at threshold-trip granularity
+         * the chunk gets JIT'd either way. */
+        chunk->back_edge_count++;
         DISPATCH();
     }
 

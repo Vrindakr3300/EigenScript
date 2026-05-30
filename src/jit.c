@@ -1113,12 +1113,42 @@ static uint8_t *emit_conditional_decref_rsi(uint8_t *w, int *bail) {
 }
 #endif
 
-/* Tiered-JIT hotness threshold. Chunks with fewer than this many frame
- * entries stay interpreted; only chunks that prove hot earn a native
- * thunk. Pays for the helper-call prologue overhead on cold chunks (a
- * neutral-or-negative trade per Stage 4l+4m measurements) without
- * starving the hot-path chunks that dominate frame entries. */
-#define EIGS_JIT_HOTNESS_THRESHOLD 50
+/* Tiered-JIT hotness thresholds. A chunk qualifies for native code when
+ * EITHER signal trips:
+ *   - exec_count ≥ ENTRY_THRESHOLD: the chunk is called frequently
+ *     (small worker called in a loop pattern). The original gate.
+ *   - back_edge_count ≥ ITER_THRESHOLD: the chunk loops heavily internally
+ *     even if called only a handful of times. Catches the "one big
+ *     function with hot inner loops" shape (common in gauntlet, DMG,
+ *     iLambdaAi training step) where the entry-count gate alone leaves
+ *     hot work interpreted indefinitely.
+ *
+ * Caveat: jit_try_compile_chunk only runs at frame-entry sites (OP_CALL
+ * and OP_DISPATCH). A back-edge-rich chunk that's never called again
+ * after the iterations complete will still miss JIT — true OSR is the
+ * fix for that, deferred. The current change unblocks chunks called ≥2
+ * times where the first call did substantial loop work.
+ *
+ * Both thresholds can be overridden at runtime via EIGS_JIT_ENTRY_THRESHOLD
+ * / EIGS_JIT_ITER_THRESHOLD for tuning without rebuilds. */
+#define EIGS_JIT_ENTRY_THRESHOLD 50
+#define EIGS_JIT_ITER_THRESHOLD  500
+
+static int g_entry_threshold = -1;
+static int g_iter_threshold  = -1;
+
+static void load_thresholds(void) {
+    if (g_entry_threshold < 0) {
+        const char *e = getenv("EIGS_JIT_ENTRY_THRESHOLD");
+        g_entry_threshold = e ? atoi(e) : EIGS_JIT_ENTRY_THRESHOLD;
+        if (g_entry_threshold < 1) g_entry_threshold = 1;
+    }
+    if (g_iter_threshold < 0) {
+        const char *e = getenv("EIGS_JIT_ITER_THRESHOLD");
+        g_iter_threshold = e ? atoi(e) : EIGS_JIT_ITER_THRESHOLD;
+        if (g_iter_threshold < 1) g_iter_threshold = 1;
+    }
+}
 
 void jit_try_compile_chunk(struct EigsChunk *chunk) {
     if (!chunk) return;
@@ -1131,7 +1161,9 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
         return;
     }
     jit_register_chunk(chunk);
-    if (chunk->exec_count < EIGS_JIT_HOTNESS_THRESHOLD) return;
+    load_thresholds();
+    if (chunk->exec_count   < (uint64_t)g_entry_threshold &&
+        chunk->back_edge_count < (uint32_t)g_iter_threshold) return;
     g_jit_scanned_chunks++;
 #if !defined(__x86_64__)
     chunk->jit_state = 1;

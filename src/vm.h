@@ -195,6 +195,16 @@ typedef struct EigsChunk {
      * paths). Dumped at shutdown when EIGS_JIT_HOT=1 so we can correlate
      * chunk hotness with jit_state and the stop-opcode histogram. */
     uint64_t exec_count;
+
+    /* Hotness: incremented on every interpreter back-edge (OP_JUMP_BACK)
+     * while this chunk is the current frame's chunk. Captures internal
+     * loop iterations so chunks that are *called* infrequently but
+     * *iterate* heavily can still earn a JIT thunk (e.g. one-shot
+     * top-level chunk or a worker function called <50× with hot inner
+     * loops). u32 saturates at ~4.3B back-edges; on overflow the gate
+     * still trips correctly because exec_count or saturation crosses
+     * the threshold long before. */
+    uint32_t back_edge_count;
 } EigsChunk;
 
 /* ---- Call Frame ---- */
