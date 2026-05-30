@@ -331,7 +331,6 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
                                 uint8_t *stop_op, int *stop_offset) {
     int i = entry_offset, ops = 0, non_line_ops = 0;
     int last_good = entry_offset;
-    int last_push_immediate = 0;
     *needs_env_cache = 0;
     *has_bail_op = 0;
     *stop_op = OP_COUNT;   /* sentinel: ran off the end with no break */
@@ -340,7 +339,6 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
         uint8_t op = chunk->code[i];
         if (op == OP_NULL || op == OP_NUM_ZERO || op == OP_NUM_ONE) {
             i += 1; ops++; non_line_ops++;
-            last_push_immediate = 1;
         } else if (op == OP_CONST) {
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             uint16_t idx = (uint16_t)(chunk->code[i + 1] |
@@ -349,12 +347,10 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             Value *v = chunk->constants[idx];
             if (!v) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
-            last_push_immediate = (v->type == VAL_NUM && v->obs_age == 0);
         } else if (op == OP_GET_LOCAL) {
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             *needs_env_cache = 1;
-            last_push_immediate = 0;
         } else if (op == OP_GET_NAME) {
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             uint16_t idx = (uint16_t)(chunk->code[i + 1] |
@@ -370,7 +366,6 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             *has_bail_op = 1;
             /* Result could be any slot type (whatever the binding holds).
              * Subsequent OP_POP cannot use the immediate peephole. */
-            last_push_immediate = 0;
         } else if (op == OP_LOCAL_IDX_GET) {
             /* 5-byte op: [op][slot:16][idx:16]. Helper handles VAL_BUFFER/
              * VAL_LIST/VAL_STR dispatch; on error it pushes null and
@@ -378,7 +373,6 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
              * once execution resumes after the JIT thunk. */
             if (i + 5 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 5; ops++; non_line_ops++;
-            last_push_immediate = 0;
         } else if (op == OP_LOCAL_DOT_GET) {
             /* Stage 4m: 5-byte op [op][slot:16][name_idx:16]. Helper needs
              * chunk pointer for const_interns/const_hashes lookup — same
@@ -391,18 +385,14 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             }
             i += 5; ops++; non_line_ops++;
             *has_bail_op = 1;
-            last_push_immediate = 0;
         } else if (op == OP_SET_LOCAL) {
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             *needs_env_cache = 1;
-            last_push_immediate = 0;
         } else if (op == OP_DUP) {
             i += 1; ops++; non_line_ops++;
-            last_push_immediate = 0;
         } else if (op == OP_DUP2) {
             i += 1; ops++; non_line_ops++;
-            last_push_immediate = 0;
         } else if (op == OP_ADD || op == OP_SUB ||
                    op == OP_MUL || op == OP_DIV ||
                    op == OP_MOD) {
@@ -410,25 +400,21 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             *has_bail_op = 1;
             /* Result type at runtime is num (when not bailed), so
              * subsequent OP_POP is still a no-op-decref. */
-            last_push_immediate = 1;
         } else if (op == OP_EQ || op == OP_NE || op == OP_LT ||
                    op == OP_GT || op == OP_LE || op == OP_GE) {
             i += 1; ops++; non_line_ops++;
             *has_bail_op = 1;
             /* Result is bit-exact 0.0 or 1.0 (an immediate-num), so
              * OP_POP after a comparison remains a no-op peephole. */
-            last_push_immediate = 1;
         } else if (op == OP_BAND || op == OP_BOR || op == OP_BXOR ||
                    op == OP_SHL || op == OP_SHR) {
             i += 1; ops++; non_line_ops++;
             *has_bail_op = 1;
             /* Result is a double (whole-number-valued), so a subsequent
              * OP_POP stays a no-op peephole. */
-            last_push_immediate = 1;
         } else if (op == OP_NEG || op == OP_NOT || op == OP_BNOT) {
             i += 1; ops++; non_line_ops++;
             *has_bail_op = 1;
-            last_push_immediate = 1;
         } else if (op == OP_JUMP || op == OP_JUMP_BACK) {
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
@@ -437,20 +423,17 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             *has_bail_op = 1;
             /* Stack TOS at the jump target is whatever the predecessor
              * left — opaque to this scanner. */
-            last_push_immediate = 0;
         } else if (op == OP_JUMP_IF_FALSE || op == OP_JUMP_IF_TRUE) {
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             *has_bail_op = 1;
             /* TOS was popped — new TOS is unknown to us. */
-            last_push_immediate = 0;
         } else if (op == OP_JUMP_IF_FALSE_PEEK || op == OP_JUMP_IF_TRUE_PEEK) {
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             *has_bail_op = 1;
             /* Type-check at runtime proved TOS is immediate-num — so a
              * subsequent OP_POP can use the peephole `dec ecx`. */
-            last_push_immediate = 1;
         } else if (op == OP_ITER_NEXT) {
             /* Stage 4q-a: 3-byte op [op][exit_offset:16]. Helper does the
              * iter step against g_vm.stack[sp-1] and returns 1 (exhausted)
@@ -463,11 +446,12 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             *has_bail_op = 1;
-            last_push_immediate = 0;
         } else if (op == OP_POP) {
-            if (!last_push_immediate) { *stop_op = op; *stop_offset = i; break; }
+            /* Always supported — emitter picks the path via its local
+             * `last_imm` tracker (peephole `dec %ecx` when the prior
+             * push was an immediate, else load + conditional decref).
+             * Neither path bails, so no has_bail_op tax. */
             i += 1; ops++; non_line_ops++;
-            last_push_immediate = 0;
         } else if (op == OP_OBSERVE_ASSIGN) {
             /* Stage 4o: 3-byte op [op][name_idx:16]. Helper needs
              * chunk->const_interns (const_hashes may be NULL — helper
@@ -483,14 +467,12 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             }
             i += 3; ops++; non_line_ops++;
             *has_bail_op = 1;
-            last_push_immediate = 0;
         } else if (op == OP_OBSERVE_ASSIGN_LOCAL) {
             /* Stage 4o: 3-byte op [op][slot:16]. Helper reads prior
              * value directly from frame->fn_env->values[slot] — no
              * chunk pointer needed, so no has_bail_op tax. */
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
-            last_push_immediate = 0;
         } else if (op == OP_LINE) {
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++;
@@ -1378,8 +1360,15 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
 
     /* Body: inline native code per opcode. */
     int i = entry_offset;
+    /* Emit-time mirror of the scanner's last_push_immediate tracker.
+     * Required for OP_POP, which has two emission paths:
+     *   - imm=1: `dec %ecx` peephole (slot_decref of immediate is no-op)
+     *   - imm=0: load+dec+conditional_decref_rsi
+     * Must transition the same way the scanner does — see jit_supported_prefix. */
+    int last_imm = 0;
     while (i < prefix) {
         uint8_t op = chunk->code[i];
+        int op_start = i;  /* saved for post-iteration last_imm update */
         /* Record the native entry point for this bytecode byte so that
          * later intra-prefix jumps can target it. We capture this BEFORE
          * emitting the op; backward JUMP_BACK to byte 0 thus lands at
@@ -1955,9 +1944,32 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             patch_rel32(skip_patch, w);
             i += 3;
         } else if (op == OP_POP) {
-            /* Peephole: prior op pushed an immediate, whose slot_decref
-             * is a no-op. Just dec the cached sp. */
-            w = emit_dec_ecx(w);
+            if (last_imm) {
+                /* Peephole: prior op pushed an immediate, whose slot_decref
+                 * is a no-op. Just dec the cached sp. */
+                w = emit_dec_ecx(w);
+            } else {
+                /* Non-immediate TOS — slot may hold a heap/tracked Value
+                 * whose refcount must be decremented (and freed at zero).
+                 *
+                 * Sequence:
+                 *   mov  stack[sp-1], %rax
+                 *   mov  %rax, %rsi          ; conditional_decref reads %rsi
+                 *   dec  %ecx                ; pop (sp-- in cache)
+                 *   emit_conditional_decref_rsi
+                 *
+                 * The decref helper does its own %rcx preservation
+                 * around the free_value call, so the %ecx-cache survives
+                 * the call without further setup. */
+                w = emit_load_stack_to_rax(w, g_layout.off_stack - 8);
+                w = emit_mov_rax_rsi(w);
+                w = emit_dec_ecx(w);
+                int bail = 0;
+                w = emit_conditional_decref_rsi(w, &bail);
+                if (bail) {
+                    JIT_BAIL_AND_RETURN();
+                }
+            }
             i += 1;
         } else { /* OP_LINE */
             uint16_t line = (uint16_t)(chunk->code[i + 1] |
@@ -1965,6 +1977,31 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             w = emit_movl_imm_at_disp32_rbx(w, g_layout.off_current_line,
                                             (int32_t)line);
             i += 3;
+        }
+        /* Update last_imm in lockstep with the scanner's last_push_immediate.
+         * Consumed by OP_POP to decide between the `dec %ecx` peephole and
+         * the load+conditional_decref path. Any new op added to the scanner
+         * must also be handled here. */
+        switch (op) {
+        case OP_NULL: case OP_NUM_ZERO: case OP_NUM_ONE:
+        case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_MOD:
+        case OP_EQ: case OP_NE: case OP_LT: case OP_GT: case OP_LE: case OP_GE:
+        case OP_BAND: case OP_BOR: case OP_BXOR: case OP_SHL: case OP_SHR:
+        case OP_NEG: case OP_NOT: case OP_BNOT:
+        case OP_JUMP_IF_FALSE_PEEK: case OP_JUMP_IF_TRUE_PEEK:
+            last_imm = 1; break;
+        case OP_CONST: {
+            uint16_t idx = (uint16_t)(chunk->code[op_start + 1] |
+                                      ((uint16_t)chunk->code[op_start + 2] << 8));
+            Value *v = chunk->constants[idx];
+            last_imm = (v && v->type == VAL_NUM && v->obs_age == 0);
+            break;
+        }
+        case OP_LINE:
+            /* Pass-through — line markers don't touch the stack. */
+            break;
+        default:
+            last_imm = 0; break;
         }
         /* Update the advance tracker: if the next op bails, the caller
          * will resume at bytecode offset `i` (just past the op we just
