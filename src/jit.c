@@ -211,26 +211,33 @@ void jit_module_shutdown(void) {
                     top, g_chunks_count);
             fprintf(stderr, "total chunk entries: %" PRIu64 "\n", total_exec);
             fprintf(stderr,
-                "%-28s %12s  %3s  %6s  %5s %5s %6s  %s\n",
-                "chunk", "exec", "jit", "pct", "adv", "len", "nat%", "stop");
+                "%-28s %12s  %3s  %6s  %5s %5s %6s  %4s  %3s %5s %5s  %s\n",
+                "chunk", "exec", "jit", "pct", "adv", "len", "nat%", "bked",
+                "osr", "oadv", "oent", "stop");
             for (int a = 0; a < top; a++) {
                 struct EigsChunk *c = g_chunks[order[a]];
                 if (c->exec_count == 0) break;
                 const char *jstate =
                     c->jit_state == 2 ? "yes" :
                     c->jit_state == 1 ? "no " : "?  ";
+                const char *ostate =
+                    c->jit_osr_state == 2 ? "yes" :
+                    c->jit_osr_state == 1 ? "no " : "?  ";
                 double pct = total_exec
                     ? (100.0 * (double)c->exec_count / (double)total_exec)
                     : 0.0;
                 int adv = (c->jit_state == 2) ? c->jit_advance : 0;
+                int oadv = (c->jit_osr_state == 2) ? c->jit_osr_advance : 0;
+                int oent = (c->jit_osr_state != 0) ? c->jit_osr_entry_offset : 0;
                 int len = c->code_len;
                 double nat = len ? (100.0 * (double)adv / (double)len) : 0.0;
                 const char *stop_name = (c->jit_stop_op == OP_COUNT)
                     ? "<end>" : op_name(c->jit_stop_op);
                 fprintf(stderr,
-                        "%-28s %12" PRIu64 "  %s  %5.1f%%  %5d %5d %5.1f%%  %s\n",
+                        "%-28s %12" PRIu64 "  %s  %5.1f%%  %5d %5d %5.1f%%  %4u  %s %5d %5d  %s\n",
                         c->name ? c->name : "<anon>",
-                        c->exec_count, jstate, pct, adv, len, nat, stop_name);
+                        c->exec_count, jstate, pct, adv, len, nat,
+                        c->back_edge_count, ostate, oadv, oent, stop_name);
                 bytes_native_top += c->exec_count * (uint64_t)adv;
                 bytes_total_top  += c->exec_count * (uint64_t)len;
             }
@@ -1140,9 +1147,16 @@ static uint8_t *emit_conditional_decref_rsi(uint8_t *w, int *bail) {
  * / EIGS_JIT_ITER_THRESHOLD for tuning without rebuilds. */
 #define EIGS_JIT_ENTRY_THRESHOLD 50
 #define EIGS_JIT_ITER_THRESHOLD  500
+/* OSR: trigger an OSR compile attempt once a chunk's back_edge_count
+ * crosses this. Matches the iter threshold by default — the load-bearing
+ * difference is *where* the threshold gets checked. The iter gate fires
+ * on the next chunk entry (useless for top-level / one-shot chunks),
+ * while the OSR gate fires mid-execution on the JUMP_BACK itself. */
+#define EIGS_JIT_OSR_THRESHOLD   500
 
 static int g_entry_threshold = -1;
 static int g_iter_threshold  = -1;
+static int g_osr_threshold   = -1;
 
 static void load_thresholds(void) {
     if (g_entry_threshold < 0) {
@@ -1155,6 +1169,18 @@ static void load_thresholds(void) {
         g_iter_threshold = e ? atoi(e) : EIGS_JIT_ITER_THRESHOLD;
         if (g_iter_threshold < 1) g_iter_threshold = 1;
     }
+    if (g_osr_threshold < 0) {
+        const char *e = getenv("EIGS_JIT_OSR_THRESHOLD");
+        g_osr_threshold = e ? atoi(e) : EIGS_JIT_OSR_THRESHOLD;
+        if (g_osr_threshold < 1) g_osr_threshold = 1;
+    }
+}
+
+/* Exposed so vm.c can read the OSR threshold once per thread on the
+ * first back-edge rather than getenv-checking inside the hot loop. */
+int eigs_jit_get_osr_threshold(void) {
+    load_thresholds();
+    return g_osr_threshold;
 }
 
 /* Phase 2b: the body of jit_try_compile_chunk is now this static helper,

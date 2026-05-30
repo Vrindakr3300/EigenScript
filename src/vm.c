@@ -1245,6 +1245,29 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
          * a lot." Wraparound is benign — at threshold-trip granularity
          * the chunk gets JIT'd either way. */
         chunk->back_edge_count++;
+
+        /* OSR trigger. For "called once, loops a lot" chunks (the gauntlet
+         * top-level being the motivating case) exec_count stays at 1, so
+         * the from-zero JIT gate never fires. Once back_edge_count crosses
+         * the OSR threshold we attempt a compile starting at the current
+         * loop header (the post-jump-back ip). If a thunk is ready and its
+         * recorded entry offset matches our current ip, we hand off into
+         * native: sync ip → frame->ip, run, then re-import the advance. */
+        static int s_osr_threshold = 0;
+        if (s_osr_threshold == 0) s_osr_threshold = eigs_jit_get_osr_threshold();
+        if (chunk->jit_osr_state == 0 &&
+            chunk->back_edge_count >= (uint32_t)s_osr_threshold) {
+            int target_offset = (int)(ip - chunk->code);
+            jit_try_compile_chunk_osr(chunk, target_offset);
+        }
+        if (chunk->jit_osr_state == 2 && chunk->jit_osr_code &&
+            chunk->jit_osr_entry_offset == (int)(ip - chunk->code)) {
+            frame->ip = ip;
+            ((JitChunkFn)chunk->jit_osr_code)();
+            frame->ip += chunk->jit_osr_advance;
+            ip = frame->ip;
+            current_line = g_vm.current_line;
+        }
         DISPATCH();
     }
 
