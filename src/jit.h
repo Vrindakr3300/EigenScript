@@ -134,6 +134,13 @@ void jit_helper_local_idx_get(int slot, int idx);
  * const_interns / const_hashes — same shape as jit_helper_get_name. */
 void jit_helper_local_dot_get(struct EigsChunk *chunk, int slot, int name_idx);
 
+/* Stage 4q-d: out-of-line helper for OP_LOCAL_DOT_SET. Mirrors
+ * CASE(LOCAL_DOT_SET): writes local[slot].name = TOS without popping
+ * (next OP_POP clears the stack). Helper reads g_vm.stack[sp-1] so
+ * the JIT site must sync %ecx → g_vm.sp before the call; sp is
+ * unchanged on return so no reload is required. */
+void jit_helper_local_dot_set(struct EigsChunk *chunk, int slot, int name_idx);
+
 /* Stage 4o: out-of-line helpers for OP_OBSERVE_ASSIGN /
  * OP_OBSERVE_ASSIGN_LOCAL. Both update observer history on the value
  * at g_vm.stack[sp-1] (possibly promoting an immediate-num). They do

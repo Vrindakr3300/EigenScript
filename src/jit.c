@@ -385,6 +385,21 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             }
             i += 5; ops++; non_line_ops++;
             *has_bail_op = 1;
+        } else if (op == OP_LOCAL_DOT_SET) {
+            /* Stage 4q-d: 5-byte op [op][slot:16][name_idx:16]. Mirror of
+             * LOCAL_DOT_GET on the write side. Helper writes
+             * local[slot].name = TOS without popping; TOS slot type is
+             * unchanged from the perspective of subsequent ops (the next
+             * OP_POP clears it). has_bail_op=1 for the runtime_error path
+             * on non-dict target. */
+            if (i + 5 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
+            uint16_t name_idx = (uint16_t)(chunk->code[i + 3] |
+                                           ((uint16_t)chunk->code[i + 4] << 8));
+            if (!chunk->const_interns || name_idx >= chunk->const_count) {
+                *stop_op = op; *stop_offset = i; break;
+            }
+            i += 5; ops++; non_line_ops++;
+            *has_bail_op = 1;
         } else if (op == OP_SET_LOCAL) {
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
@@ -1491,6 +1506,28 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             w = emit_mov_imm32_edx(w, (uint32_t)name_idx);
             w = emit_push_rcx(w);
             w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_local_dot_get);
+            w = emit_call_rax(w);
+            w = emit_pop_rcx(w);
+            w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
+            i += 5;
+        } else if (op == OP_LOCAL_DOT_SET) {
+            /* Stage 4q-d: out-of-line call to
+             *   jit_helper_local_dot_set(chunk, slot, name_idx).
+             * Mirrors LOCAL_DOT_GET wire-up: chunk via %r14, slot in
+             * %esi, name_idx in %edx. Helper reads g_vm.stack[sp-1] —
+             * sync %ecx → g_vm.sp before call. sp is unchanged on
+             * return; reload %ecx for safety (matches existing pattern,
+             * keeps the cache in sync if helper internals ever change). */
+            uint16_t slot = (uint16_t)(chunk->code[i + 1] |
+                                       ((uint16_t)chunk->code[i + 2] << 8));
+            uint16_t name_idx = (uint16_t)(chunk->code[i + 3] |
+                                           ((uint16_t)chunk->code[i + 4] << 8));
+            w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+            w = emit_mov_r14_rdi(w);
+            w = emit_mov_imm32_esi(w, (uint32_t)slot);
+            w = emit_mov_imm32_edx(w, (uint32_t)name_idx);
+            w = emit_push_rcx(w);
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_local_dot_set);
             w = emit_call_rax(w);
             w = emit_pop_rcx(w);
             w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);

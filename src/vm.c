@@ -489,6 +489,42 @@ void jit_helper_local_dot_get(EigsChunk *chunk, int slot, int name_idx) {
     vm_push_slot(slot_null());
 }
 
+/* JIT Stage 4q-d: out-of-line helper for OP_LOCAL_DOT_SET.
+ *
+ * Mirrors CASE(LOCAL_DOT_SET): local[slot].name = TOS, with TOS
+ * remaining on the stack (the next OP_POP clears it). The immediate-
+ * num fast path uses dict_set_cached_immediate to skip materialization.
+ *
+ * Helper reads g_vm.stack[g_vm.sp - 1] but does NOT change sp — the
+ * JIT emitter must sync %ecx → g_vm.sp before the call but does not
+ * need to reload after. */
+void jit_helper_local_dot_set(EigsChunk *chunk, int slot, int name_idx) {
+    CallFrame *frame = &g_vm.frames[g_vm.frame_count - 1];
+    Env *e = frame->fn_env;
+    Value *target = vm_local_lift(e, (uint16_t)slot);
+    if (target && target->type == VAL_DICT) {
+        const char *key = chunk->const_interns[name_idx];
+        uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
+        if (h == 0) {
+            h = env_hash_name(key);
+            if (chunk->const_hashes) chunk->const_hashes[name_idx] = h;
+        }
+        EigsSlot tos = g_vm.stack[g_vm.sp - 1];
+        if (slot_is_num(tos) &&
+            dict_set_cached_immediate(target, key, h, tos.d)) {
+            return;
+        }
+        Value *val = vm_slot_lift(g_vm.sp - 1);
+        dict_set_cached(target, key, h, val);
+        return;
+    }
+    if (target && target->type != VAL_NULL) {
+        const char *key = chunk->const_interns[name_idx];
+        runtime_error(g_vm.current_line, "cannot set field '%s' on %s",
+            key, val_type_name(target->type));
+    }
+}
+
 /* JIT Stage 4o: out-of-line helpers for OP_OBSERVE_ASSIGN /
  * OP_OBSERVE_ASSIGN_LOCAL. Both mirror their CASE bodies below: read
  * (and possibly promote) g_vm.stack[g_vm.sp - 1], wire observer history
