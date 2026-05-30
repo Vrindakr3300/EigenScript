@@ -1157,36 +1157,32 @@ static void load_thresholds(void) {
     }
 }
 
-void jit_try_compile_chunk(struct EigsChunk *chunk) {
-    if (!chunk) return;
-    if (chunk->jit_state != 0) return;
-    /* EIGS_JIT_OFF: hard-disable native compilation. Useful for bisecting
-     * suspected JIT bugs against the interpreter. */
-    if (getenv("EIGS_JIT_OFF")) {
-        chunk->jit_state = 1;
-        chunk->jit_code = NULL;
-        return;
-    }
-    jit_register_chunk(chunk);
-    load_thresholds();
-    if (chunk->exec_count   < (uint64_t)g_entry_threshold &&
-        chunk->back_edge_count < (uint32_t)g_iter_threshold) return;
+/* Phase 2b: the body of jit_try_compile_chunk is now this static helper,
+ * parameterized on entry_offset and on output pointers for the
+ * state/code/advance/stop_op slots so the same emitter can drive both
+ * the from-zero thunk (chunk->jit_*) and the OSR thunk (chunk->jit_osr_*).
+ *
+ * The emitted native code itself stores r13d (the advance writeback) at
+ * `advance_field_offset` bytes from &chunk via %r14 — the from-zero call
+ * passes offsetof(EigsChunk, jit_advance); the OSR call passes
+ * offsetof(EigsChunk, jit_osr_advance). All gating and idempotency
+ * (state check, EIGS_JIT_OFF, threshold) live in the public wrappers. */
+static void jit_compile_to_thunk(struct EigsChunk *chunk,
+                                 int entry_offset,
+                                 int advance_field_offset,
+                                 uint8_t *out_state,
+                                 void **out_code,
+                                 int *out_advance,
+                                 uint8_t *out_stop_op) {
     g_jit_scanned_chunks++;
 #if !defined(__x86_64__)
-    chunk->jit_state = 1;
-    chunk->jit_code = NULL;
+    (void)entry_offset; (void)advance_field_offset; (void)out_advance;
+    (void)out_stop_op;
+    *out_state = 1;
+    *out_code = NULL;
     return;
 #else
     ensure_layout();
-
-    /* Phase 1 of OSR refactor: parameterize the scanner and emitter on
-     * `entry_offset` — the bytecode offset at which the thunk begins
-     * execution. The from-zero entry point hardcodes 0 here; the future
-     * OSR entry point (jit_try_compile_chunk_osr) will pass a non-zero
-     * loop-header offset. With entry_offset == 0 the compiler folds all
-     * `(x - entry_offset)` arithmetic to `x`, leaving emitted bytes
-     * byte-identical to the pre-refactor thunk. */
-    const int entry_offset = 0;
 
     int needs_env_cache = 0;
     int has_bail_op = 0;
@@ -1195,7 +1191,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
     int prefix = jit_supported_prefix(chunk, entry_offset,
                                       &needs_env_cache, &has_bail_op,
                                       &stop_op, &stop_offset);
-    chunk->jit_stop_op = stop_op;
+    *out_stop_op = stop_op;
     /* Every scanned chunk contributes one stop_op tally, whether it
      * ultimately compiles or not. Compiled chunks also bump
      * g_jit_compiled_count, so total_stops - compiled = bailouts. */
@@ -1207,32 +1203,37 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
                 chunk->name ? chunk->name : "<anon>",
                 op_name(stop_op), stop_offset);
     }
-    if (prefix == 0) {
+    /* "Didn't compile any ops" sentinel. For the from-zero call this
+     * matches `prefix == 0`; for OSR (entry_offset > 0) the scanner
+     * returns 0 only when it couldn't make progress past entry_offset
+     * either, so the check is identical. */
+    if (prefix == 0 || prefix <= entry_offset) {
         g_jit_stop_at_zero++;
-        chunk->jit_state = 1;
-        chunk->jit_code = NULL;
+        *out_state = 1;
+        *out_code = NULL;
         return;
     }
 
     if (!g_jit_cache) {
         g_jit_cache = jit_cache_new(256); /* 256 pages = 1 MB */
         if (!g_jit_cache) {
-            chunk->jit_state = 1;
-            chunk->jit_code = NULL;
+            *out_state = 1;
+            *out_code = NULL;
             return;
         }
     }
     if (jit_cache_unseal(g_jit_cache) != 0) {
-        chunk->jit_state = 1;
-        chunk->jit_code = NULL;
+        *out_state = 1;
+        *out_code = NULL;
         return;
     }
 
-    size_t size = jit_estimate_size(prefix, needs_env_cache, has_bail_op);
+    size_t size = jit_estimate_size(prefix - entry_offset, needs_env_cache,
+                                    has_bail_op);
     uint8_t *code = jit_cache_alloc(g_jit_cache, size);
     if (!code) {
-        chunk->jit_state = 1;
-        chunk->jit_code = NULL;
+        *out_state = 1;
+        *out_code = NULL;
         jit_cache_seal(g_jit_cache);
         return;
     }
@@ -1261,13 +1262,16 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
      * One entry per intra-prefix jump op. 256 is sufficient: each jump
      * is at least 3 bytecode bytes, so a 256-op prefix caps out before
      * we run out of slots. */
+    /* Allocated `prefix` long (absolute indexing). For OSR the
+     * [0, entry_offset) entries are never written or read but the
+     * over-allocation is small (a few hundred bytes typical). */
     int *byte_to_native = NULL;
     struct { int target; uint8_t *patch; } pending[256];
     int pending_count = 0;
     if (prefix > 0) {
         byte_to_native = malloc((size_t)prefix * sizeof(int));
         if (!byte_to_native) {
-            chunk->jit_state = 1; chunk->jit_code = NULL;
+            *out_state = 1; *out_code = NULL;
             jit_cache_seal(g_jit_cache); return;
         }
         for (int k = 0; k < prefix; k++) byte_to_native[k] = -1;
@@ -1276,7 +1280,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
      * stays in one place. */
     #define JIT_BAIL_AND_RETURN() do { \
         free(byte_to_native); \
-        chunk->jit_state = 1; chunk->jit_code = NULL; \
+        *out_state = 1; *out_code = NULL; \
         jit_cache_seal(g_jit_cache); return; \
     } while (0)
 
@@ -1383,10 +1387,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             int bail = 0;
             w = emit_conditional_incref_rax(w, &bail);
             if (bail) {
-                chunk->jit_state = 1;
-                chunk->jit_code = NULL;
-                jit_cache_seal(g_jit_cache);
-                return;
+                JIT_BAIL_AND_RETURN();
             }
             w = emit_store_rax_at_stack(w, g_layout.off_stack);
             w = emit_inc_ecx(w);
@@ -1487,10 +1488,7 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
             int bail = 0;
             w = emit_conditional_incref_rax(w, &bail);
             if (bail) {
-                chunk->jit_state = 1;
-                chunk->jit_code = NULL;
-                jit_cache_seal(g_jit_cache);
-                return;
+                JIT_BAIL_AND_RETURN();
             }
             w = emit_store_rax_at_stack(w, g_layout.off_stack);
             w = emit_inc_ecx(w);
@@ -1891,8 +1889,10 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
      *   4. pop %r12, %rbx, ret. */
     uint8_t *epilogue_start = w;
     if (has_bail_op) {
-        w = emit_mov_r13d_to_disp32_r14(
-                w, (int32_t)offsetof(struct EigsChunk, jit_advance));
+        /* For the from-zero thunk this writes chunk->jit_advance; for the
+         * OSR thunk it writes chunk->jit_osr_advance. Caller passes the
+         * correct offset via advance_field_offset. */
+        w = emit_mov_r13d_to_disp32_r14(w, (int32_t)advance_field_offset);
     }
     w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
     if (has_bail_op) {
@@ -1927,32 +1927,32 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
     if ((size_t)(w - code) > size) {
         /* Catastrophic — we wrote past `used`. Abandon. */
         free(byte_to_native);
-        chunk->jit_state = 1;
-        chunk->jit_code = NULL;
+        *out_state = 1;
+        *out_code = NULL;
         jit_cache_seal(g_jit_cache);
         return;
     }
 
     if (jit_cache_seal(g_jit_cache) != 0) {
         free(byte_to_native);
-        chunk->jit_state = 1;
-        chunk->jit_code = NULL;
+        *out_state = 1;
+        *out_code = NULL;
         return;
     }
 
     free(byte_to_native);
-    chunk->jit_state = 2;
-    chunk->jit_code = code;
+    *out_state = 2;
+    *out_code = code;
     /* Default advance — number of bytes to advance frame->ip from its
      * entry position (entry_offset) if the thunk runs to completion
      * without writing r13d. For entry_offset == 0 this is just `prefix`. */
-    chunk->jit_advance = prefix - entry_offset;
+    *out_advance = prefix - entry_offset;
     g_jit_compiled_chunks++;
     g_jit_compiled_count++;
     if (getenv("EIGS_JIT_DEBUG")) {
-        fprintf(stderr, "[jit] compiled %s: prefix=%d bytes (",
-                chunk->name ? chunk->name : "?", prefix);
-        for (int j = 0; j < prefix; j++)
+        fprintf(stderr, "[jit] compiled %s: entry=%d prefix=%d bytes (",
+                chunk->name ? chunk->name : "?", entry_offset, prefix);
+        for (int j = entry_offset; j < prefix; j++)
             fprintf(stderr, " %02x", chunk->code[j]);
         fprintf(stderr, " ) -> %zu bytes native\n", (size_t)(w - code));
         if (getenv("EIGS_JIT_DUMP_NATIVE")) {
@@ -1967,16 +1967,53 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
 #endif
 }
 
-/* Phase 2a stub. The real implementation lands in Phase 2b once the
- * core compile body has been factored into a helper that takes
- * entry_offset + output pointers for the state/code/advance slots.
- * Until then, mark the OSR slot as "tried and unsupported" so the
- * caller doesn't retry on every loop back-edge. The from-zero JIT
- * slot is untouched. */
+/* Public from-zero entry: gating + delegation to the compile helper.
+ * Writes results into chunk->jit_{state,code,advance,stop_op}; the
+ * native thunk's r13d epilogue stores its advance writeback at
+ * offsetof(EigsChunk, jit_advance). */
+void jit_try_compile_chunk(struct EigsChunk *chunk) {
+    if (!chunk) return;
+    if (chunk->jit_state != 0) return;
+    /* EIGS_JIT_OFF: hard-disable native compilation. Useful for bisecting
+     * suspected JIT bugs against the interpreter. */
+    if (getenv("EIGS_JIT_OFF")) {
+        chunk->jit_state = 1;
+        chunk->jit_code = NULL;
+        return;
+    }
+    jit_register_chunk(chunk);
+    load_thresholds();
+    if (chunk->exec_count   < (uint64_t)g_entry_threshold &&
+        chunk->back_edge_count < (uint32_t)g_iter_threshold) return;
+    jit_compile_to_thunk(chunk, 0,
+                         (int)offsetof(struct EigsChunk, jit_advance),
+                         &chunk->jit_state, &chunk->jit_code,
+                         &chunk->jit_advance, &chunk->jit_stop_op);
+}
+
+/* Public OSR entry: caller has already decided (via back-edge hotness
+ * accounting or similar) that this chunk should get a native thunk
+ * starting at `entry_offset`. We skip the exec_count/back_edge gating
+ * here — the caller's gate is what's load-bearing. We do honor a
+ * dedicated EIGS_JIT_OSR_OFF for bisection, plus the global JIT_OFF.
+ * Writes results into chunk->jit_osr_*. */
 void jit_try_compile_chunk_osr(struct EigsChunk *chunk, int entry_offset) {
-    (void)entry_offset;
     if (!chunk) return;
     if (chunk->jit_osr_state != 0) return;
-    chunk->jit_osr_state = 1;
-    chunk->jit_osr_code = NULL;
+    if (entry_offset < 0 || entry_offset >= chunk->code_len) {
+        chunk->jit_osr_state = 1;
+        chunk->jit_osr_code = NULL;
+        return;
+    }
+    if (getenv("EIGS_JIT_OFF") || getenv("EIGS_JIT_OSR_OFF")) {
+        chunk->jit_osr_state = 1;
+        chunk->jit_osr_code = NULL;
+        return;
+    }
+    jit_register_chunk(chunk);
+    chunk->jit_osr_entry_offset = entry_offset;
+    jit_compile_to_thunk(chunk, entry_offset,
+                         (int)offsetof(struct EigsChunk, jit_osr_advance),
+                         &chunk->jit_osr_state, &chunk->jit_osr_code,
+                         &chunk->jit_osr_advance, &chunk->jit_osr_stop_op);
 }
