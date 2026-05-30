@@ -208,6 +208,10 @@ typedef struct {
     /* Try handler stack (supports nested try/catch within a frame) */
     struct { uint8_t *catch_ip; int catch_bp; } try_handlers[8];
     int        try_count;       /* number of active try handlers */
+    /* Saved loop-stall globals (so a callee's loops don't inherit caller's
+     * accumulated stall count / iteration count). Scoped per call frame. */
+    int        saved_stall_count;
+    int        saved_loop_iter;
 } CallFrame;
 
 /* ---- VM State ---- */

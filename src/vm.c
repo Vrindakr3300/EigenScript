@@ -525,6 +525,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     frame->owns_env = 0;
     frame->is_try = 0;
     frame->try_count = 0;
+    frame->saved_stall_count = g_loop_stall_count;
+    frame->saved_loop_iter   = g_loop_iterations;
     chunk->exec_count++;
     jit_register_chunk(chunk);
 
@@ -1310,6 +1312,14 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->owns_env = 1; /* OP_CALL created this env, free on return */
             frame->is_try = 0;
             frame->try_count = 0;
+            /* Scope loop-stall globals per call frame: a callee's loops must
+             * not inherit caller's accumulated stall count, or a hot helper
+             * (e.g. fmt_num's padding loop) called from a converging outer
+             * loop will exit early once the global crosses the threshold. */
+            frame->saved_stall_count = g_loop_stall_count;
+            frame->saved_loop_iter   = g_loop_iterations;
+            g_loop_stall_count = 0;
+            g_loop_iterations  = 0;
             fn_chunk->exec_count++;
 
             /* JIT hook: compile lazily, run native prefix if available.
@@ -1358,6 +1368,9 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         while (g_vm.sp > frame->bp)
             slot_decref(g_vm.stack[--g_vm.sp]);
         if (frame->owns_env) env_free(frame->env);
+        /* Restore loop-stall globals saved on entry (scoped per call frame). */
+        g_loop_stall_count = frame->saved_stall_count;
+        g_loop_iterations  = frame->saved_loop_iter;
         g_vm.frame_count--;
         if (g_vm.frame_count <= base_frame) {
             /* Return to C: transfer slot's owned ref into a Value*.
@@ -1378,6 +1391,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         while (g_vm.sp > frame->bp)
             slot_decref(g_vm.stack[--g_vm.sp]);
         if (frame->owns_env) env_free(frame->env);
+        g_loop_stall_count = frame->saved_stall_count;
+        g_loop_iterations  = frame->saved_loop_iter;
         g_vm.frame_count--;
         if (g_vm.frame_count <= base_frame) return make_null();
         frame = &g_vm.frames[g_vm.frame_count - 1];

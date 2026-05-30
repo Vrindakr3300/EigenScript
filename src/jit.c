@@ -1100,6 +1100,13 @@ static uint8_t *emit_conditional_decref_rsi(uint8_t *w, int *bail) {
 void jit_try_compile_chunk(struct EigsChunk *chunk) {
     if (!chunk) return;
     if (chunk->jit_state != 0) return;
+    /* EIGS_JIT_OFF: hard-disable native compilation. Useful for bisecting
+     * suspected JIT bugs against the interpreter. */
+    if (getenv("EIGS_JIT_OFF")) {
+        chunk->jit_state = 1;
+        chunk->jit_code = NULL;
+        return;
+    }
     jit_register_chunk(chunk);
     if (chunk->exec_count < EIGS_JIT_HOTNESS_THRESHOLD) return;
     g_jit_scanned_chunks++;
