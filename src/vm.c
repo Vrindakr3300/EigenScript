@@ -1252,7 +1252,16 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
          * the OSR threshold we attempt a compile starting at the current
          * loop header (the post-jump-back ip). If a thunk is ready and its
          * recorded entry offset matches our current ip, we hand off into
-         * native: sync ip → frame->ip, run, then re-import the advance. */
+         * native: sync ip → frame->ip, run, then re-import the advance.
+         *
+         * Phase 4: the trigger only fires when jit_osr_state == 0. After
+         * the first compile attempt the state pins to 1 (failed) or 2
+         * (success) and the gate is closed forever for this chunk — so
+         * a failed OSR cannot retry-storm on every back-edge, and a
+         * successful OSR cannot be displaced by a colder loop entry.
+         * The threshold default (5000) is set high enough that the
+         * chunk-wide back_edge_count favors the actual hot loop over
+         * any short setup loop preceding it. */
         static int s_osr_threshold = 0;
         if (s_osr_threshold == 0) s_osr_threshold = eigs_jit_get_osr_threshold();
         if (chunk->jit_osr_state == 0 &&

@@ -1148,11 +1148,20 @@ static uint8_t *emit_conditional_decref_rsi(uint8_t *w, int *bail) {
 #define EIGS_JIT_ENTRY_THRESHOLD 50
 #define EIGS_JIT_ITER_THRESHOLD  500
 /* OSR: trigger an OSR compile attempt once a chunk's back_edge_count
- * crosses this. Matches the iter threshold by default — the load-bearing
- * difference is *where* the threshold gets checked. The iter gate fires
- * on the next chunk entry (useless for top-level / one-shot chunks),
- * while the OSR gate fires mid-execution on the JUMP_BACK itself. */
-#define EIGS_JIT_OSR_THRESHOLD   500
+ * crosses this. The gate fires mid-execution on the JUMP_BACK itself
+ * (cf. the iter gate, which only fires on the *next* chunk entry —
+ * useless for top-level / one-shot chunks).
+ *
+ * Default chosen at 5000 (10x the iter gate) for "hot-loop discovery":
+ * back_edge_count is chunk-wide, so a setup loop that runs e.g. 600
+ * times then exits will not race a much hotter loop for the OSR slot —
+ * the hot loop's back-edges dominate the counter before threshold and
+ * win the entry_offset at compile time. Lower thresholds (500) were
+ * measured to lock onto small setup loops and regress vs OFF by ~7%
+ * on a setup-then-hot probe; 5000 cleanly captures the hot loop. The
+ * long-loop case (5M+ iterations) is insensitive to threshold values
+ * in [200, 5000] — savings dwarf the 4500 extra interpreted iterations. */
+#define EIGS_JIT_OSR_THRESHOLD   5000
 
 static int g_entry_threshold = -1;
 static int g_iter_threshold  = -1;
