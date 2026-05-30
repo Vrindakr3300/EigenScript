@@ -191,6 +191,30 @@ typedef struct EigsChunk {
     uint8_t  jit_stop_op;       /* opcode that stopped the JIT prefix scan,
                                  * or OP_COUNT if scan ran to end of chunk */
 
+    /* OSR — On-Stack Replacement. The from-zero JIT slot above only
+     * helps chunks that get called repeatedly (exec_count gate) or do
+     * enough loop iterations to trip back_edge_count over the iter
+     * threshold *between* calls. A "one big function called once with
+     * a hot inner loop" — e.g. gauntlet's top-level chunk — never
+     * benefits because exec_count tops out at 1.
+     *
+     * OSR fixes that: while the chunk is mid-execution and a back-edge
+     * fires for the Nth time, the JUMP_BACK handler asks the JIT for a
+     * thunk that starts at the loop header (entry_offset) instead of
+     * byte 0. The interpreter then jumps directly into native code,
+     * skipping the prologue + everything before the loop header.
+     *
+     * jit_osr_state: 0 = untried, 1 = failed/unsupported, 2 = compiled.
+     * jit_osr_entry_offset: bytecode offset the thunk begins at.
+     * jit_osr_code: callable JitChunkFn when jit_osr_state == 2.
+     * jit_osr_advance: bytes to add to frame->ip (which is at
+     *   entry_offset at handoff time) after the thunk returns. */
+    uint8_t  jit_osr_state;
+    int      jit_osr_entry_offset;
+    void    *jit_osr_code;
+    int      jit_osr_advance;
+    uint8_t  jit_osr_stop_op;
+
     /* Diagnostic: incremented on every frame entry (vm_run + both CALL
      * paths). Dumped at shutdown when EIGS_JIT_HOT=1 so we can correlate
      * chunk hotness with jit_state and the stop-opcode histogram. */

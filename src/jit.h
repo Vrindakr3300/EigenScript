@@ -73,6 +73,15 @@ typedef void (*JitChunkFn)(void);
  * immediately if jit_state != 0. */
 void jit_try_compile_chunk(struct EigsChunk *chunk);
 
+/* On-stack-replacement variant. Compiles a thunk that begins execution
+ * at `entry_offset` (typically a hot loop header) rather than chunk
+ * byte 0. Writes results into chunk->jit_osr_* (separate from the
+ * from-zero slot so both can coexist). Idempotent: subsequent calls
+ * with the same chunk return immediately if jit_osr_state != 0, even
+ * if entry_offset differs (we only support one OSR thunk per chunk).
+ * Phase 2a: declared but stubbed — the body lands in Phase 2b. */
+void jit_try_compile_chunk_osr(struct EigsChunk *chunk, int entry_offset);
+
 /* Lifetime hooks for the per-thread JIT cache. jit_module_shutdown is
  * optional (process exit reclaims pages anyway) but useful in tests. */
 void jit_module_init(void);

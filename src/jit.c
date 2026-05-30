@@ -1966,3 +1966,17 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
     }
 #endif
 }
+
+/* Phase 2a stub. The real implementation lands in Phase 2b once the
+ * core compile body has been factored into a helper that takes
+ * entry_offset + output pointers for the state/code/advance slots.
+ * Until then, mark the OSR slot as "tried and unsupported" so the
+ * caller doesn't retry on every loop back-edge. The from-zero JIT
+ * slot is untouched. */
+void jit_try_compile_chunk_osr(struct EigsChunk *chunk, int entry_offset) {
+    (void)entry_offset;
+    if (!chunk) return;
+    if (chunk->jit_osr_state != 0) return;
+    chunk->jit_osr_state = 1;
+    chunk->jit_osr_code = NULL;
+}
