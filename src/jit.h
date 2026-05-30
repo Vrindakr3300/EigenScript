@@ -150,4 +150,11 @@ void jit_helper_observe_assign_local(int slot);
  * JIT-emitted call site does the branch. */
 int jit_helper_iter_next(void);
 
+/* Stage 4q-c: out-of-line helper for OP_INDEX_GET. Mirrors
+ * CASE(INDEX_GET): pops index + target slots from g_vm.stack (sp -= 2),
+ * pushes the indexed value (or null on error, after calling
+ * runtime_error to preserve interpreter semantics). The JIT site
+ * must sync %ecx → g_vm.sp before the call and reload after. */
+void jit_helper_index_get(void);
+
 #endif /* EIGS_JIT_H */

@@ -610,6 +610,103 @@ int jit_helper_iter_next(void) {
     return 0;
 }
 
+/* Stage 4q-c: out-of-line helper for OP_INDEX_GET.
+ *
+ * Mirrors CASE(INDEX_GET) below: pops the index and target slots
+ * (both from g_vm.stack[sp-1] / sp-2), decrements g_vm.sp by 2,
+ * computes the indexed value, pushes the result (or null on error
+ * after calling runtime_error to match the interpreter's behavior).
+ *
+ * The JIT-emitted call site syncs %ecx → g_vm.sp before the call
+ * (helper reads sp), then reloads %ecx ← g_vm.sp after (helper
+ * mutates sp net -1). */
+void jit_helper_index_get(void) {
+    EigsSlot idx_s = g_vm.stack[g_vm.sp - 1];
+    EigsSlot tgt_s = g_vm.stack[g_vm.sp - 2];
+    g_vm.sp -= 2;
+    if (slot_is_num(idx_s) && slot_is_ptr(tgt_s)) {
+        Value *target = slot_as_ptr(tgt_s);
+        int i = (int)idx_s.d;
+        if (target->type == VAL_LIST) {
+            if (i >= 0 && i < target->data.list.count) {
+                Value *r = target->data.list.items[i];
+                if (r && r->type == VAL_NUM && r->obs_age == 0) {
+                    slot_decref(tgt_s);
+                    vm_push_slot(slot_from_num(r->data.num));
+                } else {
+                    val_incref(r);
+                    slot_decref(tgt_s);
+                    vm_push(r);
+                }
+            } else {
+                runtime_error(g_vm.current_line,
+                    "index %d out of range (list length %d)",
+                    i, target->data.list.count);
+                slot_decref(tgt_s);
+                vm_push_slot(slot_null());
+            }
+            return;
+        }
+        if (target->type == VAL_BUFFER) {
+            if (i >= 0 && i < target->data.buffer.count) {
+                double v = target->data.buffer.data[i];
+                slot_decref(tgt_s);
+                vm_push_slot(slot_from_num(v));
+            } else {
+                runtime_error(g_vm.current_line,
+                    "buffer index %d out of range (length %d)",
+                    i, target->data.buffer.count);
+                slot_decref(tgt_s);
+                vm_push_slot(slot_null());
+            }
+            return;
+        }
+    }
+    /* Slow path: materialize both via slot_to_value for unified handling. */
+    Value *idx = slot_to_value(idx_s);
+    slot_decref(idx_s);
+    Value *target = slot_to_value(tgt_s);
+    slot_decref(tgt_s);
+    Value *result = make_null();
+    if (target->type == VAL_LIST && idx->type == VAL_NUM) {
+        int i = (int)idx->data.num;
+        if (i >= 0 && i < target->data.list.count) {
+            result = target->data.list.items[i];
+            val_incref(result);
+        } else {
+            runtime_error(g_vm.current_line,
+                "index %d out of range (list length %d)",
+                i, target->data.list.count);
+        }
+    } else if (target->type == VAL_DICT && idx->type == VAL_STR) {
+        Value *v = dict_get(target, idx->data.str);
+        if (v) { result = v; val_incref(result); }
+    } else if (target->type == VAL_STR && idx->type == VAL_NUM) {
+        int i = (int)idx->data.num;
+        if (i >= 0 && i < (int)strlen(target->data.str)) {
+            char buf[2] = { target->data.str[i], 0 };
+            result = make_str(buf);
+        } else {
+            runtime_error(g_vm.current_line,
+                "string index %d out of range (length %d)",
+                i, (int)strlen(target->data.str));
+        }
+    } else if (target->type == VAL_BUFFER && idx->type == VAL_NUM) {
+        int i = (int)idx->data.num;
+        if (i >= 0 && i < target->data.buffer.count)
+            result = make_num(target->data.buffer.data[i]);
+        else
+            runtime_error(g_vm.current_line,
+                "buffer index %d out of range (length %d)",
+                i, target->data.buffer.count);
+    } else if (target->type != VAL_NULL) {
+        runtime_error(g_vm.current_line,
+            "cannot index %s", val_type_name(target->type));
+    }
+    val_decref(target); val_decref(idx);
+    vm_push(result);
+}
+
 void eigs_jit_get_layout(EigsJitLayout *out) {
     void *tp;
     __asm__ __volatile__("mov %%fs:0, %0" : "=r"(tp));

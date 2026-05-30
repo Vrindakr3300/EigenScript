@@ -446,6 +446,15 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             *has_bail_op = 1;
+        } else if (op == OP_INDEX_GET) {
+            /* Stage 4q-c: 1-byte op. Helper pops 2 (idx, target), pushes
+             * 1 result. Can call runtime_error on out-of-range — the
+             * dispatch loop's CHECK_ERROR picks it up after the thunk
+             * returns. has_bail_op=1 so the per-op advance writeback runs
+             * (next op resumes at i+1 if the thunk bails). Pushed value
+             * type is opaque to the scanner. */
+            i += 1; ops++; non_line_ops++;
+            *has_bail_op = 1;
         } else if (op == OP_POP) {
             /* Always supported — emitter picks the path via its local
              * `last_imm` tracker (peephole `dec %ecx` when the prior
@@ -1943,6 +1952,29 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             /* skip_taken: */
             patch_rel32(skip_patch, w);
             i += 3;
+        } else if (op == OP_INDEX_GET) {
+            /* Stage 4q-c: INDEX_GET via helper call.
+             *
+             * Helper pops 2 slots, pushes 1 (net sp -1), reads sp from
+             * g_vm.sp directly. Layout matches the ITER_NEXT call ABI:
+             *
+             *   mov %ecx -> g_vm.sp     ; sync sp cache
+             *   push %rcx                ; align (body at 8-mod-16 -> 0-mod-16)
+             *   movabs &jit_helper_index_get, %rax
+             *   call %rax
+             *   pop %rcx                 ; (junk, will be reloaded)
+             *   mov g_vm.sp -> %ecx      ; reload — helper mutated sp
+             *
+             * No return value to test — helper handles errors via
+             * runtime_error, picked up by CHECK_ERROR after the thunk
+             * returns. */
+            w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+            w = emit_push_rcx(w);
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_index_get);
+            w = emit_call_rax(w);
+            w = emit_pop_rcx(w);
+            w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
+            i += 1;
         } else if (op == OP_POP) {
             if (last_imm) {
                 /* Peephole: prior op pushed an immediate, whose slot_decref
