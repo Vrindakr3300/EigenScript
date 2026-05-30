@@ -3210,13 +3210,19 @@ Value* builtin_nearest_in_range(Value *arg) {
     double best_dx = 0, best_dy = 0;
     int n = entities->data.list.count;
 
+    /* Hoist key hashes out of the inner loop — dict_get otherwise re-FNVs
+     * the 2-6 byte key strings n times per call. */
+    uint32_t h_active = env_hash_name(active_key);
+    uint32_t h_px = env_hash_name(px_key);
+    uint32_t h_py = env_hash_name(py_key);
+
     for (int i = 0; i < n; i++) {
         Value *e = entities->data.list.items[i];
         if (!e || e->type != VAL_DICT) continue;
-        Value *av = dict_get(e, active_key);
+        Value *av = dict_get_hashed(e, active_key, h_active);
         if (av && av->type == VAL_NUM && av->data.num != 1.0) continue;
-        Value *ex = dict_get(e, px_key);
-        Value *ey = dict_get(e, py_key);
+        Value *ex = dict_get_hashed(e, px_key, h_px);
+        Value *ey = dict_get_hashed(e, py_key, h_py);
         if (!ex || !ey || ex->type != VAL_NUM || ey->type != VAL_NUM) continue;
 
         double dx = ex->data.num - px;
