@@ -717,14 +717,19 @@ static ASTNode* parse_primary(Parser *p) {
     return n;
 }
 
-static ASTNode* parse_addition(Parser *p);
+static ASTNode* parse_unary(Parser *p);
 
 static ASTNode* parse_relation(Parser *p) {
     ASTNode *left = parse_primary(p);
 
     if (p_cur(p)->type == TOK_OF) {
         p_advance(p);
-        ASTNode *right = parse_addition(p);
+        /* RHS is a single unary-or-tighter expression. This preserves
+         * `f of -x` (unary minus) and right-associative `f of g of x`
+         * (unary falls through to relation), but stops `of` from
+         * absorbing trailing infix arithmetic: `len of xs - 1` now
+         * parses as `(len of xs) - 1`, not `len of (xs - 1)`. */
+        ASTNode *right = parse_unary(p);
         ASTNode *n = make_node(AST_RELATION, p_cur(p)->line);
         n->data.relation.left = left;
         n->data.relation.right = right;

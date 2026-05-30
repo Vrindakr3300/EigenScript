@@ -52,7 +52,7 @@ define make_pair as:
     define get_a(x) as:
         return x + 1
     define get_b(x) as:
-        return get_a of x + 10
+        return get_a of (x + 10)
     return [get_a, get_b]
 
 pair is make_pair of null

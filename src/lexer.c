@@ -295,6 +295,11 @@ TokenList tokenize(const char *source) {
             strbuf buf;
             strbuf_init(&buf);
             int has_segments = 0;
+            /* Wrap the entire concatenation in outer parens so the resulting
+             * expression binds as one primary. Without this, `eval of f"..."`
+             * parses as `(eval of <first-segment>) + <rest>` because `of`'s
+             * RHS only consumes a unary-or-tighter expression. */
+            tok_add(&tl, TOK_LPAREN, 0, NULL, line, tok_col);
 
             while (*p && *p != '"') {
                 if (*p == '\\' && (*(p+1) == '{' || *(p+1) == '}')) {
@@ -375,6 +380,8 @@ TokenList tokenize(const char *source) {
                 /* empty f-string: f"" */
                 tok_add(&tl, TOK_STR, 0, "", line, tok_col);
             }
+            /* Close the outer wrapper paren */
+            tok_add(&tl, TOK_RPAREN, 0, NULL, line, tok_col);
             if (*p == '"') { p++; col++; }
             else {
                 fprintf(stderr, "Syntax error line %d: unterminated f-string\n", line);
