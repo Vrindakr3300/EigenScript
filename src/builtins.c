@@ -28,6 +28,7 @@ Value* make_num_permanent(double n);
 const char* val_type_name(ValType t);
 int dict_has(Value *dict, const char *key);
 void dict_remove(Value *dict, const char *key);
+extern int env_hash_find_dict(Value *dict, const char *key, uint32_t h);
 extern __thread int g_try_depth;
 
 Value* builtin_print(Value *arg) {
@@ -3210,19 +3211,56 @@ Value* builtin_nearest_in_range(Value *arg) {
     double best_dx = 0, best_dy = 0;
     int n = entities->data.list.count;
 
-    /* Hoist key hashes out of the inner loop — dict_get otherwise re-FNVs
-     * the 2-6 byte key strings n times per call. */
-    uint32_t h_active = env_hash_name(active_key);
-    uint32_t h_px = env_hash_name(px_key);
-    uint32_t h_py = env_hash_name(py_key);
+    /* Intern the keys once so we can use pointer equality against dict.keys[]
+     * (which env_intern_name'd them on insertion). Hash them once too — the
+     * hash probe is the fallback when the index hint misses. */
+    char *iactive = env_intern_name(active_key);
+    char *ipx = env_intern_name(px_key);
+    char *ipy = env_intern_name(py_key);
+    uint32_t h_active = env_hash_name(iactive);
+    uint32_t h_px = env_hash_name(ipx);
+    uint32_t h_py = env_hash_name(ipy);
+
+    /* Index hints learned from the first dict that contains each key.
+     * For structurally-identical entity dicts (the common case) this lets
+     * us skip the hash probe entirely on every subsequent entity. */
+    int hint_active = -1, hint_px = -1, hint_py = -1;
 
     for (int i = 0; i < n; i++) {
         Value *e = entities->data.list.items[i];
         if (!e || e->type != VAL_DICT) continue;
-        Value *av = dict_get_hashed(e, active_key, h_active);
+        char **keys = e->data.dict.keys;
+        Value **vals = e->data.dict.vals;
+        int kcount = e->data.dict.count;
+
+        Value *av;
+        if (hint_active >= 0 && hint_active < kcount && keys[hint_active] == iactive) {
+            av = vals[hint_active];
+        } else {
+            int idx = env_hash_find_dict(e, iactive, h_active);
+            if (idx >= 0 && hint_active < 0) hint_active = idx;
+            av = (idx >= 0) ? vals[idx] : NULL;
+        }
         if (av && av->type == VAL_NUM && av->data.num != 1.0) continue;
-        Value *ex = dict_get_hashed(e, px_key, h_px);
-        Value *ey = dict_get_hashed(e, py_key, h_py);
+
+        Value *ex;
+        if (hint_px >= 0 && hint_px < kcount && keys[hint_px] == ipx) {
+            ex = vals[hint_px];
+        } else {
+            int idx = env_hash_find_dict(e, ipx, h_px);
+            if (idx >= 0 && hint_px < 0) hint_px = idx;
+            ex = (idx >= 0) ? vals[idx] : NULL;
+        }
+
+        Value *ey;
+        if (hint_py >= 0 && hint_py < kcount && keys[hint_py] == ipy) {
+            ey = vals[hint_py];
+        } else {
+            int idx = env_hash_find_dict(e, ipy, h_py);
+            if (idx >= 0 && hint_py < 0) hint_py = idx;
+            ey = (idx >= 0) ? vals[idx] : NULL;
+        }
+
         if (!ex || !ey || ex->type != VAL_NUM || ey->type != VAL_NUM) continue;
 
         double dx = ex->data.num - px;
