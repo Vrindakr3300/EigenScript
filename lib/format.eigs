@@ -14,6 +14,8 @@
 # ---- fmt_num: format number to fixed decimal places ----
 # fmt_num of [value, decimals] -> string
 define fmt_num(value, decimals) as:
+    if value < 0:
+        return "-" + (fmt_num of [0 - value, decimals])
     if decimals == 0:
         return str of (round of value)
     factor is 1
@@ -22,8 +24,6 @@ define fmt_num(value, decimals) as:
     rounded is round of (value * factor)
     int_part is floor of (rounded / factor)
     frac_part is rounded - (int_part * factor)
-    if frac_part < 0:
-        frac_part is 0 - frac_part
     frac_str is str of frac_part
     loop while (len of frac_str) < decimals:
         frac_str is "0" + frac_str
