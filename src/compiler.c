@@ -1172,12 +1172,50 @@ static void compile_node(Compiler *c, ASTNode *node) {
         compile_node(c, node->data.forloop.iter);
         emit(c, OP_ITER_SETUP, node->line);
 
+        /* Env-skip optimization: when this for-loop sits inside a function
+         * and the body contains no closures and no nested rebinding of the
+         * loop var, bind the loop var to a function-env slot via SET_LOCAL
+         * and skip LOOP_ENV_FRESH/END entirely. Body reads resolve through
+         * the existing resolve_local → GET_LOCAL path. This is purely a
+         * perf win (no env_new per iteration, slot-cached writes) and also
+         * makes ITER_NEXT the only remaining JIT blocker for hot for-range
+         * loops. */
+        const char *loop_var = node->data.forloop.var;
+        uint32_t loop_var_hash = env_hash_name(loop_var);
+        int can_skip_env = 0;
+        int loop_var_slot = -1;
+        if (c->enclosing) {
+            int captured     = name_set_has(&c->captured, loop_var);
+            int interrogated = name_set_has(&c->interrogated, loop_var);
+            int in_outer     = name_in_enclosing(c, loop_var);
+            int in_module    = c->module_names && name_set_has(c->module_names, loop_var);
+            if (!captured && !interrogated && !in_outer && !in_module) {
+                NameSet captured_here = {0};
+                for (int i = 0; i < node->data.forloop.body_count; i++)
+                    scan_for_captures(node->data.forloop.body[i], &captured_here);
+                if (captured_here.count == 0) {
+                    /* Reuse an existing slot for the loop var if there is one
+                     * (sequential `for i ...; for i ...` or nested `for i in:
+                     * for i in: ...`). Sharing the slot keeps body reads of
+                     * the loop var (which compile to GET_LOCAL of the existing
+                     * slot) consistent with the SET_LOCAL we emit per iter.
+                     * If we used LOOP_ENV_FRESH+SET_NAME_LOCAL here instead,
+                     * the body would still GET_LOCAL the stale outer slot. */
+                    loop_var_slot = resolve_local(c, loop_var, loop_var_hash);
+                    if (loop_var_slot < 0)
+                        loop_var_slot = add_local(c, loop_var, loop_var_hash);
+                    if (loop_var_slot >= 0) can_skip_env = 1;
+                }
+                name_set_free(&captured_here);
+            }
+        }
+
         LoopCtx *lp = NULL;
         if (c->loop_depth < MAX_LOOP_DEPTH) {
             lp = &c->loops[c->loop_depth++];
             lp->break_count = 0;
             lp->scope_depth = c->scope_depth;
-            lp->has_fresh_env = 1; /* for-loops allocate a per-iter env */
+            lp->has_fresh_env = can_skip_env ? 0 : 1;
         }
 
         int depth_before_loop = c->stack_depth;
@@ -1187,27 +1225,33 @@ static void compile_node(Compiler *c, ASTNode *node) {
         int exit_jump = emit_jump(c, OP_ITER_NEXT, node->line);
         /* ITER_NEXT pushes element on non-exit (+1) */
 
-        /* Create fresh loop env for each iteration (required for correct scoping) */
-        emit(c, OP_LOOP_ENV_FRESH, node->line);
-
-        /* Bind loop variable via Env (ITER_NEXT pushed element on stack) */
-        {
-            int var_idx = add_string_constant(c, node->data.forloop.var);
+        if (can_skip_env) {
+            /* Bind loop var to a function-env slot. SET_LOCAL leaves the
+             * value on the stack (matching SET_NAME_LOCAL's convention),
+             * so the POP below still applies. */
+            emit_op_u16(c, OP_SET_LOCAL, (uint16_t)loop_var_slot, node->line);
+            emit(c, OP_POP, node->line);
+        } else {
+            /* Create fresh loop env for each iteration (required for correct scoping) */
+            emit(c, OP_LOOP_ENV_FRESH, node->line);
+            int var_idx = add_string_constant(c, loop_var);
             emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)var_idx, node->line);
-            emit(c, OP_POP, node->line); /* pop the element from stack */
+            emit(c, OP_POP, node->line);
         }
 
         compile_block(c, node->data.forloop.body, node->data.forloop.body_count);
         emit(c, OP_POP, node->line); /* discard body result */
 
-        /* Restore parent env */
-        emit(c, OP_LOOP_ENV_END, node->line);
+        if (!can_skip_env)
+            emit(c, OP_LOOP_ENV_END, node->line);
 
         /* Reset depth for back-edge (same as loop start) */
         c->stack_depth = depth_before_loop;
         emit_loop(c, loop_start, node->line);
 
-        /* Break lands here — env already cleaned by break's LOOP_ENV_END */
+        /* Break lands here — env already cleaned by break's LOOP_ENV_END
+         * when has_fresh_env=1; in the env-skip path AST_BREAK saw
+         * has_fresh_env=0 and skipped the cleanup. */
         if (lp) {
             for (int i = 0; i < lp->break_count; i++)
                 patch_jump(c, lp->break_jumps[i]);

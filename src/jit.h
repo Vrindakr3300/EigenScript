@@ -143,4 +143,11 @@ void jit_helper_local_dot_get(struct EigsChunk *chunk, int slot, int name_idx);
 void jit_helper_observe_assign(struct EigsChunk *chunk, int name_idx);
 void jit_helper_observe_assign_local(int slot);
 
+/* Stage 4q-a: out-of-line helper for OP_ITER_NEXT. Returns 1 if the
+ * iterator at g_vm.stack[sp-1] is exhausted (no element pushed), 0 if
+ * it pushed the next element and advanced the in-state index. Mirrors
+ * the body of CASE(ITER_NEXT) in vm.c but without ip mutation — the
+ * JIT-emitted call site does the branch. */
+int jit_helper_iter_next(void);
+
 #endif /* EIGS_JIT_H */

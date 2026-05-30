@@ -451,6 +451,19 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             /* Type-check at runtime proved TOS is immediate-num — so a
              * subsequent OP_POP can use the peephole `dec ecx`. */
             last_push_immediate = 1;
+        } else if (op == OP_ITER_NEXT) {
+            /* Stage 4q-a: 3-byte op [op][exit_offset:16]. Helper does the
+             * iter step against g_vm.stack[sp-1] and returns 1 (exhausted)
+             * or 0 (pushed an element). Emitter calls helper, tests eax,
+             * conditional-jumps to the exit target on non-zero. Same
+             * pending-patch / has_bail_op pattern as OP_JUMP_IF_FALSE.
+             * Fall-through TOS may be a heap pointer (VAL_LIST element)
+             * or an immediate num (VAL_BUFFER element) — cannot guarantee
+             * immediate, so disable the OP_POP peephole. */
+            if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
+            i += 3; ops++; non_line_ops++;
+            *has_bail_op = 1;
+            last_push_immediate = 0;
         } else if (op == OP_POP) {
             if (!last_push_immediate) { *stop_op = op; *stop_offset = i; break; }
             i += 1; ops++; non_line_ops++;
@@ -1885,6 +1898,53 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
                 w = emit_je_rel32(w, &skip_patch);
             }
             /* Taken arm. Same entry-relative encoding as OP_JUMP above. */
+            w = emit_mov_imm32_r13d(w, (uint32_t)(target - entry_offset));
+            uint8_t *jump_patch;
+            w = emit_jmp_rel32(w, &jump_patch);
+            pending[pending_count].target = target;
+            pending[pending_count].patch = jump_patch;
+            pending_count++;
+            /* skip_taken: */
+            patch_rel32(skip_patch, w);
+            i += 3;
+        } else if (op == OP_ITER_NEXT) {
+            /* Stage 4q-a: ITER_NEXT via helper call.
+             *
+             * Layout:
+             *   mov %ecx -> g_vm.sp     ; sync our sp cache so helper sees it
+             *   push %rcx                ; align (body at 8-mod-16 -> 0-mod-16)
+             *   movabs &jit_helper_iter_next, %rax
+             *   call %rax                ; eax = 0 (pushed) / 1 (exhausted)
+             *   pop %rcx                 ; (junk, will be reloaded)
+             *   mov g_vm.sp -> %ecx      ; reload — helper may have pushed
+             *   test %eax, %eax
+             *   jz skip_taken            ; fall-through when not exhausted
+             *   mov $(exit_target - entry_offset), %r13d
+             *   jmp <pending patch>      ; resolved later (native or epilogue)
+             *  skip_taken:
+             *
+             * Same pending-patch bookkeeping as OP_JUMP_IF_FALSE. */
+            if (pending_count + 1 > (int)(sizeof pending /
+                                          sizeof pending[0])) {
+                JIT_BAIL_AND_RETURN();
+            }
+            uint16_t off = (uint16_t)(chunk->code[i + 1] |
+                                      ((uint16_t)chunk->code[i + 2] << 8));
+            int target = i + 3 + (int)off;
+
+            w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+            w = emit_push_rcx(w);
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_iter_next);
+            w = emit_call_rax(w);
+            w = emit_pop_rcx(w);
+            w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
+            w = emit_test_rax_rax(w);
+
+            uint8_t *skip_patch;
+            /* Take when ZF=0 (exhausted, eax != 0); skip taken arm when
+             * ZF=1 (continue, eax == 0). */
+            w = emit_je_rel32(w, &skip_patch);
+            /* Taken arm: write target into r13d and jump. */
             w = emit_mov_imm32_r13d(w, (uint32_t)(target - entry_offset));
             uint8_t *jump_patch;
             w = emit_jmp_rel32(w, &jump_patch);

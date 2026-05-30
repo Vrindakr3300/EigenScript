@@ -565,6 +565,51 @@ void jit_helper_observe_assign_local(int slot) {
     }
 }
 
+/* JIT Stage 4q-a: out-of-line helper for OP_ITER_NEXT.
+ *
+ * Mirrors CASE(ITER_NEXT) in vm_run, but without ip mutation — returns
+ * 1 if the iterator is exhausted (no element pushed), 0 if it pushed
+ * the next element. The JIT-emitted call site reads the return value
+ * and emits the conditional forward jump to the loop exit target.
+ *
+ * NOTE: NUM_REUSE check inlined here (the macro is defined further
+ * down in this TU). */
+int jit_helper_iter_next(void) {
+    EigsSlot state_slot = g_vm.stack[g_vm.sp - 1];
+    if (!slot_is_ptr(state_slot)) return 1;
+    Value *state = slot_as_ptr(state_slot);
+    if (!state || state->type != VAL_LIST || state->data.list.count < 2)
+        return 1;
+    Value *iterable = state->data.list.items[0];
+    if (!iterable) return 1;
+    Value *idx_v = state->data.list.items[1];
+    if (!idx_v || idx_v->type != VAL_NUM) return 1;
+    int idx = (int)idx_v->data.num;
+    int len = 0;
+    if (iterable->type == VAL_LIST)        len = iterable->data.list.count;
+    else if (iterable->type == VAL_BUFFER) len = iterable->data.buffer.count;
+    else                                   return 1;
+    if (idx >= len) return 1;
+    Value *elem;
+    if (iterable->type == VAL_BUFFER) {
+        elem = make_num(iterable->data.buffer.data[idx]);
+    } else {
+        elem = iterable->data.list.items[idx];
+        val_incref(elem);
+    }
+    /* In-place idx bump when the slot is an exclusive plain VAL_NUM
+     * (matches the interpreter's NUM_REUSE fast path). */
+    if (idx_v->type == VAL_NUM && idx_v->refcount == 1 && !idx_v->arena &&
+        idx_v->obs_age == 0) {
+        idx_v->data.num = (double)(idx + 1);
+    } else {
+        val_decref(idx_v);
+        state->data.list.items[1] = make_num(idx + 1);
+    }
+    vm_push(elem);
+    return 0;
+}
+
 void eigs_jit_get_layout(EigsJitLayout *out) {
     void *tp;
     __asm__ __volatile__("mov %%fs:0, %0" : "=r"(tp));
@@ -585,10 +630,11 @@ void eigs_jit_get_layout(EigsJitLayout *out) {
 
 static Value *vm_run(EigsChunk *chunk, Env *env) {
     int base_frame = g_vm.frame_count; /* track entry point for re-entrant returns */
-    /* Module-level slot promotion (Part B): if the module chunk allocated slots
-     * past env->count at compile time, reserve them now so OP_SET_LOCAL has
-     * a place to write. Slot indices in bytecode are absolute env positions. */
-    if (base_frame == 0 && chunk->local_count > env->count) {
+    /* Module-level slot promotion (Part B) AND nested entries from builtins
+     * (e.g. call_eigs_fn, eval): if the chunk allocated slots past env->count
+     * at compile time, reserve them now so OP_SET_LOCAL has a place to write.
+     * Slot indices in bytecode are absolute env positions. */
+    if (chunk->local_count > env->count) {
         env_reserve_slots(env, chunk->local_count);
     }
     CallFrame *frame = &g_vm.frames[g_vm.frame_count++];
