@@ -549,6 +549,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_GET_LOCAL] = &&lbl_GET_LOCAL, [OP_SET_LOCAL] = &&lbl_SET_LOCAL,
         [OP_GET_NAME] = &&lbl_GET_NAME, [OP_SET_NAME] = &&lbl_SET_NAME,
         [OP_SET_NAME_LOCAL] = &&lbl_SET_NAME_LOCAL,
+        [OP_SET_FN_NAME_LOCAL] = &&lbl_SET_FN_NAME_LOCAL,
         [OP_JUMP] = &&lbl_JUMP, [OP_JUMP_BACK] = &&lbl_JUMP_BACK,
         [OP_JUMP_IF_FALSE] = &&lbl_JUMP_IF_FALSE,
         [OP_JUMP_IF_TRUE] = &&lbl_JUMP_IF_TRUE,
@@ -1049,7 +1050,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             Env *target = ic->walk_depth ? start->parent : start;
             if (__builtin_expect(target && target->binding_version == ic->target_ver, 1)) {
                 env_store_slot(target, ic->slot_idx, s);
-                if (target->assign_counts) target->assign_counts[ic->slot_idx]++;
+                if (target->assign_counts && g_unobserved_depth == 0)
+                    target->assign_counts[ic->slot_idx]++;
                 DISPATCH();
             }
         }
@@ -1060,7 +1062,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         Env *target = env_resolve_chain(start, name, h, &slot_idx, &depth);
         if (target) {
             env_store_slot(target, slot_idx, s);
-            if (target->assign_counts) target->assign_counts[slot_idx]++;
+            if (target->assign_counts && g_unobserved_depth == 0)
+                target->assign_counts[slot_idx]++;
             if (depth <= 1) {
                 ic->starting_env = start;
                 ic->starting_ver = start->binding_version;
@@ -1093,7 +1096,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                              ic->walk_depth == 0 &&
                              ic->target_ver == start->binding_version, 1)) {
             env_store_slot(start, ic->slot_idx, s);
-            if (start->assign_counts) start->assign_counts[ic->slot_idx]++;
+            if (start->assign_counts && g_unobserved_depth == 0)
+                start->assign_counts[ic->slot_idx]++;
             DISPATCH();
         }
         const char *name = chunk->const_interns[idx];
@@ -1106,6 +1110,42 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             ic->starting_env = start;
             ic->starting_ver = start->binding_version;
             ic->target_ver   = start->binding_version;
+            ic->slot_idx     = slot_idx;
+            ic->walk_depth   = 0;
+        }
+        DISPATCH();
+    }
+
+    CASE(SET_FN_NAME_LOCAL): {
+        /* Like SET_NAME_LOCAL but pins the write to frame->fn_env rather than
+         * frame->env. The compiler emits this for interrogated/captured/
+         * local_only names inside a function so that assignments from nested
+         * loop or scope envs still update the function's binding (see #129b:
+         * unobserved+for+interrogated accumulator otherwise wrote to the
+         * per-iteration loop env and the outer binding never moved). */
+        uint16_t idx = read_u16(ip); ip += 2;
+        EnvIC *ic = &chunk->env_ic[idx];
+        Env *target = frame->fn_env;
+        EigsSlot s = g_vm.stack[g_vm.sp - 1];
+        if (__builtin_expect(ic->starting_env == target &&
+                             ic->starting_ver == target->binding_version &&
+                             ic->walk_depth == 0 &&
+                             ic->target_ver == target->binding_version, 1)) {
+            env_store_slot(target, ic->slot_idx, s);
+            if (target->assign_counts && g_unobserved_depth == 0)
+                target->assign_counts[ic->slot_idx]++;
+            DISPATCH();
+        }
+        const char *name = chunk->const_interns[idx];
+        uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
+        if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
+        env_set_local_pre_interned_slot(target, name, h, s);
+        int slot_idx, depth;
+        Env *resolved = env_resolve_chain(target, name, h, &slot_idx, &depth);
+        if (resolved == target) {
+            ic->starting_env = target;
+            ic->starting_ver = target->binding_version;
+            ic->target_ver   = target->binding_version;
             ic->slot_idx     = slot_idx;
             ic->walk_depth   = 0;
         }

@@ -898,7 +898,8 @@ void env_set_hashed(Env *env, const char *name, uint32_t h, Value *val) {
             EigsSlot new_s = slot_from_value(promoted);
             slot_decref(e->values[idx]);
             e->values[idx] = new_s;
-            if (e->assign_counts) e->assign_counts[idx]++;
+            if (e->assign_counts && g_unobserved_depth == 0)
+                e->assign_counts[idx]++;
             return;
         }
         e = e->parent;
@@ -919,7 +920,8 @@ void env_set_local_hashed(Env *env, const char *name, uint32_t h, Value *val) {
         EigsSlot new_s = slot_from_value(promoted);
         slot_decref(env->values[idx]);
         env->values[idx] = new_s;
-        if (env->assign_counts) env->assign_counts[idx]++;
+        if (env->assign_counts && g_unobserved_depth == 0)
+            env->assign_counts[idx]++;
         return;
     }
     if (env->count >= env->capacity) {
@@ -948,7 +950,8 @@ void env_set_local_hashed(Env *env, const char *name, uint32_t h, Value *val) {
     Value *promoted = promote_if_arena(val);
     if (promoted == val) val_incref(promoted);
     env->values[env->count] = slot_from_value(promoted);
-    if (env->assign_counts) env->assign_counts[env->count] = 1;
+    if (env->assign_counts)
+        env->assign_counts[env->count] = (g_unobserved_depth == 0) ? 1 : 0;
     env->count++;
     env->binding_version++;
 
@@ -990,7 +993,8 @@ void env_set_hashed_slot(Env *env, const char *name, uint32_t h, EigsSlot s) {
         int idx = env_hash_find(&e->hash, name, h, e->names);
         if (idx >= 0) {
             env_store_slot(e, idx, s);
-            if (e->assign_counts) e->assign_counts[idx]++;
+            if (e->assign_counts && g_unobserved_depth == 0)
+                e->assign_counts[idx]++;
             return;
         }
         e = e->parent;
@@ -1004,7 +1008,8 @@ void env_set_local_pre_interned_slot(Env *env, const char *interned,
     int idx = env_hash_find(&env->hash, interned, h, env->names);
     if (idx >= 0) {
         env_store_slot(env, idx, s);
-        if (env->assign_counts) env->assign_counts[idx]++;
+        if (env->assign_counts && g_unobserved_depth == 0)
+            env->assign_counts[idx]++;
         return;
     }
     if (env->count >= env->capacity) {
@@ -1044,7 +1049,8 @@ void env_set_local_pre_interned_slot(Env *env, const char *interned,
     slot_incref(s);
 store:
     env->values[env->count] = stored;
-    if (env->assign_counts) env->assign_counts[env->count] = 1;
+    if (env->assign_counts)
+        env->assign_counts[env->count] = (g_unobserved_depth == 0) ? 1 : 0;
     env->count++;
     env->binding_version++;
     if (env->count * 10 > (env->hash.mask + 1) * 7)

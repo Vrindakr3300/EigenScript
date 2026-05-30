@@ -159,6 +159,7 @@ const char *op_name(uint8_t op) {
         [OP_GET_LOCAL] = "GET_LOCAL", [OP_SET_LOCAL] = "SET_LOCAL",
         [OP_GET_NAME] = "GET_NAME", [OP_SET_NAME] = "SET_NAME",
         [OP_SET_NAME_LOCAL] = "SET_NAME_LOCAL",
+        [OP_SET_FN_NAME_LOCAL] = "SET_FN_NAME_LOCAL",
         [OP_JUMP] = "JUMP", [OP_JUMP_BACK] = "JUMP_BACK",
         [OP_JUMP_IF_FALSE] = "JUMP_IF_FALSE",
         [OP_JUMP_IF_TRUE] = "JUMP_IF_TRUE",
@@ -202,6 +203,7 @@ static int op_has_u16(uint8_t op) {
     switch (op) {
     case OP_CONST: case OP_GET_LOCAL: case OP_SET_LOCAL:
     case OP_GET_NAME: case OP_SET_NAME: case OP_SET_NAME_LOCAL:
+    case OP_SET_FN_NAME_LOCAL:
     case OP_JUMP: case OP_JUMP_BACK:
     case OP_JUMP_IF_FALSE: case OP_JUMP_IF_TRUE:
     case OP_JUMP_IF_FALSE_PEEK: case OP_JUMP_IF_TRUE_PEEK:

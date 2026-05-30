@@ -147,6 +147,7 @@ static int op_stack_effect(uint8_t op) {
         return 0;
     /* SET: peek, no change */
     case OP_SET_LOCAL: case OP_SET_NAME: case OP_SET_NAME_LOCAL:
+    case OP_SET_FN_NAME_LOCAL:
     case OP_OBSERVE_ASSIGN: case OP_OBSERVE_ASSIGN_LOCAL:
         return 0;
     /* Jumps: conditional pops 1, unconditional 0, peek 0 */
@@ -983,13 +984,22 @@ static void compile_node(Compiler *c, ASTNode *node) {
                         set_op  = OP_SET_LOCAL;  set_arg = (uint16_t)new_slot;
                         obs_op  = OP_OBSERVE_ASSIGN_LOCAL; obs_arg = (uint16_t)new_slot;
                     } else {
+                        /* Slot table full — fall back to the function-env path
+                         * (not loop-local), so nested writes still find the
+                         * binding. */
                         int idx = add_string_constant(c, name);
-                        set_op  = OP_SET_NAME_LOCAL; set_arg = (uint16_t)idx;
+                        set_op  = OP_SET_FN_NAME_LOCAL; set_arg = (uint16_t)idx;
                         obs_op  = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
                     }
                 } else if (node->data.assign.local_only || captured || interrogated) {
+                    /* Anchored in this function's env: SET_FN_NAME_LOCAL pins
+                     * the write to frame->fn_env even when frame->env is a
+                     * nested loop/try scope. SET_NAME_LOCAL targets frame->env
+                     * and would silently shadow the function binding for the
+                     * remainder of the iteration (see #129b: unobserved+for+
+                     * interrogated accumulator never updates). */
                     int idx = add_string_constant(c, name);
-                    set_op  = OP_SET_NAME_LOCAL; set_arg = (uint16_t)idx;
+                    set_op  = OP_SET_FN_NAME_LOCAL; set_arg = (uint16_t)idx;
                     obs_op  = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
                 } else {
                     int idx = add_string_constant(c, name);

@@ -63,6 +63,7 @@ typedef enum {
     OP_GET_NAME,        /* [name_idx:16] dynamic lookup by name */
     OP_SET_NAME,        /* [name_idx:16] outward-assignment by name */
     OP_SET_NAME_LOCAL,  /* [name_idx:16] set in current scope only */
+    OP_SET_FN_NAME_LOCAL, /* [name_idx:16] set in frame->fn_env (skips intervening loop/scope envs) */
 
     /* Control flow */
     OP_JUMP,            /* [offset:16] unconditional forward jump */
