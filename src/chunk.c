@@ -176,6 +176,7 @@ const char *op_name(uint8_t op) {
         [OP_BREAK] = "BREAK", [OP_CONTINUE] = "CONTINUE",
         [OP_TRY_BEGIN] = "TRY_BEGIN", [OP_TRY_END] = "TRY_END",
         [OP_OBSERVE_ASSIGN] = "OBSERVE_ASSIGN",
+        [OP_OBSERVE_ASSIGN_LOCAL] = "OBSERVE_ASSIGN_LOCAL",
         [OP_INTERROGATE] = "INTERROGATE", [OP_PREDICATE] = "PREDICATE",
         [OP_UNOBSERVED_BEGIN] = "UNOBSERVED_BEGIN",
         [OP_UNOBSERVED_END] = "UNOBSERVED_END",
@@ -209,7 +210,8 @@ static int op_has_u16(uint8_t op) {
     case OP_DOT_GET: case OP_DOT_SET:
     case OP_ITER_NEXT:
     case OP_TRY_BEGIN: case OP_LOOP_STALL_CHECK:
-    case OP_OBSERVE_ASSIGN: case OP_IMPORT: case OP_MATCH:
+    case OP_OBSERVE_ASSIGN: case OP_OBSERVE_ASSIGN_LOCAL:
+    case OP_IMPORT: case OP_MATCH:
     case OP_LINE:
         return 1;
     case OP_INTERROGATE: case OP_PREDICATE:

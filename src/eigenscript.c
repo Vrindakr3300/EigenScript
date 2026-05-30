@@ -815,8 +815,14 @@ static void env_hash_rebuild(EnvHash *ht, char **names, int count) {
     free(ht->indices);
     free(ht->generations);
     env_hash_init(ht, new_cap);
-    for (int i = 0; i < count; i++)
-        env_hash_insert(ht, env_hash_name(names[i]), i);
+    for (int i = 0; i < count; i++) {
+        /* Skip slot-only entries (names[i] == NULL). Function envs interleave
+         * compiler-assigned local slots (addressed by index, never in the
+         * hash) with later SET_NAME_LOCAL appends (named, in the hash). The
+         * rebuild must reinsert only the named entries — feeding env_hash_name
+         * a NULL pointer crashes in strlen. */
+        if (names[i]) env_hash_insert(ht, env_hash_name(names[i]), i);
+    }
 }
 
 /* Lookup name in hash table. Returns index into names/values or -1.

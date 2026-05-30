@@ -147,7 +147,7 @@ static int op_stack_effect(uint8_t op) {
         return 0;
     /* SET: peek, no change */
     case OP_SET_LOCAL: case OP_SET_NAME: case OP_SET_NAME_LOCAL:
-    case OP_OBSERVE_ASSIGN:
+    case OP_OBSERVE_ASSIGN: case OP_OBSERVE_ASSIGN_LOCAL:
         return 0;
     /* Jumps: conditional pops 1, unconditional 0, peek 0 */
     case OP_JUMP_IF_FALSE: case OP_JUMP_IF_TRUE:
@@ -954,60 +954,73 @@ static void compile_node(Compiler *c, ASTNode *node) {
         uint32_t h = node->name_hash;
         if (h == 0) h = env_hash_name(name);
 
-        /* Observer: transfer history from old value BEFORE the SET overwrites it */
-        {
-            int name_idx = add_string_constant(c, name);
-            emit_op_u16(c, OP_OBSERVE_ASSIGN, (uint16_t)name_idx, node->line);
-        }
+        /* Decide the SET path first, then emit the matching OBSERVE op so it
+         * knows where the prior binding lives. OBSERVE_ASSIGN walks the env
+         * by name (works for SET_NAME/SET_NAME_LOCAL); OBSERVE_ASSIGN_LOCAL
+         * reads from a function-env slot (works for SET_LOCAL). Picking the
+         * wrong variant lets observer history reset on every write — see #129. */
+        uint8_t  set_op   = 0;
+        uint16_t set_arg  = 0;
+        uint8_t  obs_op   = 0;
+        uint16_t obs_arg  = 0;
 
         if (c->enclosing) {
             int slot = resolve_local(c, name, h);
             if (slot >= 0) {
-                /* Already a known local (param or previously-assigned non-captured local) */
-                emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
+                set_op  = OP_SET_LOCAL;  set_arg = (uint16_t)slot;
+                obs_op  = OP_OBSERVE_ASSIGN_LOCAL; obs_arg = (uint16_t)slot;
             } else {
-                /* Decide: is this a fresh local (fast slot path) or an update to
-                 * an outer/global name (slow name path)? */
                 int captured     = name_set_has(&c->captured, name);
                 int interrogated = name_set_has(&c->interrogated, name);
                 int in_outer     = name_in_enclosing(c, name);
                 int in_module    = c->module_names && name_set_has(c->module_names, name);
                 int in_globals   = c->env && env_get_hashed(c->env, name, h) != NULL;
-
                 int local_eligible = !captured && !interrogated && !in_outer && !in_module && !in_globals;
 
                 if (local_eligible) {
                     int new_slot = add_local(c, name, h);
                     if (new_slot >= 0) {
-                        emit_op_u16(c, OP_SET_LOCAL, (uint16_t)new_slot, node->line);
+                        set_op  = OP_SET_LOCAL;  set_arg = (uint16_t)new_slot;
+                        obs_op  = OP_OBSERVE_ASSIGN_LOCAL; obs_arg = (uint16_t)new_slot;
                     } else {
                         int idx = add_string_constant(c, name);
-                        emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);
+                        set_op  = OP_SET_NAME_LOCAL; set_arg = (uint16_t)idx;
+                        obs_op  = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
                     }
                 } else if (node->data.assign.local_only || captured || interrogated) {
                     int idx = add_string_constant(c, name);
-                    emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);
+                    set_op  = OP_SET_NAME_LOCAL; set_arg = (uint16_t)idx;
+                    obs_op  = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
                 } else {
                     int idx = add_string_constant(c, name);
-                    emit_op_u16(c, OP_SET_NAME, (uint16_t)idx, node->line);
+                    set_op  = OP_SET_NAME; set_arg = (uint16_t)idx;
+                    obs_op  = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
                 }
             }
         } else {
             /* Module level — slot promotion if eligible (Part B), else name-based */
+            int picked = 0;
             if (name_set_has(&c->module_slot_names, name)) {
                 int slot = resolve_local(c, name, h);
                 if (slot >= 0) {
-                    emit_op_u16(c, OP_SET_LOCAL, (uint16_t)slot, node->line);
-                    break;
+                    set_op = OP_SET_LOCAL; set_arg = (uint16_t)slot;
+                    obs_op = OP_OBSERVE_ASSIGN_LOCAL; obs_arg = (uint16_t)slot;
+                    picked = 1;
                 }
             }
-            int idx = add_string_constant(c, name);
-            if (node->data.assign.local_only) {
-                emit_op_u16(c, OP_SET_NAME_LOCAL, (uint16_t)idx, node->line);
-            } else {
-                emit_op_u16(c, OP_SET_NAME, (uint16_t)idx, node->line);
+            if (!picked) {
+                int idx = add_string_constant(c, name);
+                if (node->data.assign.local_only) {
+                    set_op = OP_SET_NAME_LOCAL; set_arg = (uint16_t)idx;
+                } else {
+                    set_op = OP_SET_NAME; set_arg = (uint16_t)idx;
+                }
+                obs_op = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
             }
         }
+
+        emit_op_u16(c, obs_op, obs_arg, node->line);
+        emit_op_u16(c, set_op, set_arg, node->line);
         break;
     }
 

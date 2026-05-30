@@ -104,7 +104,8 @@ typedef enum {
     OP_TRY_END,         /* pop exception handler */
 
     /* Observer system */
-    OP_OBSERVE_ASSIGN,  /* [name_idx:16] observer update for assignment */
+    OP_OBSERVE_ASSIGN,  /* [name_idx:16] observer update for assignment (env walk) */
+    OP_OBSERVE_ASSIGN_LOCAL, /* [slot:16] observer update; prev value lives in fn_env slot */
     OP_INTERROGATE,     /* [kind:8] pop target, push query result */
     OP_PREDICATE,       /* [kind:8] push predicate result */
     OP_UNOBSERVED_BEGIN,/* increment g_unobserved_depth */

@@ -566,6 +566,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_BREAK] = &&lbl_BREAK, [OP_CONTINUE] = &&lbl_CONTINUE,
         [OP_TRY_BEGIN] = &&lbl_TRY_BEGIN, [OP_TRY_END] = &&lbl_TRY_END,
         [OP_OBSERVE_ASSIGN] = &&lbl_OBSERVE_ASSIGN,
+        [OP_OBSERVE_ASSIGN_LOCAL] = &&lbl_OBSERVE_ASSIGN_LOCAL,
         [OP_INTERROGATE] = &&lbl_INTERROGATE, [OP_PREDICATE] = &&lbl_PREDICATE,
         [OP_UNOBSERVED_BEGIN] = &&lbl_UNOBSERVED_BEGIN,
         [OP_UNOBSERVED_END] = &&lbl_UNOBSERVED_END,
@@ -1968,6 +1969,46 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
                 if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[name_idx] = h; }
                 Value *prev = env_get_hashed(frame->env, name, h);
+                if (prev && prev != v) {
+                    observer_ensure_fresh(prev);
+                    v->last_entropy = prev->last_entropy;
+                    v->entropy = prev->entropy;
+                    v->obs_age = prev->obs_age;
+                    v->dH = prev->dH;
+                    v->prev_dH = prev->prev_dH;
+                }
+                v->dirty = 1;
+                g_last_observer = v;
+            }
+        }
+        DISPATCH();
+    }
+
+    CASE(OBSERVE_ASSIGN_LOCAL): {
+        /* Slot-path counterpart of OBSERVE_ASSIGN. The compiler emits this
+         * when the upcoming SET writes to a local slot (SET_LOCAL) — the
+         * prior binding lives in frame->fn_env->values[slot], not in any
+         * env hash. Without this op, OBSERVE_ASSIGN's env walk misses the
+         * prior value and observer history (entropy/dH) resets on every
+         * write, so report/predicate misclassify a slot-bound variable
+         * (#129). */
+        uint16_t slot = read_u16(ip); ip += 2;
+        if (g_unobserved_depth == 0) {
+            EigsSlot s = g_vm.stack[g_vm.sp - 1];
+            Value *v = NULL;
+            if (slot_is_num(s)) {
+                v = make_tracked_num(s.d);
+                g_vm.stack[g_vm.sp - 1] = slot_from_tracked(v);
+            } else if (slot_is_ptr(s)) {
+                v = slot_as_ptr(s);
+            }
+            if (v) {
+                Env *e = frame->fn_env;
+                Value *prev = NULL;
+                if (e && (int)slot < e->count) {
+                    EigsSlot ps = e->values[slot];
+                    if (slot_is_ptr(ps)) prev = slot_as_ptr(ps);
+                }
                 if (prev && prev != v) {
                     observer_ensure_fresh(prev);
                     v->last_entropy = prev->last_entropy;
