@@ -830,6 +830,47 @@ int jit_helper_call(int argc) {
     return 0;
 }
 
+/* JIT Stage 4s: out-of-line helper for OP_RETURN.
+ *
+ * Mirrors CASE(RETURN)'s non-top-level branch: pops result, drains the
+ * frame's stack slice, frees env if owned, restores loop-stall globals,
+ * decrements frame_count, and pushes the result onto the (now-current)
+ * caller's stack. The JIT-emitted call site pre-sets %r13d = -1 so the
+ * thunk's epilogue writes -1 into chunk->jit_advance; vm_run's post-thunk
+ * code checks for that sentinel and resyncs frame/ip/chunk (or returns
+ * the top-of-stack as a Value* when frame_count <= base_frame).
+ *
+ * The helper always succeeds (no bail return code) because there is no
+ * "non-builtin"-style early exit for RETURN: every well-formed function
+ * eventually hits one, and the data movement is unconditional. Top-level
+ * detection (base_frame comparison) happens in vm_run because the helper
+ * doesn't know base_frame.
+ *
+ * Try-catch state on the popped frame is silently dropped (matching the
+ * interpreter — frame->try_count drops with the CallFrame). g_has_error
+ * already propagated by any earlier helper is preserved; CHECK_ERROR
+ * fires on the next interpreter DISPATCH if try_depth allows. */
+void jit_helper_return(void) {
+    CallFrame *frame = &g_vm.frames[g_vm.frame_count - 1];
+    EigsSlot result_s;
+    if (g_vm.sp > frame->bp) {
+        result_s = g_vm.stack[--g_vm.sp];
+    } else {
+        result_s = slot_null();
+    }
+    while (g_vm.sp > frame->bp)
+        slot_decref(g_vm.stack[--g_vm.sp]);
+    if (frame->owns_env) env_free(frame->env);
+    g_loop_stall_count = frame->saved_stall_count;
+    g_loop_iterations  = frame->saved_loop_iter;
+    g_vm.frame_count--;
+    /* Push result onto whatever is now the current top frame's slice.
+     * For a top-level return (frame_count became 0 or fell below
+     * vm_run's base_frame), vm_run's post-thunk handler pops this off
+     * and converts to Value*. */
+    g_vm.stack[g_vm.sp++] = result_s;
+}
+
 void eigs_jit_get_layout(EigsJitLayout *out) {
     void *tp;
     __asm__ __volatile__("mov %%fs:0, %0" : "=r"(tp));
@@ -1540,6 +1581,23 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             chunk->jit_osr_entry_offset == (int)(ip - chunk->code)) {
             frame->ip = ip;
             ((JitChunkFn)chunk->jit_osr_code)();
+            if (chunk->jit_osr_advance == -1) {
+                /* Stage 4s: OSR thunk hit OP_RETURN. Same shape as the
+                 * OP_CALL hook: result already on caller's stack, frame
+                 * popped. Resync, or return to C if below base_frame. */
+                if (g_vm.frame_count <= base_frame) {
+                    EigsSlot result_s = g_vm.stack[--g_vm.sp];
+                    if (slot_is_num(result_s))  return make_num(result_s.d);
+                    if (slot_is_null(result_s)) return make_null();
+                    if (slot_is_bool(result_s)) return make_num(slot_as_bool(result_s) ? 1.0 : 0.0);
+                    return slot_as_ptr(result_s);
+                }
+                frame = &g_vm.frames[g_vm.frame_count - 1];
+                ip = frame->ip;
+                chunk = frame->chunk;
+                current_line = g_vm.current_line;
+                DISPATCH();
+            }
             frame->ip += chunk->jit_osr_advance;
             ip = frame->ip;
             current_line = g_vm.current_line;
@@ -1747,10 +1805,31 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             /* JIT hook: compile lazily, run native prefix if available.
              * Thunk runs side-effects on g_vm only; caller advances
              * frame->ip by chunk->jit_advance and mirrors current_line
-             * into the register-local copy before resuming dispatch. */
+             * into the register-local copy before resuming dispatch.
+             *
+             * Stage 4s: jit_advance == -1 is a sentinel meaning the
+             * thunk executed an OP_RETURN — frame_count already
+             * decremented inside the helper, result already pushed on
+             * the caller's stack. Resync to the (now-current) caller
+             * frame or, if we've fallen below base_frame, hand the
+             * result back to C. */
             if (fn_chunk->jit_state == 0) jit_try_compile_chunk(fn_chunk);
             if (fn_chunk->jit_code) {
                 ((JitChunkFn)fn_chunk->jit_code)();
+                if (fn_chunk->jit_advance == -1) {
+                    if (g_vm.frame_count <= base_frame) {
+                        EigsSlot result_s = g_vm.stack[--g_vm.sp];
+                        if (slot_is_num(result_s))  return make_num(result_s.d);
+                        if (slot_is_null(result_s)) return make_null();
+                        if (slot_is_bool(result_s)) return make_num(slot_as_bool(result_s) ? 1.0 : 0.0);
+                        return slot_as_ptr(result_s);
+                    }
+                    frame = &g_vm.frames[g_vm.frame_count - 1];
+                    ip = frame->ip;
+                    chunk = frame->chunk;
+                    current_line = g_vm.current_line;
+                    DISPATCH();
+                }
                 frame->ip += fn_chunk->jit_advance;
                 current_line = g_vm.current_line;
             }
@@ -2762,6 +2841,21 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             if (fn_chunk->jit_state == 0) jit_try_compile_chunk(fn_chunk);
             if (fn_chunk->jit_code) {
                 ((JitChunkFn)fn_chunk->jit_code)();
+                if (fn_chunk->jit_advance == -1) {
+                    /* Stage 4s: OP_RETURN sentinel — see OP_CALL hook. */
+                    if (g_vm.frame_count <= base_frame) {
+                        EigsSlot result_s = g_vm.stack[--g_vm.sp];
+                        if (slot_is_num(result_s))  return make_num(result_s.d);
+                        if (slot_is_null(result_s)) return make_null();
+                        if (slot_is_bool(result_s)) return make_num(slot_as_bool(result_s) ? 1.0 : 0.0);
+                        return slot_as_ptr(result_s);
+                    }
+                    frame = &g_vm.frames[g_vm.frame_count - 1];
+                    ip = frame->ip;
+                    chunk = frame->chunk;
+                    current_line = g_vm.current_line;
+                    DISPATCH();
+                }
                 frame->ip += fn_chunk->jit_advance;
                 current_line = g_vm.current_line;
             }

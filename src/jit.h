@@ -177,4 +177,14 @@ void jit_helper_index_get(void);
  * Reads/writes g_vm.sp directly. */
 int jit_helper_call(int argc);
 
+/* Stage 4s: out-of-line helper for OP_RETURN. Mirrors the non-top-level
+ * branch of CASE(RETURN): pops result, drains frame slice, frees env if
+ * owned, restores loop-stall globals, pops the frame, and pushes the
+ * result onto the (now-current) caller's stack. Always succeeds — no
+ * bail return code. The JIT site pre-sets %r13d = (uint32_t)-1 so the
+ * epilogue writes -1 into chunk->jit_advance; vm_run's post-thunk
+ * handler detects the sentinel and resyncs frame/ip/chunk (or returns
+ * top-of-stack as Value* when g_vm.frame_count <= base_frame). */
+void jit_helper_return(void);
+
 #endif /* EIGS_JIT_H */

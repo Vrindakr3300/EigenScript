@@ -491,6 +491,22 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             i += 3; ops++; non_line_ops++;
             *has_bail_op = 1;
+        } else if (op == OP_RETURN) {
+            /* Stage 4s: 1-byte op, terminates the function. Helper does
+             * the full frame teardown + result push; emitter pre-sets
+             * %r13d = (uint32_t)-1 so the epilogue's writeback lands a
+             * sentinel in chunk->jit_advance, which vm_run's post-thunk
+             * code uses to resync frame/ip/chunk (or return result as
+             * Value* when frame_count <= base_frame).
+             *
+             * has_bail_op=1 to enable the per-op r13d advance writeback
+             * machinery (the epilogue branch on has_bail_op). We also
+             * stop the scan here — bytes after RETURN are unreachable
+             * within this thunk, mirroring how OP_JUMP terminates. */
+            i += 1; ops++; non_line_ops++;
+            last_good = i;
+            *has_bail_op = 1;
+            break;
         } else if (op == OP_POP) {
             /* Always supported — emitter picks the path via its local
              * `last_imm` tracker (peephole `dec %ecx` when the prior
@@ -2122,6 +2138,38 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             w = emit_jne_rel32(w, &p_bail);
             bail_patches[bail_count++] = p_bail;
             i += 3;
+        } else if (op == OP_RETURN) {
+            /* Stage 4s: OP_RETURN via helper.
+             *
+             *   mov $-1, %r13d                      ; sentinel for vm_run
+             *   mov %ecx -> g_vm.sp                 ; sync sp cache
+             *   push %rcx                           ; 16-byte align
+             *   movabs &jit_helper_return, %rax
+             *   call %rax                           ; void, always OK
+             *   pop %rcx
+             *   mov g_vm.sp -> %ecx                 ; reload (helper pushed)
+             *
+             * skip_post_op_advance suppresses the loop-tail writeback
+             * so the -1 sentinel survives to the epilogue. The scanner
+             * already broke out of the loop after OP_RETURN, so there
+             * are no following ops in this thunk anyway — but the
+             * suppression is the load-bearing thing: without it, the
+             * post-op writeback would overwrite %r13d with `i -
+             * entry_offset` and the sentinel would be lost.
+             *
+             * No jne_bail: the helper is void and always succeeds.
+             * Control falls through to the epilogue naturally (since
+             * the scanner broke at OP_RETURN, the for-loop exits and
+             * the epilogue is the next thing the writer emits). */
+            w = emit_mov_imm32_r13d(w, (uint32_t)-1);
+            w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+            w = emit_push_rcx(w);
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_return);
+            w = emit_call_rax(w);
+            w = emit_pop_rcx(w);
+            w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
+            skip_post_op_advance = 1;
+            i += 1;
         } else if (op == OP_POP) {
             if (last_imm) {
                 /* Peephole: prior op pushed an immediate, whose slot_decref
