@@ -761,8 +761,12 @@ void jit_helper_index_get(void) {
             if (i >= 0 && i < target->data.list.count) {
                 Value *r = target->data.list.items[i];
                 if (r && r->type == VAL_NUM && r->obs_age == 0) {
+                    /* See CASE(INDEX_GET) for the use-after-free story —
+                     * snapshot r->data.num before slot_decref(tgt_s)
+                     * potentially frees r via the num freelist. */
+                    double rv = r->data.num;
                     slot_decref(tgt_s);
-                    vm_push_slot(slot_from_num(r->data.num));
+                    vm_push_slot(slot_from_num(rv));
                 } else {
                     val_incref(r);
                     slot_decref(tgt_s);
@@ -2038,8 +2042,19 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 if (i >= 0 && i < target->data.list.count) {
                     Value *r = target->data.list.items[i];
                     if (r && r->type == VAL_NUM && r->obs_age == 0) {
+                        /* Snapshot the double BEFORE decref'ing the list:
+                         * if the stack slot was the sole owner, slot_decref
+                         * frees the list and cascades into free_value(r),
+                         * which memcpy's the num-freelist next pointer over
+                         * r->data. Reading r->data.num after that yields
+                         * freelist garbage (denormal pointer-as-double, or
+                         * the prior head — often 0 — for the first freed
+                         * item). Surfaced by `(call())[i]` inline in an
+                         * arg list; bound-to-local form hides the bug by
+                         * keeping refcount > 1. */
+                        double rv = r->data.num;
                         slot_decref(tgt_s);
-                        vm_push_slot(slot_from_num(r->data.num));
+                        vm_push_slot(slot_from_num(rv));
                     } else {
                         val_incref(r);
                         slot_decref(tgt_s);

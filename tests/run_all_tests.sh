@@ -1469,6 +1469,21 @@ else
 fi
 echo ""
 
+# [67] Index-after-call regression (gap #2: use-after-free in OP_INDEX_GET fast path)
+echo "[67] Index After Call (21 checks)"
+IAC_OUTPUT=$(./eigenscript ../tests/test_index_after_call.eigs 2>&1)
+if echo "$IAC_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 21))
+    PASS=$((PASS + 21))
+    echo "  PASS: all 21 index-after-call checks"
+else
+    TOTAL=$((TOTAL + 21))
+    FAIL=$((FAIL + 21))
+    echo "  FAIL: index-after-call tests"
+    echo "$IAC_OUTPUT" | grep -iE "assert|error|FAIL" | head -5
+fi
+echo ""
+
 echo "============================================"
 echo "  RESULTS: $PASS/$TOTAL passed, $FAIL failed"
 echo "============================================"

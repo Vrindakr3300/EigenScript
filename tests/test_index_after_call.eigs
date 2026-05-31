@@ -1,0 +1,100 @@
+# test_index_after_call.eigs — regression for use-after-free in
+# OP_INDEX_GET when the indexee is the sole owner of the list it
+# indexes into (i.e., a fn-call result subscripted inline).
+#
+# Before the fix, `(call())[i]` read garbage because INDEX_GET's
+# VAL_NUM fast path decref'd the list (refcount 1 → 0, freed) before
+# reading r->data.num; free_value(num) memcpy's the freelist next
+# pointer over r->data, so the read returned freelist garbage
+# (denormal pointer-as-double, or 0 for the first freed item).
+
+pass_count is 0
+fail_count is 0
+
+define check(args) as:
+    label is args[0]
+    cond is args[1]
+    if cond:
+        pass_count is pass_count + 1
+    else:
+        fail_count is fail_count + 1
+        print of ("FAIL: " + label)
+
+define make_nums() as:
+    return [10, 20, 30]
+
+define make_strs() as:
+    return ["alpha", "beta", "gamma"]
+
+define make_mixed() as:
+    return [42, "text", [1, 2]]
+
+define make_buf() as:
+    b is buffer of 4
+    buf_set of [b, 0, 100]
+    buf_set of [b, 1, 200]
+    buf_set of [b, 2, 300]
+    buf_set of [b, 3, 400]
+    return b
+
+# ---- VAL_NUM items: the bug path ----
+check of ["nums [0] inline", (make_nums of [])[0] == 10]
+check of ["nums [1] inline", (make_nums of [])[1] == 20]
+check of ["nums [2] inline", (make_nums of [])[2] == 30]
+
+# Bound-to-local form should still work (was already correct).
+r is make_nums of []
+check of ["nums [0] bound", r[0] == 10]
+check of ["nums [1] bound", r[1] == 20]
+check of ["nums [2] bound", r[2] == 30]
+
+# Inline indexed call as a function argument (the original repro shape).
+define identity(x) as:
+    return x
+
+check of ["nums [0] inline as arg", identity of ((make_nums of [])[0]) == 10]
+check of ["nums [1] inline as arg", identity of ((make_nums of [])[1]) == 20]
+check of ["nums [2] inline as arg", identity of ((make_nums of [])[2]) == 30]
+
+# ---- VAL_STR items: non-NUM path (val_incref then decref) ----
+check of ["strs [0] inline", (make_strs of [])[0] == "alpha"]
+check of ["strs [1] inline", (make_strs of [])[1] == "beta"]
+check of ["strs [2] inline", (make_strs of [])[2] == "gamma"]
+
+# ---- Mixed types: index 0 is NUM (fast path), 1 is STR, 2 is LIST ----
+check of ["mixed [0] inline (num)", (make_mixed of [])[0] == 42]
+check of ["mixed [1] inline (str)", (make_mixed of [])[1] == "text"]
+nested is (make_mixed of [])[2]
+check of ["mixed [2] inline (list)", nested[0] == 1 and nested[1] == 2]
+
+# ---- VAL_BUFFER: already correct (read v then decref); pin behavior. ----
+check of ["buf [0] inline", (make_buf of [])[0] == 100]
+check of ["buf [1] inline", (make_buf of [])[1] == 200]
+check of ["buf [3] inline", (make_buf of [])[3] == 400]
+
+# ---- Chained subscript through call result (nested lists). ----
+define make_matrix() as:
+    return [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+
+m_row is (make_matrix of [])[1]
+check of ["matrix [1] then [2]", m_row[2] == 6]
+
+# Inline double-subscript: ((make_matrix of [])[1])[2]
+check of ["matrix [1][2] fully inline", ((make_matrix of [])[1])[2] == 6]
+
+# ---- Many iterations exercise num freelist churn, making any
+#      future regression noisy. ----
+i is 0
+sum is 0
+loop while i < 50:
+    sum is sum + (make_nums of [])[1]
+    i is i + 1
+check of ["50 iterations of inline (make_nums)[1] == 1000", sum == 1000]
+
+# ---- Summary ----
+total is pass_count + fail_count
+print of ("Index-after-call Tests: " + pass_count + "/" + total + " passed")
+if fail_count == 0:
+    print of "All tests passed"
+else:
+    assert of [0, "Some index-after-call tests failed"]
