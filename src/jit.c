@@ -433,6 +433,19 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             }
             i += 5; ops++; non_line_ops++;
             *has_bail_op = 1;
+        } else if (op == OP_LOCAL_IDX_DOT_GET) {
+            /* Stage 4v: 7-byte op [op][slot:16][list_idx:16][name_idx:16].
+             * Helper needs chunk pointer (const_interns/const_hashes) —
+             * forces has_bail_op=1 so %r14=chunk is set in prologue.
+             * Was 48% of DMG bailouts before chaining. */
+            if (i + 7 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
+            uint16_t name_idx = (uint16_t)(chunk->code[i + 5] |
+                                           ((uint16_t)chunk->code[i + 6] << 8));
+            if (!chunk->const_interns || name_idx >= chunk->const_count) {
+                *stop_op = op; *stop_offset = i; break;
+            }
+            i += 7; ops++; non_line_ops++;
+            *has_bail_op = 1;
         } else if (op == OP_DOT_GET) {
             /* Stage 4q-f: 3-byte op [op][name_idx:16]. Pop target, push
              * target.name — sp neutral. Helper needs chunk pointer. */
@@ -917,6 +930,14 @@ static uint8_t *emit_mov_imm32_edi(uint8_t *w, uint32_t imm) {
 /* mov $imm32, %edx  (5 bytes) — pass a 32-bit immediate as 3rd helper arg. */
 static uint8_t *emit_mov_imm32_edx(uint8_t *w, uint32_t imm) {
     *w++ = 0xBA;
+    return emit_u32(w, imm);
+}
+
+/* mov $imm32, %ecx  (5 bytes) — pass a 32-bit immediate as 4th helper arg.
+ * Clobbers the sp cache; caller must have already synced %ecx → g_vm.sp
+ * and must reload g_vm.sp → %ecx after the call returns. */
+static uint8_t *emit_mov_imm32_ecx(uint8_t *w, uint32_t imm) {
+    *w++ = 0xB9;
     return emit_u32(w, imm);
 }
 
@@ -1648,6 +1669,33 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             w = emit_pop_rcx(w);
             w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
             i += 5;
+        } else if (op == OP_LOCAL_IDX_DOT_GET) {
+            /* Stage 4v: out-of-line call to
+             *   jit_helper_local_idx_dot_get(chunk, slot, list_idx, name_idx).
+             * 7-byte op [op][slot:16][list_idx:16][name_idx:16].
+             * chunk → %rdi via %r14, slot → %esi, list_idx → %edx,
+             * name_idx → %ecx (4th SysV arg). Since %ecx is our sp
+             * cache, we sync first, then push %rcx for 16-byte align,
+             * then load the arg regs (the name_idx → %ecx load clobbers
+             * the cache but the sync already saved it), then call,
+             * then reload sp from g_vm.sp. */
+            uint16_t slot = (uint16_t)(chunk->code[i + 1] |
+                                       ((uint16_t)chunk->code[i + 2] << 8));
+            uint16_t list_idx = (uint16_t)(chunk->code[i + 3] |
+                                           ((uint16_t)chunk->code[i + 4] << 8));
+            uint16_t name_idx = (uint16_t)(chunk->code[i + 5] |
+                                           ((uint16_t)chunk->code[i + 6] << 8));
+            w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+            w = emit_push_rcx(w);
+            w = emit_mov_r14_rdi(w);
+            w = emit_mov_imm32_esi(w, (uint32_t)slot);
+            w = emit_mov_imm32_edx(w, (uint32_t)list_idx);
+            w = emit_mov_imm32_ecx(w, (uint32_t)name_idx);
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_local_idx_dot_get);
+            w = emit_call_rax(w);
+            w = emit_pop_rcx(w);
+            w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
+            i += 7;
         } else if (op == OP_DOT_GET) {
             /* Stage 4q-f: out-of-line call to
              *   jit_helper_dot_get(chunk, name_idx).

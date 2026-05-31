@@ -489,6 +489,61 @@ void jit_helper_local_dot_get(EigsChunk *chunk, int slot, int name_idx) {
     vm_push_slot(slot_null());
 }
 
+/* JIT Stage 4v: out-of-line helper for OP_LOCAL_IDX_DOT_GET — the #1
+ * DMG bailout at 48% of stops, dominating reads of ctx[0].a, ctx[1].pc,
+ * etc. on every CPU step. Mirrors CASE(LOCAL_IDX_DOT_GET) in vm.c:
+ * push one slot, no sp args needed (helper reads frame from g_vm).
+ *
+ * On any non-VAL_LIST target or out-of-range index, pushes slot_null()
+ * (after runtime_error for the type errors) to match interpreter
+ * semantics. The JIT site does not need to sync/reload sp around the
+ * call — helper drives g_vm.sp directly via vm_push_*. */
+void jit_helper_local_idx_dot_get(EigsChunk *chunk, int slot,
+                                  int list_idx, int name_idx) {
+    CallFrame *frame = &g_vm.frames[g_vm.frame_count - 1];
+    Env *e = frame->fn_env;
+    Value *target = vm_local_lift(e, (uint16_t)slot);
+    int i = list_idx;
+    if (target && target->type == VAL_LIST) {
+        if (i < target->data.list.count) {
+            Value *dict = target->data.list.items[i];
+            if (dict && dict->type == VAL_DICT) {
+                const char *key = chunk->const_interns[name_idx];
+                uint32_t h = chunk->const_hashes
+                                ? chunk->const_hashes[name_idx] : 0;
+                if (h == 0) {
+                    h = env_hash_name(key);
+                    if (chunk->const_hashes)
+                        chunk->const_hashes[name_idx] = h;
+                }
+                Value *v = dict_get_cached(dict, key, h);
+                if (v) {
+                    if (v->type == VAL_NUM && v->obs_age == 0) {
+                        vm_push_slot(slot_from_num(v->data.num));
+                    } else {
+                        val_incref(v);
+                        vm_push(v);
+                    }
+                    return;
+                }
+            } else if (dict && dict->type != VAL_NULL) {
+                const char *key = chunk->const_interns[name_idx];
+                runtime_error(g_vm.current_line,
+                    "cannot access field '%s' on %s",
+                    key, val_type_name(dict->type));
+            }
+        } else {
+            runtime_error(g_vm.current_line,
+                "index %d out of range (list length %d)",
+                i, target->data.list.count);
+        }
+    } else if (target && target->type != VAL_NULL) {
+        runtime_error(g_vm.current_line,
+            "cannot index %s", val_type_name(target->type));
+    }
+    vm_push_slot(slot_null());
+}
+
 /* JIT Stage 4q-f: out-of-line helper for OP_DOT_GET.
  *
  * Mirrors CASE(DOT_GET): pops target from g_vm.stack (sp -= 1),
