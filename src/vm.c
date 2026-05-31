@@ -1400,6 +1400,18 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             g_vm.sp--; \
             DISPATCH(); \
         } \
+        /* String lex-compare slow path: both operands VAL_STR → byte-wise strcmp. */ \
+        if (slot_is_ptr(_as) && slot_is_ptr(_bs)) { \
+            Value *_a = slot_as_ptr(_as), *_b = slot_as_ptr(_bs); \
+            if (_a->type == VAL_STR && _b->type == VAL_STR) { \
+                int _cmp = strcmp(_a->data.str ? _a->data.str : "", _b->data.str ? _b->data.str : ""); \
+                double _r = (_cmp OP 0) ? 1.0 : 0.0; \
+                slot_decref(_as); slot_decref(_bs); \
+                g_vm.stack[g_vm.sp - 2] = slot_from_num(_r); \
+                g_vm.sp--; \
+                DISPATCH(); \
+            } \
+        } \
         slot_decref(_as); slot_decref(_bs); \
         g_vm.stack[g_vm.sp - 2] = slot_from_num(0.0); \
         g_vm.sp--; \

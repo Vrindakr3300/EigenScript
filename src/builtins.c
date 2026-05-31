@@ -2701,6 +2701,14 @@ Value* builtin_chr(Value *arg) {
     return make_str(buf);
 }
 
+/* ==== BUILTIN: ord ==== */
+/* ord of s → first byte of s as integer (0..255), or -1 on empty / non-string */
+Value* builtin_ord(Value *arg) {
+    if (!arg || arg->type != VAL_STR || !arg->data.str || arg->data.str[0] == '\0')
+        return make_num(-1);
+    return make_num((double)(unsigned char)arg->data.str[0]);
+}
+
 /* ==== BUILTIN: try_parse ==== */
 /* try_parse of string → 1 if valid EigenScript syntax, 0 if not.
  * Tokenizes and parses without executing. Suppresses stderr. */
@@ -3822,6 +3830,7 @@ void register_builtins(Env *env) {
     env_set_local(env, "tokenize_with_names", make_builtin(builtin_tokenize_with_names));
     env_set_local(env, "token_name", make_builtin(builtin_token_name));
     env_set_local(env, "chr", make_builtin(builtin_chr));
+    env_set_local(env, "ord", make_builtin(builtin_ord));
     env_set_local(env, "random_hex", make_builtin(builtin_random_hex));
     env_set_local(env, "try_parse", make_builtin(builtin_try_parse));
     env_set_local(env, "eval", make_builtin(builtin_eval));
