@@ -417,6 +417,9 @@ Value* eval_block(ASTNode **stmts, int count, Env *env);
 int eval_result_is_owned(ASTNode *node);
 
 int is_truthy(Value *v);
+/* Structural equality for == / != (recursive for lists/dicts/buffers;
+ * identity for functions/builtins; no cross-type coercion). */
+int values_equal(Value *a, Value *b);
 char* value_to_string(Value *v);
 void observer_ensure_fresh(Value *v);
 void eigs_json_escape_string(strbuf *out, const char *s);

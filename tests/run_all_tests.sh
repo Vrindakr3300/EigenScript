@@ -347,6 +347,28 @@ LE2_EXIT=$(echo "$LE_OUTPUT" | grep -A1 'LE2:' | tail -1)
 check "LE2 exit=stalled" "$LE2_EXIT" "stalled"
 echo ""
 
+echo "[Structural Equality] (15 checks)"
+EQ_OUTPUT=$(./eigenscript ../tests/test_equality.eigs 2>&1)
+TOTAL=$((TOTAL + 15))
+if echo "$EQ_OUTPUT" | grep -q "All tests passed"; then
+    echo "  PASS: all 15 structural-equality checks"; PASS=$((PASS + 15))
+else
+    echo "  FAIL: structural-equality"; FAIL=$((FAIL + 15))
+    echo "$EQ_OUTPUT" | grep -iE "ASSERT|error" | head -5
+fi
+echo ""
+
+echo "[Number Formatting] (9 checks)"
+NF_OUTPUT=$(./eigenscript ../tests/test_number_format.eigs 2>&1)
+TOTAL=$((TOTAL + 9))
+if echo "$NF_OUTPUT" | grep -q "All tests passed"; then
+    echo "  PASS: all 9 number-format round-trip checks"; PASS=$((PASS + 9))
+else
+    echo "  FAIL: number-format"; FAIL=$((FAIL + 9))
+    echo "$NF_OUTPUT" | grep -iE "ASSERT|error" | head -5
+fi
+echo ""
+
 echo "[12/15] Type Labels (4 checks)"
 TY_OUTPUT=$(./eigenscript ../tests/test_type.eigs 2>&1)
 
@@ -388,11 +410,13 @@ AO_OUTPUT=$(./eigenscript ../tests/test_arena_ownership.eigs 2>&1)
 AO1_Y=$(echo "$AO_OUTPUT" | grep -A1 'AO1:' | tail -1)
 check "AO1 new local in arena window survives reset" "$AO1_Y" "42"
 
+# 50 sgd_update steps accumulate float error; compare with tolerance rather
+# than exact string (the old %.6g formatter rounded 0.4999...956 to "0.5").
 AO2_W0=$(echo "$AO_OUTPUT" | grep -A1 'AO2:' | tail -1)
-check "AO2 50x sgd_update w[0]" "$AO2_W0" "0.5"
+check_numeric "AO2 50x sgd_update w[0]" "$AO2_W0" "0.4999" "0.5001"
 
 AO2_W3=$(echo "$AO_OUTPUT" | grep -A2 'AO2:' | tail -1)
-check "AO2 50x sgd_update w[3]" "$AO2_W3" "3.5"
+check_numeric "AO2 50x sgd_update w[3]" "$AO2_W3" "3.4999" "3.5001"
 
 AO3_V=$(echo "$AO_OUTPUT" | grep -A1 'AO3:' | tail -1)
 check "AO3 tensor save/load roundtrip" "$AO3_V" "21"

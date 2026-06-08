@@ -1366,10 +1366,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             DISPATCH();
         }
         Value *b = vm_pop(); Value *a = vm_pop();
-        int eq = 0;
-        if (a->type == VAL_STR && b->type == VAL_STR) eq = strcmp(a->data.str, b->data.str) == 0;
-        else if (a->type == VAL_NULL && b->type == VAL_NULL) eq = 1;
-        else eq = (a == b);
+        int eq = values_equal(a, b);
         vm_push(make_num(eq ? 1.0 : 0.0));
         val_decref(a); val_decref(b);
         DISPATCH();
@@ -1395,10 +1392,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             DISPATCH();
         }
         Value *b = vm_pop(); Value *a = vm_pop();
-        int eq = 0;
-        if (a->type == VAL_STR && b->type == VAL_STR) eq = strcmp(a->data.str, b->data.str) == 0;
-        else if (a->type == VAL_NULL && b->type == VAL_NULL) eq = 1;
-        else eq = (a == b);
+        int eq = values_equal(a, b);
         vm_push(make_num(eq ? 0.0 : 1.0));
         val_decref(a); val_decref(b);
         DISPATCH();

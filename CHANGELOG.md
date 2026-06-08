@@ -4,6 +4,23 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Changed (behavior change)
+- **`==` / `!=` are now structural for collections.** Lists and dicts
+  previously compared by reference identity, so `[1,2] == [1,2]` was
+  `false`. They now compare by structure (lists element-wise, dicts by
+  key/value order-independently, buffers/text-builders by contents);
+  numbers/strings/null by value; functions and builtins still by identity;
+  mixed types are never equal (no coercion). This also makes `match` work
+  on list/dict patterns. See `tests/test_equality.eigs`.
+- **Numbers print round-trippably.** `value_to_string` used `%.6g`, which
+  truncated every non-integer to 6 significant figures (and any integer
+  >= 1e15 to lossy scientific form) — `1/3` printed `0.333333`,
+  `0.1 + 0.2` printed `0.3`. It now emits the shortest representation that
+  parses back to the same double (15–17 significant digits as needed), so
+  `0.1 + 0.2` prints `0.30000000000000004` and `str`/`num` round-trip.
+  Exact integers up to 2^53 still print without a decimal point. See
+  `tests/test_number_format.eigs`.
+
 ### Fixed (behavior change)
 - **Uncaught runtime errors are now fatal and set a non-zero exit code.**
   Previously an uncaught error (undefined variable, index out of range,

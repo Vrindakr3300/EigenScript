@@ -1,0 +1,32 @@
+# Structural equality for == / != (pre-v1 semantics pass).
+# Scalars compare by value; lists/dicts compare by structure; mixed types
+# never equal; functions/builtins by identity.
+
+assert of [[1, 2, 3] == [1, 2, 3], "list structural eq"]
+assert of [([1, 2] == [1, 2, 3]) == 0, "list different length"]
+assert of [[[1], [2, 3]] == [[1], [2, 3]], "nested list eq"]
+assert of [([[1], [2]] == [[1], [9]]) == 0, "nested list diff"]
+
+assert of [({"a": 1, "b": 2} == {"b": 2, "a": 1}) == 1, "dict order-independent"]
+assert of [({"a": 1} == {"a": 2}) == 0, "dict different value"]
+assert of [({"a": 1} == {"a": 1, "b": 2}) == 0, "dict different size"]
+
+assert of [(["x", "y"] == ["x", "y"]) == 1, "list of strings eq"]
+assert of [(3 == 3.0) == 1, "number eq"]
+assert of [("hi" == "hi") == 1, "string eq"]
+assert of [([1] == 1) == 0, "mixed type never equal"]
+assert of [("1" == 1) == 0, "string vs number never equal"]
+
+assert of [([1, 2] != [1, 3]) == 1, "list inequality true"]
+assert of [([1, 2] != [1, 2]) == 0, "list inequality false"]
+
+# match/case relies on the same structural equality
+m is "no"
+match [1, 2]:
+    case [1, 2]:
+        m is "yes"
+    case _:
+        m is "fallthrough"
+assert of [m == "yes", "match on list literal"]
+
+print of "All tests passed"
