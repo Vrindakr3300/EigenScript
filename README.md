@@ -87,38 +87,52 @@ catch e:
 
 ### Ask Your Code
 
-Every value in EigenScript tracks its own change history — entropy, rate
-of change, stability. You don't pay for it until you ask:
+Every value quietly remembers how it has been changing — and you don't pay
+for it until you ask. Six questions, in plain English:
 
 ```eigenscript
-loss is 100.0
-loss is 80.0
-loss is 65.0
-loss is 55.0
+signal is 10
+signal is 14
+signal is 15
 
-what is loss       # 55.0 — current value
-who is loss        # "loss" — variable name
-when is loss       # 4 — number of assignments
-where is loss      # entropy (information content)
-why is loss        # dH — rate of change (negative = improving)
-how is loss        # stability score (0-1)
+what is signal     # 15        — the value now
+who is signal      # "signal"  — the name you gave it
+when is signal     # 3         — how many times it has been set
+where is signal    # 0.337     — how much information it carries
+why is signal      # -0.016    — how fast that information is changing
 ```
 
-Six interrogatives, zero cost when unused. The runtime classifies
-trajectories automatically:
+(`how` is the sixth interrogative; see the observer guide for its current
+semantics.)
+
+The runtime also classifies each value's trajectory, so a value can tell
+you when it has settled instead of you writing epsilon checks by hand:
 
 ```eigenscript
-status is report of loss   # "improving"
-
-# Loop until the runtime says the value has converged
-loop while not converged:
-    loss is loss * 0.9
+loss is 50.0
+loop while not converged:     # exits on its own once loss settles
+    loss is loss * 0.5
+report of loss                # "converged"  (after 20 steps, loss ~ 0)
 ```
 
-States: `improving`, `diverging`, `stable`, `equilibrium`, `oscillating`,
-`converged`. Use them for convergence detection, instability alerts, or
-just debugging — `why is x` tells you what your value is doing without
-writing logging code.
+```eigenscript
+reading is 5.0
+reading is 2.0
+reading is 5.0
+reading is 2.0
+report of reading             # "oscillating"
+```
+
+Trajectory states: `converged`, `stable`, `equilibrium`, `oscillating`,
+`improving`, `diverging` — handy for convergence detection, instability
+alerts, or debugging without writing logging code.
+
+> **What `improving` and the rest actually mean.** EigenScript's observer
+> rests on a specific idea — a value locating itself *from the inside*,
+> with no external goal — so the trajectory words don't always match a
+> naive "smaller is better" reading. The full model, including the
+> resolution knob (`set_observer_thresholds`), is in
+> [docs/OBSERVER.md](docs/OBSERVER.md).
 
 ### Don't Ask — `unobserved`
 
