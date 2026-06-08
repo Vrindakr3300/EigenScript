@@ -57,6 +57,39 @@ void jit_helper_observe_assign_local(int slot) {
     (void)slot;
 }
 
+/* Stages 4q-a / 4q-c / 4q-d / 4q-f / 4v: same linker-immediate pattern —
+ * jit.c references each helper as a call-site immediate from its emitter
+ * for OP_ITER_NEXT / OP_INDEX_GET / OP_LOCAL_DOT_SET / OP_DOT_GET /
+ * OP_LOCAL_IDX_DOT_GET. The smoke binary's only code path is
+ * jit_emit_const_return, which emits none of those opcodes, so the stubs
+ * are unreachable. */
+int jit_helper_iter_next(void) { return 1; }
+void jit_helper_index_get(void) { }
+void jit_helper_local_dot_set(struct EigsChunk *chunk, int slot, int name_idx) {
+    (void)chunk; (void)slot; (void)name_idx;
+}
+void jit_helper_dot_get(struct EigsChunk *chunk, int name_idx) {
+    (void)chunk; (void)name_idx;
+}
+void jit_helper_local_idx_dot_get(struct EigsChunk *chunk, int slot,
+                                  int list_idx, int name_idx) {
+    (void)chunk; (void)slot; (void)list_idx; (void)name_idx;
+}
+
+/* Stages 4r / 4s / 4t: OP_CALL / OP_RETURN / OP_RETURN_NULL helpers,
+ * same unreachable-stub story. */
+int jit_helper_call(int argc) { (void)argc; return 1; }
+void jit_helper_return(void) { }
+void jit_helper_return_null(void) { }
+
+/* Stage 4u: jit.c references chunk_disassemble in its EIGS_JIT_DUMP_PREFIX
+ * diagnostic path. Smoke binary never sets that env var, so the call is
+ * unreachable. */
+struct EigsChunk;
+void chunk_disassemble(struct EigsChunk *chunk, const char *label) {
+    (void)chunk; (void)label;
+}
+
 static int run_case(int64_t expected) {
     EigsJitCache *jc = jit_cache_new(1);
     if (!jc) {
