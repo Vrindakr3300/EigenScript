@@ -5,6 +5,16 @@ All notable changes to EigenScript are documented here.
 ## [Unreleased]
 
 ### Added
+- **`docs/LANGUAGE_CONTRACT.md`** — the language's semantic promises stated
+  explicitly (equality, ordering, coercion, errors, numbers, truthiness,
+  scope, evaluation, mutability/aliasing, argument unpacking, the full
+  operator-precedence table, and indexing), each with an Enforced/Planned
+  status and a link to the test that locks it. A living spec to extend
+  before adding features.
+- **`tests/test_call_semantics.eigs`** — locks two previously-undocumented
+  promises: argument unpacking (≥2 params spread a list; a lone param binds
+  the whole argument) and reference aliasing (assignment shares containers,
+  does not copy).
 - **`tests/test_stem_accuracy.eigs`** — a 123-check known-answer audit of
   the STEM libraries (physics, chemistry, biology, engineering, geometry,
   linalg, calculus, probability, stats, numerics, optimize) against

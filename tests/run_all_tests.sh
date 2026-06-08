@@ -369,6 +369,17 @@ else
 fi
 echo ""
 
+echo "[Call Semantics] (8 checks)"
+CS_OUTPUT=$(./eigenscript ../tests/test_call_semantics.eigs 2>&1)
+TOTAL=$((TOTAL + 8))
+if echo "$CS_OUTPUT" | grep -q "All tests passed"; then
+    echo "  PASS: all 8 call-semantics/aliasing checks"; PASS=$((PASS + 8))
+else
+    echo "  FAIL: call-semantics"; FAIL=$((FAIL + 8))
+    echo "$CS_OUTPUT" | grep -iE "ASSERT|error" | head -5
+fi
+echo ""
+
 echo "[STEM Accuracy] (123 checks)"
 SA_OUTPUT=$(./eigenscript ../tests/test_stem_accuracy.eigs 2>&1)
 TOTAL=$((TOTAL + 123))
