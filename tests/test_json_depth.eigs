@@ -1,0 +1,27 @@
+# Security regression: deeply nested JSON must not crash the interpreter.
+# Before the fix, eigs_json_parse_value recursed once per nesting level with
+# no bound, so untrusted input like "[[[[...]]]]" exhausted the C stack
+# (SIGSEGV) — a remote DoS for any app that json_decodes an untrusted body.
+
+# Build a 5000-deep array string (far past the 200 nesting limit).
+deep is ""
+i is 0
+loop while i < 5000:
+    deep is "[" + deep
+    i is i + 1
+
+# This must return (truncated/null) rather than crash. Reaching the next
+# line at all is the assertion.
+result is json_decode of deep
+print of "survived deeply nested json"
+
+# Normal nested JSON within the limit still parses correctly.
+d is json_decode of "[1, [2, [3]]]"
+assert of [(len of d) == 2, "shallow nested array parses"]
+inner is d[1]
+assert of [(len of inner) == 2, "second-level array parses"]
+
+obj is json_decode of "{\"a\": {\"b\": 42}}"
+assert of [obj.a.b == 42, "nested object parses"]
+
+print of "All tests passed"

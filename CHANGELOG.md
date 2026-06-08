@@ -4,6 +4,29 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Security
+- **Bounded parser recursion depth (stack-exhaustion guard).** The
+  recursive-descent parser had no bound on expression nesting, so deeply
+  nested source — e.g. `eval` of untrusted input like `((((…))))` — could
+  exhaust the C stack and crash. Added a 256-level cap (shared by nested
+  expressions and blocks); over-deep source now produces a parse error
+  instead of a crash. (Block nesting was already capped at 64 by the
+  lexer's indent limit; this closes the expression side.)
+- **Constant-time secret comparison (`secure_equals` builtin).** Added
+  `secure_equals of [a, b]`, which compares two strings without
+  short-circuiting on the first differing byte, and switched `lib/auth.eigs`
+  to use it for password and bearer-token checks so comparison timing can't
+  leak how many leading bytes matched. Regression:
+  `tests/test_security_hardening.eigs`.
+- **Bounded JSON nesting depth (stack-exhaustion DoS fix).** The recursive
+  JSON parser (`eigs_json_parse_value` → array/object) had no depth limit,
+  so deeply nested input like `[[[[…]]]]` exhausted the C stack and crashed
+  the process with SIGSEGV. Reachable by any program that `json_decode`s
+  untrusted input — notably an HTTP server decoding a request body — making
+  it a remote denial of service. Added a 200-level nesting cap; input past
+  it is refused and parsing terminates cleanly instead of crashing. Normal
+  documents are unaffected. Regression: `tests/test_json_depth.eigs`.
+
 ### Added
 - **`docs/LANGUAGE_CONTRACT.md`** — the language's semantic promises stated
   explicitly (equality, ordering, coercion, errors, numbers, truthiness,

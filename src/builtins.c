@@ -788,6 +788,12 @@ static Value* eigs_json_parse_number(const char *s, int *pos) {
     return make_num(atof(numbuf));
 }
 
+/* Bound JSON nesting depth: each array/object descent is a C recursion, so
+ * untrusted input like "[[[[...]]]]" would otherwise exhaust the C stack and
+ * crash (SIGSEGV). 200 is far beyond any legitimate document. */
+#define JSON_MAX_DEPTH 200
+static __thread int g_json_depth = 0;
+
 static Value* eigs_json_parse_array(const char *s, int *pos) {
     (*pos)++;
     Value *list = make_list(8);
@@ -831,8 +837,23 @@ Value* eigs_json_parse_value(const char *s, int *pos) {
     eigs_json_skip_ws(s, pos);
     if (!s[*pos]) return make_null();
     if (s[*pos] == '"') return eigs_json_parse_string(s, pos);
-    if (s[*pos] == '[') return eigs_json_parse_array(s, pos);
-    if (s[*pos] == '{') return eigs_json_parse_object(s, pos);
+    /* Refuse to descend past the nesting limit (stack-exhaustion guard).
+     * The enclosing array/object loop breaks on the unconsumed bracket, so
+     * parsing terminates cleanly instead of crashing. */
+    if (s[*pos] == '[') {
+        if (g_json_depth >= JSON_MAX_DEPTH) return make_null();
+        g_json_depth++;
+        Value *v = eigs_json_parse_array(s, pos);
+        g_json_depth--;
+        return v;
+    }
+    if (s[*pos] == '{') {
+        if (g_json_depth >= JSON_MAX_DEPTH) return make_null();
+        g_json_depth++;
+        Value *v = eigs_json_parse_object(s, pos);
+        g_json_depth--;
+        return v;
+    }
     if (s[*pos] == '-' || isdigit(s[*pos])) return eigs_json_parse_number(s, pos);
     if (strncmp(s + *pos, "null", 4) == 0) { *pos += 4; return make_null(); }
     if (strncmp(s + *pos, "true", 4) == 0) { *pos += 4; return make_num(1); }
@@ -2687,6 +2708,33 @@ Value* builtin_random_hex(Value *arg) {
     return make_str(hex);
 }
 
+/* ==== BUILTIN: secure_equals ==== */
+/* secure_equals of [a, b] → 1 if the two strings are equal, else 0.
+ * Constant-time in the *contents*: it always scans the full length and folds
+ * every byte into the result, so it does not short-circuit on the first
+ * differing byte the way `==`/strcmp do. Use it for comparing secrets
+ * (tokens, password hashes) to avoid leaking how many leading bytes matched
+ * via timing. (Length is not treated as secret — it is folded in but the
+ * loop runs over the longer operand.) */
+Value* builtin_secure_equals(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) return make_num(0);
+    Value *a = arg->data.list.items[0];
+    Value *b = arg->data.list.items[1];
+    if (!a || !b || a->type != VAL_STR || b->type != VAL_STR) return make_num(0);
+    const char *sa = a->data.str ? a->data.str : "";
+    const char *sb = b->data.str ? b->data.str : "";
+    size_t la = strlen(sa), lb = strlen(sb);
+    size_t n = la > lb ? la : lb;
+    /* volatile accumulator so the compiler cannot turn this into an early-out */
+    volatile unsigned char diff = (unsigned char)(la ^ lb);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ca = i < la ? (unsigned char)sa[i] : 0;
+        unsigned char cb = i < lb ? (unsigned char)sb[i] : 0;
+        diff |= (unsigned char)(ca ^ cb);
+    }
+    return make_num(diff == 0 ? 1.0 : 0.0);
+}
+
 /* ==== BUILTIN: http_request_headers ==== */
 /* http_request_headers of null → raw request headers as string.
  * Only meaningful during HTTP request handling. */
@@ -3832,6 +3880,7 @@ void register_builtins(Env *env) {
     env_set_local(env, "chr", make_builtin(builtin_chr));
     env_set_local(env, "ord", make_builtin(builtin_ord));
     env_set_local(env, "random_hex", make_builtin(builtin_random_hex));
+    env_set_local(env, "secure_equals", make_builtin(builtin_secure_equals));
     env_set_local(env, "try_parse", make_builtin(builtin_try_parse));
     env_set_local(env, "eval", make_builtin(builtin_eval));
     env_set_local(env, "tensor_save", make_builtin(builtin_tensor_save));
