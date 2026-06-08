@@ -966,6 +966,26 @@ void eigs_jit_get_layout(EigsJitLayout *out) {
 
 /* ---- Main execution loop ---- */
 
+/* True if any frame in [base, top] still has an active try handler. Called
+ * only from CHECK_ERROR's slow path (g_has_error already set), so the
+ * linear scan is off the hot path. Used to decide whether an uncaught
+ * runtime error has any catcher within *this* vm_run invocation; if not,
+ * vm_run unwinds and returns with g_has_error still set so the C caller
+ * (a re-entrant vm_run, or main) observes the failure. */
+static int vm_handler_in_range(int base) {
+    for (int i = g_vm.frame_count - 1; i >= base; i--)
+        if (g_vm.frames[i].try_count > 0) return 1;
+    return 0;
+}
+
+/* Type name for a stack slot, for error diagnostics. Returns a static
+ * string (safe to hold across a decref). */
+static const char *slot_type_name(EigsSlot s) {
+    if (slot_is_null(s)) return "none";
+    if (slot_is_ptr(s)) { Value *v = slot_as_ptr(s); return v ? val_type_name(v->type) : "none"; }
+    return "num"; /* immediate double / bool */
+}
+
 static Value *vm_run(EigsChunk *chunk, Env *env) {
     int base_frame = g_vm.frame_count; /* track entry point for re-entrant returns */
     /* Module-level slot promotion (Part B) AND nested entries from builtins
@@ -1045,16 +1065,24 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_INTERROGATE_NAMED] = &&lbl_INTERROGATE_NAMED,
     };
     #define CHECK_ERROR() do { \
-        if (g_has_error && frame->try_count > 0) { \
-            g_has_error = 0; \
-            g_try_depth--; \
-            frame->try_count--; \
-            uint8_t *_catch_ip = frame->try_handlers[frame->try_count].catch_ip; \
-            int _catch_bp = frame->try_handlers[frame->try_count].catch_bp; \
-            frame->is_try = (frame->try_count > 0); \
-            while (g_vm.sp > _catch_bp) val_decref(vm_pop()); \
-            vm_push(make_str(g_error_msg)); \
-            ip = _catch_ip; \
+        if (__builtin_expect(g_has_error, 0)) { \
+            if (frame->try_count > 0) { \
+                g_has_error = 0; \
+                g_try_depth--; \
+                frame->try_count--; \
+                uint8_t *_catch_ip = frame->try_handlers[frame->try_count].catch_ip; \
+                int _catch_bp = frame->try_handlers[frame->try_count].catch_bp; \
+                frame->is_try = (frame->try_count > 0); \
+                while (g_vm.sp > _catch_bp) val_decref(vm_pop()); \
+                vm_push(make_str(g_error_msg)); \
+                ip = _catch_ip; \
+            } else if (!vm_handler_in_range(base_frame)) { \
+                /* Uncaught: no try anywhere in this vm_run's frames. Stop \
+                 * the dispatch loop instead of continuing with null (which \
+                 * cascades — see stack-overflow). g_has_error stays set so \
+                 * a re-entrant caller, or main, sees the failure. */ \
+                goto vm_error_halt; \
+            } \
         } \
     } while(0)
     #define DISPATCH() do { CHECK_ERROR(); goto *dispatch_table[*ip++]; } while(0)
@@ -1162,25 +1190,17 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             Value *r = make_str(s);
             free(s);
             vm_push(r);
-        } else if (a->type == VAL_NUM && b->type == VAL_STR) {
-            char buf[64]; snprintf(buf, sizeof(buf), "%.14g%s", a->data.num, b->data.str);
-            vm_push(make_str(buf));
-        } else if (a->type == VAL_STR && b->type == VAL_NUM) {
-            char buf[64]; snprintf(buf, sizeof(buf), "%s%.14g", a->data.str, b->data.num);
-            vm_push(make_str(buf));
-        } else if (a->type == VAL_STR || b->type == VAL_STR) {
-            /* String + non-string: convert non-string to string */
-            extern char* value_to_string(Value *v);
-            char *sa = (a->type == VAL_STR) ? strdup(a->data.str) : value_to_string(a);
-            char *sb = (b->type == VAL_STR) ? strdup(b->data.str) : value_to_string(b);
-            int la = strlen(sa), lb = strlen(sb);
-            char *s = malloc(la + lb + 1);
-            memcpy(s, sa, la); memcpy(s + la, sb, lb); s[la + lb] = 0;
-            vm_push(make_str(s));
-            free(sa); free(sb); free(s);
         } else {
-            runtime_error(current_line, "cannot apply '+' to %s and %s",
-                val_type_name(a->type), val_type_name(b->type));
+            /* Strict: + adds two numbers or concatenates two strings; it does
+             * not coerce across types ("3" + 4 was a footgun). For mixed
+             * concatenation use an f-string — f"{a}{b}" — or str of. */
+            const char *ta = val_type_name(a->type), *tb = val_type_name(b->type);
+            if ((a->type == VAL_STR) != (b->type == VAL_STR))
+                runtime_error(current_line,
+                    "cannot apply '+' to %s and %s (use an f-string or 'str of' to concatenate)",
+                    ta, tb);
+            else
+                runtime_error(current_line, "cannot apply '+' to %s and %s", ta, tb);
             vm_push(make_null());
         }
         val_decref(a); val_decref(b);
@@ -1346,10 +1366,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             DISPATCH();
         }
         Value *b = vm_pop(); Value *a = vm_pop();
-        int eq = 0;
-        if (a->type == VAL_STR && b->type == VAL_STR) eq = strcmp(a->data.str, b->data.str) == 0;
-        else if (a->type == VAL_NULL && b->type == VAL_NULL) eq = 1;
-        else eq = (a == b);
+        int eq = values_equal(a, b);
         vm_push(make_num(eq ? 1.0 : 0.0));
         val_decref(a); val_decref(b);
         DISPATCH();
@@ -1375,16 +1392,13 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             DISPATCH();
         }
         Value *b = vm_pop(); Value *a = vm_pop();
-        int eq = 0;
-        if (a->type == VAL_STR && b->type == VAL_STR) eq = strcmp(a->data.str, b->data.str) == 0;
-        else if (a->type == VAL_NULL && b->type == VAL_NULL) eq = 1;
-        else eq = (a == b);
+        int eq = values_equal(a, b);
         vm_push(make_num(eq ? 0.0 : 1.0));
         val_decref(a); val_decref(b);
         DISPATCH();
     }
 
-#define NUM_CMP(NAME, OP) \
+#define NUM_CMP(NAME, OP, OPNAME) \
     CASE(NAME): { \
         EigsSlot _bs = g_vm.stack[g_vm.sp - 1]; \
         EigsSlot _as = g_vm.stack[g_vm.sp - 2]; \
@@ -1416,16 +1430,24 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 DISPATCH(); \
             } \
         } \
-        slot_decref(_as); slot_decref(_bs); \
+        /* Mixed/uncomparable types: error rather than silently returning \
+         * false (e.g. "3" < 4 used to be 0). Capture type names before \
+         * decref. ==/!= keep cross-type "not equal"; only ordering errors. */ \
+        { \
+            const char *_tna = slot_type_name(_as), *_tnb = slot_type_name(_bs); \
+            slot_decref(_as); slot_decref(_bs); \
+            runtime_error(current_line, "cannot compare %s and %s with '%s'", \
+                _tna, _tnb, OPNAME); \
+        } \
         g_vm.stack[g_vm.sp - 2] = slot_from_num(0.0); \
         g_vm.sp--; \
         DISPATCH(); \
     }
 
-    NUM_CMP(LT, <)
-    NUM_CMP(GT, >)
-    NUM_CMP(LE, <=)
-    NUM_CMP(GE, >=)
+    NUM_CMP(LT, <, "<")
+    NUM_CMP(GT, >, ">")
+    NUM_CMP(LE, <=, "<=")
+    NUM_CMP(GE, >=, ">=")
 
     /* ---- Variables ---- */
 
@@ -2985,6 +3007,23 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     /* Should not reach here */
     g_vm.frame_count--;
+    return make_null();
+
+vm_error_halt:
+    /* Uncaught runtime error: unwind every frame this vm_run owns
+     * ([base_frame, frame_count)) the same way OP_RETURN does — drain the
+     * frame's stack window, free its env if owned, restore the per-frame
+     * loop-stall globals — then return null. g_has_error is left set on
+     * purpose: the caller (re-entrant vm_run via CHECK_ERROR, or main via
+     * its exit code) is responsible for reporting it. */
+    while (g_vm.frame_count > base_frame) {
+        CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
+        while (g_vm.sp > f->bp) slot_decref(g_vm.stack[--g_vm.sp]);
+        if (f->owns_env) env_free(f->env);
+        g_loop_stall_count = f->saved_stall_count;
+        g_loop_iterations  = f->saved_loop_iter;
+        g_vm.frame_count--;
+    }
     return make_null();
 }
 

@@ -98,8 +98,8 @@ signal is 15
 what is signal     # 15        — the value now
 who is signal      # "signal"  — the name you gave it
 when is signal     # 3         — how many times it has been set
-where is signal    # 0.337     — how much information it carries
-why is signal      # -0.016    — how fast that information is changing
+where is signal    # ~0.34     — how much information it carries
+why is signal      # ~-0.016   — how fast that information is changing
 ```
 
 (`how` is the sixth interrogative; see the observer guide for its current

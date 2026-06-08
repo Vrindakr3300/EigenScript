@@ -108,6 +108,7 @@ static void eigenscript_repl(Env *env) {
 
         g_returning = 0;
         g_return_val = NULL;
+        g_has_error = 0;   /* don't carry a prior line's error into this one */
         EigsChunk *repl_chunk = compile_ast(ast, env);
         Value *result = vm_execute(repl_chunk, env);
         chunk_free(repl_chunk);
@@ -275,6 +276,10 @@ int main(int argc, char **argv) {
     if (getenv("EIGS_DUMP_BC")) chunk_disassemble(script_chunk, "<module>");
     Value *result = vm_execute(script_chunk, global);
     if (result) val_decref(result);
+    /* An uncaught runtime error leaves g_has_error set (vm_run unwinds to
+     * here rather than continuing with null). Report it as a non-zero exit
+     * so scripts fail loudly for callers, Makefiles, and CI. */
+    int exit_code = g_has_error ? 1 : 0;
     /* Don't free chunk — closures/functions may still reference nested chunks.
      * Process is exiting anyway. TODO: refcount chunks. */
 
@@ -282,5 +287,5 @@ int main(int argc, char **argv) {
     free_tokenlist(&tl);
     free(source);
     arena_destroy();
-    return 0;
+    return exit_code;
 }

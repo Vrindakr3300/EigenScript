@@ -1,0 +1,37 @@
+# Function-call argument unpacking + reference aliasing contract.
+# See docs/LANGUAGE_CONTRACT.md.
+
+define two(a, b) as:
+    return a - b
+define one(a) as:
+    return a
+define three(a, b, c) as:
+    return a + b + c
+
+# Multi-param functions spread a list argument across parameters
+assert of [(two of [10, 3]) == 7, "2-param spreads list"]
+assert of [(three of [1, 2, 3]) == 6, "3-param spreads list"]
+assert of [(two of [10, 3, 99]) == 7, "extra list elements ignored"]
+
+# A one-param function binds the WHOLE argument (a list is not spread)
+assert of [(one of [7]) == [7], "1-param binds whole list"]
+assert of [(one of 5) == 5, "1-param binds scalar"]
+
+# Assignment binds a reference: lists/dicts are shared, not copied
+a is [1, 2, 3]
+b is a
+b[0] is 99
+assert of [a[0] == 99, "list assignment aliases (shared reference)"]
+
+d is {"k": 1}
+e is d
+e.k is 99
+assert of [d.k == 99, "dict assignment aliases"]
+
+# Scalars are immutable, so reassigning an alias never affects the original
+x is 5
+y is x
+y is y + 1
+assert of [x == 5, "scalar reassignment does not affect original"]
+
+print of "All tests passed"

@@ -43,6 +43,11 @@ void runtime_error(int line, const char *fmt, ...) {
     va_start(args, fmt);
     vsnprintf(tmp, sizeof(tmp), fmt, args);
     va_end(args);
+    /* Tolerate a trailing newline in the format (some call sites carried one
+     * over from fprintf): the "Error line N:" frame and the stderr write add
+     * their own, and a trailing \n would also leak into a caught error's text. */
+    size_t _tl = strlen(tmp);
+    if (_tl > 0 && tmp[_tl - 1] == '\n') tmp[_tl - 1] = '\0';
     snprintf(g_error_msg, sizeof(g_error_msg), "Error line %d: %s", line, tmp);
     g_has_error = 1;
     if (g_try_depth == 0) {
@@ -704,6 +709,58 @@ int is_truthy(Value *v) {
     return 0;
 }
 
+/* Structural equality for `==` / `!=`.
+ * Scalars compare by value (numbers, strings, null); collections compare
+ * recursively by structure (lists element-wise, dicts by key/value
+ * order-independently, buffers/text-builders by contents). Functions,
+ * builtins, and raw-JSON compare by identity. Mixed types are never equal
+ * (no coercion — consistent with the comparison operators). The depth
+ * guard prevents runaway recursion on self-referential containers; beyond
+ * it we fall back to identity. */
+static int values_equal_impl(Value *a, Value *b, int depth) {
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    if (a->type != b->type) return 0;
+    if (depth > 64) return a == b;
+    switch (a->type) {
+        case VAL_NUM:  return a->data.num == b->data.num;
+        case VAL_STR:  return strcmp(a->data.str, b->data.str) == 0;
+        case VAL_NULL: return 1;
+        case VAL_LIST: {
+            if (a->data.list.count != b->data.list.count) return 0;
+            for (int i = 0; i < a->data.list.count; i++)
+                if (!values_equal_impl(a->data.list.items[i],
+                                       b->data.list.items[i], depth + 1))
+                    return 0;
+            return 1;
+        }
+        case VAL_DICT: {
+            if (a->data.dict.count != b->data.dict.count) return 0;
+            for (int i = 0; i < a->data.dict.count; i++) {
+                Value *bv = dict_get(b, a->data.dict.keys[i]);
+                if (!bv) return 0;
+                if (!values_equal_impl(a->data.dict.vals[i], bv, depth + 1))
+                    return 0;
+            }
+            return 1;
+        }
+        case VAL_BUFFER: {
+            if (a->data.buffer.count != b->data.buffer.count) return 0;
+            for (int i = 0; i < a->data.buffer.count; i++)
+                if (a->data.buffer.data[i] != b->data.buffer.data[i]) return 0;
+            return 1;
+        }
+        case VAL_TEXT_BUILDER:
+            return a->data.text_builder.len == b->data.text_builder.len &&
+                   memcmp(a->data.text_builder.data, b->data.text_builder.data,
+                          a->data.text_builder.len) == 0;
+        default: /* VAL_FN, VAL_BUILTIN, VAL_JSON_RAW — identity */
+            return a == b;
+    }
+}
+
+int values_equal(Value *a, Value *b) { return values_equal_impl(a, b, 0); }
+
 static __thread int g_vts_depth = 0;
 
 char* value_to_string(Value *v) {
@@ -714,10 +771,21 @@ char* value_to_string(Value *v) {
         case VAL_NULL: return xstrdup("null");
         case VAL_NUM: {
             double n = v->data.num;
-            if (n == (long long)n && fabs(n) < 1e15)
+            /* Exact integers up to 2^53 (the largest integer all doubles
+             * represent exactly) print without a decimal point or exponent. */
+            if (n == (long long)n && fabs(n) < 9007199254740992.0) {
                 snprintf(buf, sizeof(buf), "%lld", (long long)n);
-            else
-                snprintf(buf, sizeof(buf), "%.6g", n);
+            } else {
+                /* Shortest representation that round-trips: try 15..17
+                 * significant digits and stop at the first that parses back
+                 * to the same double. %.6g (the old default) silently
+                 * truncated every float to 6 figures — lossy for the
+                 * numerical/STEM workloads this language targets. */
+                for (int prec = 15; prec <= 17; prec++) {
+                    snprintf(buf, sizeof(buf), "%.*g", prec, n);
+                    if (strtod(buf, NULL) == n) break;
+                }
+            }
             return xstrdup(buf);
         }
         case VAL_STR: return xstrdup(v->data.str);

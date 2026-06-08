@@ -234,7 +234,35 @@ This works for factory patterns, callbacks, and higher-order programming.
 **Arithmetic:** `+`, `-`, `*`, `/`, `%`
 **Comparison:** `==`, `!=`, `<`, `>`, `<=`, `>=`
 **Logical:** `and`, `or`, `not`
-**String:** `+` (concatenation when either side is a string)
+**String:** `+` (concatenation when *both* sides are strings)
+
+### Type rules
+
+- **`+`** adds two numbers or concatenates two strings. It does **not**
+  coerce across types — `"n=" + 42` raises. To build text from mixed
+  types use an f-string (`f"n={count}"`) or `str of`.
+- **Ordering** (`<`, `>`, `<=`, `>=`) requires both operands to be the
+  same comparable type (number/number or string/string). Comparing mixed
+  types (e.g. `"3" < 4`) raises a runtime error rather than silently
+  returning false — catch it with `try`/`catch` if you mean it.
+- **Equality** (`==`, `!=`) never coerces. Numbers, strings, and null
+  compare by value; lists and dicts compare *structurally* (so
+  `[1,2] == [1,2]` is true and `match` works on list/dict patterns);
+  functions compare by identity. Operands of different types are simply
+  not equal — `"3" == 3` is `false`, never an error.
+
+### `of` binds tighter than arithmetic
+
+Function application with `of` binds tighter than `+`/`-`/`*`/`/`. So
+`len of xs - 1` means `(len of xs) - 1`, which is usually what you want.
+The flip side: `sqrt of x + 1` means `(sqrt of x) + 1`, *not*
+`sqrt of (x + 1)`. When the argument is itself an arithmetic expression,
+parenthesize it:
+
+```eigenscript
+y is sqrt of (x + 1)      # not  sqrt of x + 1
+print of (total + tax)    # not  print of total + tax  (would print total, then error)
+```
 
 ## Lists
 

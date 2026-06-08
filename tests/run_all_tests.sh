@@ -1,7 +1,11 @@
 #!/bin/bash
-set -e
+# Note: no `set -e`. This is a test runner — it must continue past a failing
+# command and report its own PASS/FAIL tally. With `set -e`, any .eigs program
+# that legitimately exits non-zero (an uncaught runtime error, or a probe that
+# intentionally hits a missing builtin in the minimal build) would abort the
+# whole suite.
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$(dirname "$0")/../src"
+cd "$(dirname "$0")/../src" || { echo "cannot cd to src"; exit 1; }
 
 PASS=0
 FAIL=0
@@ -343,6 +347,61 @@ LE2_EXIT=$(echo "$LE_OUTPUT" | grep -A1 'LE2:' | tail -1)
 check "LE2 exit=stalled" "$LE2_EXIT" "stalled"
 echo ""
 
+echo "[Structural Equality] (15 checks)"
+EQ_OUTPUT=$(./eigenscript ../tests/test_equality.eigs 2>&1)
+TOTAL=$((TOTAL + 15))
+if echo "$EQ_OUTPUT" | grep -q "All tests passed"; then
+    echo "  PASS: all 15 structural-equality checks"; PASS=$((PASS + 15))
+else
+    echo "  FAIL: structural-equality"; FAIL=$((FAIL + 15))
+    echo "$EQ_OUTPUT" | grep -iE "ASSERT|error" | head -5
+fi
+echo ""
+
+echo "[Number Formatting] (9 checks)"
+NF_OUTPUT=$(./eigenscript ../tests/test_number_format.eigs 2>&1)
+TOTAL=$((TOTAL + 9))
+if echo "$NF_OUTPUT" | grep -q "All tests passed"; then
+    echo "  PASS: all 9 number-format round-trip checks"; PASS=$((PASS + 9))
+else
+    echo "  FAIL: number-format"; FAIL=$((FAIL + 9))
+    echo "$NF_OUTPUT" | grep -iE "ASSERT|error" | head -5
+fi
+echo ""
+
+echo "[Call Semantics] (8 checks)"
+CS_OUTPUT=$(./eigenscript ../tests/test_call_semantics.eigs 2>&1)
+TOTAL=$((TOTAL + 8))
+if echo "$CS_OUTPUT" | grep -q "All tests passed"; then
+    echo "  PASS: all 8 call-semantics/aliasing checks"; PASS=$((PASS + 8))
+else
+    echo "  FAIL: call-semantics"; FAIL=$((FAIL + 8))
+    echo "$CS_OUTPUT" | grep -iE "ASSERT|error" | head -5
+fi
+echo ""
+
+echo "[STEM Accuracy] (123 checks)"
+SA_OUTPUT=$(./eigenscript ../tests/test_stem_accuracy.eigs 2>&1)
+TOTAL=$((TOTAL + 123))
+if echo "$SA_OUTPUT" | grep -q "All STEM accuracy checks passed"; then
+    echo "  PASS: all 123 STEM known-answer checks"; PASS=$((PASS + 123))
+else
+    echo "  FAIL: STEM accuracy"; FAIL=$((FAIL + 123))
+    echo "$SA_OUTPUT" | grep -iE "FAIL|error" | head -10
+fi
+echo ""
+
+echo "[Coercion] (16 checks)"
+CO_OUTPUT=$(./eigenscript ../tests/test_coercion.eigs 2>&1)
+TOTAL=$((TOTAL + 16))
+if echo "$CO_OUTPUT" | grep -q "All tests passed"; then
+    echo "  PASS: all 16 coercion checks"; PASS=$((PASS + 16))
+else
+    echo "  FAIL: coercion"; FAIL=$((FAIL + 16))
+    echo "$CO_OUTPUT" | grep -iE "ASSERT|error" | head -5
+fi
+echo ""
+
 echo "[12/15] Type Labels (4 checks)"
 TY_OUTPUT=$(./eigenscript ../tests/test_type.eigs 2>&1)
 
@@ -384,11 +443,13 @@ AO_OUTPUT=$(./eigenscript ../tests/test_arena_ownership.eigs 2>&1)
 AO1_Y=$(echo "$AO_OUTPUT" | grep -A1 'AO1:' | tail -1)
 check "AO1 new local in arena window survives reset" "$AO1_Y" "42"
 
+# 50 sgd_update steps accumulate float error; compare with tolerance rather
+# than exact string (the old %.6g formatter rounded 0.4999...956 to "0.5").
 AO2_W0=$(echo "$AO_OUTPUT" | grep -A1 'AO2:' | tail -1)
-check "AO2 50x sgd_update w[0]" "$AO2_W0" "0.5"
+check_numeric "AO2 50x sgd_update w[0]" "$AO2_W0" "0.4999" "0.5001"
 
 AO2_W3=$(echo "$AO_OUTPUT" | grep -A2 'AO2:' | tail -1)
-check "AO2 50x sgd_update w[3]" "$AO2_W3" "3.5"
+check_numeric "AO2 50x sgd_update w[3]" "$AO2_W3" "3.4999" "3.5001"
 
 AO3_V=$(echo "$AO_OUTPUT" | grep -A1 'AO3:' | tail -1)
 check "AO3 tensor save/load roundtrip" "$AO3_V" "21"
@@ -488,8 +549,32 @@ if x == 1:
     print of "one"
 elif x == 5:
     y is x[0]' "Error line 5: cannot index"
-check_exit "EM14 runtime error exits 0" 'x is [1] - 5' "0"
+# An *uncaught* runtime error must fail loudly: non-zero exit, and no further
+# statements run. (Warnings like div-by-zero are not errors — see EM15.)
+check_exit "EM14 uncaught runtime error exits non-zero" 'x is [1] - 5' "1"
 check_exit "EM15 warning exits 0" 'x is 10 / 0' "0"
+
+# Regression: uncaught error halts execution (statement after must not run)
+EM16_OUT=$(printf '%s\n' 'x is undefined_thing' 'print of "AFTER"' > /tmp/eigs_em16.eigs; ./eigenscript /tmp/eigs_em16.eigs 2>/dev/null; rm -f /tmp/eigs_em16.eigs)
+TOTAL=$((TOTAL + 1))
+if [ -z "$EM16_OUT" ]; then
+    echo "  PASS: EM16 uncaught error halts (no output after)"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: EM16 statement ran after uncaught error (got '$EM16_OUT')"
+    FAIL=$((FAIL + 1))
+fi
+
+# Regression: stack overflow exits non-zero (single error, not a cascade)
+check_exit "EM17 stack overflow exits non-zero" 'define r(n) as:
+    return 1 + (r of (n + 1))
+print of (r of 0)' "1"
+
+# Regression: a caught error still allows the program to succeed (exit 0)
+check_exit "EM18 caught error exits 0" 'try:
+    x is undefined_thing
+catch e:
+    print of "ok"' "0"
 echo ""
 
 # [17] Transformer smoke test — only runs if model extension compiled in.

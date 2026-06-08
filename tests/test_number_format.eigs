@@ -1,0 +1,17 @@
+# Number formatting must round-trip: str(x) then num() returns the same
+# double. The old %.6g default truncated every float to 6 significant
+# figures, which is lossy for numerical/STEM work.
+
+assert of [(num of (str of (1 / 3))) == (1 / 3), "1/3 round-trips"]
+assert of [(num of (str of (0.1 + 0.2))) == (0.1 + 0.2), "0.1+0.2 round-trips"]
+assert of [(num of (str of 3.14159265358979)) == 3.14159265358979, "pi round-trips"]
+assert of [(num of (str of (2 / 7))) == (2 / 7), "2/7 round-trips"]
+assert of [(num of (str of (123456.789))) == 123456.789, "decimal round-trips"]
+
+# Exact integers print without a decimal point or exponent.
+assert of [(str of 42) == "42", "small int formatting"]
+assert of [(str of 0) == "0", "zero formatting"]
+assert of [(str of (0 - 7)) == "-7", "negative int formatting"]
+assert of [(str of 9007199254740992) == "9007199254740992", "2^53 exact integer"]
+
+print of "All tests passed"

@@ -2,6 +2,95 @@
 
 All notable changes to EigenScript are documented here.
 
+## [Unreleased]
+
+### Added
+- **`docs/LANGUAGE_CONTRACT.md`** — the language's semantic promises stated
+  explicitly (equality, ordering, coercion, errors, numbers, truthiness,
+  scope, evaluation, mutability/aliasing, argument unpacking, the full
+  operator-precedence table, and indexing), each with an Enforced/Planned
+  status and a link to the test that locks it. A living spec to extend
+  before adding features.
+- **`tests/test_call_semantics.eigs`** — locks two previously-undocumented
+  promises: argument unpacking (≥2 params spread a list; a lone param binds
+  the whole argument) and reference aliasing (assignment shares containers,
+  does not copy).
+- **`tests/test_stem_accuracy.eigs`** — a 123-check known-answer audit of
+  the STEM libraries (physics, chemistry, biology, engineering, geometry,
+  linalg, calculus, probability, stats, numerics, optimize) against
+  textbook values. Every check passes: e.g. `gravitational_force` matches
+  the 2019 CODATA G, `normal_pdf(0,0,1)` matches 1/√(2π) to 16 digits,
+  `rk4` lands on e, Simpson/trapezoidal/midpoint integration and Newton/
+  secant/bisection root-finding all hit their analytic answers.
+- **`variance_sample` / `std_dev_sample`** in `lib/stats.eigs` — sample
+  variance/standard deviation with Bessel's correction (÷N−1). The
+  existing `variance`/`std_dev` remain **population** statistics (÷N); the
+  difference is now documented in the source and both forms are tested.
+
+### Changed (behavior change)
+- **`==` / `!=` are now structural for collections.** Lists and dicts
+  previously compared by reference identity, so `[1,2] == [1,2]` was
+  `false`. They now compare by structure (lists element-wise, dicts by
+  key/value order-independently, buffers/text-builders by contents);
+  numbers/strings/null by value; functions and builtins still by identity;
+  mixed types are never equal (no coercion). This also makes `match` work
+  on list/dict patterns. See `tests/test_equality.eigs`.
+- **Numbers print round-trippably.** `value_to_string` used `%.6g`, which
+  truncated every non-integer to 6 significant figures (and any integer
+  >= 1e15 to lossy scientific form) — `1/3` printed `0.333333`,
+  `0.1 + 0.2` printed `0.3`. It now emits the shortest representation that
+  parses back to the same double (15–17 significant digits as needed), so
+  `0.1 + 0.2` prints `0.30000000000000004` and `str`/`num` round-trip.
+  Exact integers up to 2^53 still print without a decimal point. See
+  `tests/test_number_format.eigs`.
+
+### Changed (behavior change), continued
+- **Mixed-type ordering now raises instead of silently returning false.**
+  `<`, `>`, `<=`, `>=` previously returned `false` when the operands were
+  different types (`"3" < 4` was `false`), masking type confusion. They
+  now require both operands to be the same comparable type (number/number
+  or string/string) and raise a runtime error otherwise (catchable with
+  `try`/`catch`). Equality (`==`/`!=`) is unchanged: it never coerces and
+  cross-type compares are simply not-equal, never an error.
+- **`+` no longer coerces across types.** It adds two numbers or
+  concatenates two strings; a mixed operand (`"n=" + 42`, `7 + "x"`) now
+  raises instead of silently stringifying (`"3" + 4` used to be `"34"`).
+  Use an f-string — `f"n={count}"` — or `str of` to mix types in text.
+  (The old coercion path also truncated numbers via `%.14g`; that's moot
+  now.) `of` precedence (`len of xs - 1` parses as `(len of xs) - 1`) is
+  documented in docs/SYNTAX.md, not changed — the two natural readings
+  conflict, and the current rule matches the common idiom.
+- **Builtin argument errors now raise instead of warning and returning
+  `null`.** `EigenStore` builtins (`store_open`/`put`/`get`/`delete`/
+  `query`/`count`/`update`/`collections`/`drop`/`close`), `json_decode`,
+  and `load_file` previously printed an `Error:`/`Type error:` line to
+  stderr and returned `null` on bad input, so a misuse silently produced
+  `null` and the program continued. They now route through the same
+  `runtime_error` channel as the rest of the VM — caught by an enclosing
+  `try`, otherwise fatal. Non-error outcomes are unchanged: a `store_get`
+  miss still returns `null`, a `store_delete` of a missing key still
+  returns `0`. (`runtime_error` is now declared in `eigenscript.h` and
+  strips a trailing newline so caught messages are clean.) Remaining
+  lenient spots, left for a follow-up: a file-open failure in the stream
+  builtins, and the optional model extension.
+
+### Fixed (behavior change)
+- **Uncaught runtime errors are now fatal and set a non-zero exit code.**
+  Previously an uncaught error (undefined variable, index out of range,
+  calling a non-function, operator type mismatch, call-stack overflow)
+  printed a message, substituted `null`, and execution *continued* — and
+  the process still exited `0`. Scripts could fail silently and report
+  success, and a stack overflow produced a cascade of follow-on errors
+  rather than one. `vm_run` now unwinds to the nearest enclosing `try`
+  (across re-entrant calls), or halts the program if there is none, and
+  `main` returns `1` when an uncaught error occurred. `try`/`catch`
+  behavior is unchanged; caught errors still let the program continue and
+  exit `0`. Migration: wrap recoverable operations in `try`/`catch`.
+  Note: builtins on the separate "soft" channel (e.g. `store_*` and
+  `json_decode`, which print `Error:`/`Type error:` without raising) still
+  return `null` and continue — unifying those into the strict model is a
+  follow-up.
+
 ## [0.11.4] — 2026-05-23
 
 ### Performance
