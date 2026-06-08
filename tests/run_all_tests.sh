@@ -1,7 +1,11 @@
 #!/bin/bash
-set -e
+# Note: no `set -e`. This is a test runner — it must continue past a failing
+# command and report its own PASS/FAIL tally. With `set -e`, any .eigs program
+# that legitimately exits non-zero (an uncaught runtime error, or a probe that
+# intentionally hits a missing builtin in the minimal build) would abort the
+# whole suite.
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$(dirname "$0")/../src"
+cd "$(dirname "$0")/../src" || { echo "cannot cd to src"; exit 1; }
 
 PASS=0
 FAIL=0
@@ -488,8 +492,32 @@ if x == 1:
     print of "one"
 elif x == 5:
     y is x[0]' "Error line 5: cannot index"
-check_exit "EM14 runtime error exits 0" 'x is [1] - 5' "0"
+# An *uncaught* runtime error must fail loudly: non-zero exit, and no further
+# statements run. (Warnings like div-by-zero are not errors — see EM15.)
+check_exit "EM14 uncaught runtime error exits non-zero" 'x is [1] - 5' "1"
 check_exit "EM15 warning exits 0" 'x is 10 / 0' "0"
+
+# Regression: uncaught error halts execution (statement after must not run)
+EM16_OUT=$(printf '%s\n' 'x is undefined_thing' 'print of "AFTER"' > /tmp/eigs_em16.eigs; ./eigenscript /tmp/eigs_em16.eigs 2>/dev/null; rm -f /tmp/eigs_em16.eigs)
+TOTAL=$((TOTAL + 1))
+if [ -z "$EM16_OUT" ]; then
+    echo "  PASS: EM16 uncaught error halts (no output after)"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: EM16 statement ran after uncaught error (got '$EM16_OUT')"
+    FAIL=$((FAIL + 1))
+fi
+
+# Regression: stack overflow exits non-zero (single error, not a cascade)
+check_exit "EM17 stack overflow exits non-zero" 'define r(n) as:
+    return 1 + (r of (n + 1))
+print of (r of 0)' "1"
+
+# Regression: a caught error still allows the program to succeed (exit 0)
+check_exit "EM18 caught error exits 0" 'try:
+    x is undefined_thing
+catch e:
+    print of "ok"' "0"
 echo ""
 
 # [17] Transformer smoke test — only runs if model extension compiled in.

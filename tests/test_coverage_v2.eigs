@@ -346,18 +346,34 @@ assert of [1 == 1, "CV2-89 json_decode non-string handled"]
 je_float is json_encode of 3.141592653589793
 assert of [contains of [je_float, "3.14159"] == 1, "CV2-90 json_encode float precision"]
 
-# --- Concurrency error paths ---
-tj_bad is thread_join of 42
-assert of [1 == 1, "CV2-91 thread_join bad arg handled"]
+# --- Concurrency error paths (strict model: bad args raise; caught here) ---
+tj_caught is 0
+try:
+    tj_bad is thread_join of 42
+catch e:
+    tj_caught is 1
+assert of [tj_caught == 1, "CV2-91 thread_join bad arg raises"]
 
-ts_bad is send of 42
-assert of [1 == 1, "CV2-92 send bad arg handled"]
+ts_caught is 0
+try:
+    ts_bad is send of 42
+catch e:
+    ts_caught is 1
+assert of [ts_caught == 1, "CV2-92 send bad arg raises"]
 
-tr_bad is recv of 42
-assert of [1 == 1, "CV2-93 recv bad arg handled"]
+tr_caught is 0
+try:
+    tr_bad is recv of 42
+catch e:
+    tr_caught is 1
+assert of [tr_caught == 1, "CV2-93 recv bad arg raises"]
 
-tcc_bad is close_channel of 42
-assert of [1 == 1, "CV2-94 close_channel bad arg handled"]
+tcc_caught is 0
+try:
+    tcc_bad is close_channel of 42
+catch e:
+    tcc_caught is 1
+assert of [tcc_caught == 1, "CV2-94 close_channel bad arg raises"]
 
 # --- Spawn/join roundtrip ---
 define worker() as:

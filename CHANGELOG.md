@@ -2,6 +2,25 @@
 
 All notable changes to EigenScript are documented here.
 
+## [Unreleased]
+
+### Fixed (behavior change)
+- **Uncaught runtime errors are now fatal and set a non-zero exit code.**
+  Previously an uncaught error (undefined variable, index out of range,
+  calling a non-function, operator type mismatch, call-stack overflow)
+  printed a message, substituted `null`, and execution *continued* — and
+  the process still exited `0`. Scripts could fail silently and report
+  success, and a stack overflow produced a cascade of follow-on errors
+  rather than one. `vm_run` now unwinds to the nearest enclosing `try`
+  (across re-entrant calls), or halts the program if there is none, and
+  `main` returns `1` when an uncaught error occurred. `try`/`catch`
+  behavior is unchanged; caught errors still let the program continue and
+  exit `0`. Migration: wrap recoverable operations in `try`/`catch`.
+  Note: builtins on the separate "soft" channel (e.g. `store_*` and
+  `json_decode`, which print `Error:`/`Type error:` without raising) still
+  return `null` and continue — unifying those into the strict model is a
+  follow-up.
+
 ## [0.11.4] — 2026-05-23
 
 ### Performance

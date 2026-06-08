@@ -966,6 +966,18 @@ void eigs_jit_get_layout(EigsJitLayout *out) {
 
 /* ---- Main execution loop ---- */
 
+/* True if any frame in [base, top] still has an active try handler. Called
+ * only from CHECK_ERROR's slow path (g_has_error already set), so the
+ * linear scan is off the hot path. Used to decide whether an uncaught
+ * runtime error has any catcher within *this* vm_run invocation; if not,
+ * vm_run unwinds and returns with g_has_error still set so the C caller
+ * (a re-entrant vm_run, or main) observes the failure. */
+static int vm_handler_in_range(int base) {
+    for (int i = g_vm.frame_count - 1; i >= base; i--)
+        if (g_vm.frames[i].try_count > 0) return 1;
+    return 0;
+}
+
 static Value *vm_run(EigsChunk *chunk, Env *env) {
     int base_frame = g_vm.frame_count; /* track entry point for re-entrant returns */
     /* Module-level slot promotion (Part B) AND nested entries from builtins
@@ -1045,16 +1057,24 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_INTERROGATE_NAMED] = &&lbl_INTERROGATE_NAMED,
     };
     #define CHECK_ERROR() do { \
-        if (g_has_error && frame->try_count > 0) { \
-            g_has_error = 0; \
-            g_try_depth--; \
-            frame->try_count--; \
-            uint8_t *_catch_ip = frame->try_handlers[frame->try_count].catch_ip; \
-            int _catch_bp = frame->try_handlers[frame->try_count].catch_bp; \
-            frame->is_try = (frame->try_count > 0); \
-            while (g_vm.sp > _catch_bp) val_decref(vm_pop()); \
-            vm_push(make_str(g_error_msg)); \
-            ip = _catch_ip; \
+        if (__builtin_expect(g_has_error, 0)) { \
+            if (frame->try_count > 0) { \
+                g_has_error = 0; \
+                g_try_depth--; \
+                frame->try_count--; \
+                uint8_t *_catch_ip = frame->try_handlers[frame->try_count].catch_ip; \
+                int _catch_bp = frame->try_handlers[frame->try_count].catch_bp; \
+                frame->is_try = (frame->try_count > 0); \
+                while (g_vm.sp > _catch_bp) val_decref(vm_pop()); \
+                vm_push(make_str(g_error_msg)); \
+                ip = _catch_ip; \
+            } else if (!vm_handler_in_range(base_frame)) { \
+                /* Uncaught: no try anywhere in this vm_run's frames. Stop \
+                 * the dispatch loop instead of continuing with null (which \
+                 * cascades — see stack-overflow). g_has_error stays set so \
+                 * a re-entrant caller, or main, sees the failure. */ \
+                goto vm_error_halt; \
+            } \
         } \
     } while(0)
     #define DISPATCH() do { CHECK_ERROR(); goto *dispatch_table[*ip++]; } while(0)
@@ -2985,6 +3005,23 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     /* Should not reach here */
     g_vm.frame_count--;
+    return make_null();
+
+vm_error_halt:
+    /* Uncaught runtime error: unwind every frame this vm_run owns
+     * ([base_frame, frame_count)) the same way OP_RETURN does — drain the
+     * frame's stack window, free its env if owned, restore the per-frame
+     * loop-stall globals — then return null. g_has_error is left set on
+     * purpose: the caller (re-entrant vm_run via CHECK_ERROR, or main via
+     * its exit code) is responsible for reporting it. */
+    while (g_vm.frame_count > base_frame) {
+        CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
+        while (g_vm.sp > f->bp) slot_decref(g_vm.stack[--g_vm.sp]);
+        if (f->owns_env) env_free(f->env);
+        g_loop_stall_count = f->saved_stall_count;
+        g_loop_iterations  = f->saved_loop_iter;
+        g_vm.frame_count--;
+    }
     return make_null();
 }
 
