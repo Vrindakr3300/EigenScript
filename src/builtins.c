@@ -788,6 +788,12 @@ static Value* eigs_json_parse_number(const char *s, int *pos) {
     return make_num(atof(numbuf));
 }
 
+/* Bound JSON nesting depth: each array/object descent is a C recursion, so
+ * untrusted input like "[[[[...]]]]" would otherwise exhaust the C stack and
+ * crash (SIGSEGV). 200 is far beyond any legitimate document. */
+#define JSON_MAX_DEPTH 200
+static __thread int g_json_depth = 0;
+
 static Value* eigs_json_parse_array(const char *s, int *pos) {
     (*pos)++;
     Value *list = make_list(8);
@@ -831,8 +837,23 @@ Value* eigs_json_parse_value(const char *s, int *pos) {
     eigs_json_skip_ws(s, pos);
     if (!s[*pos]) return make_null();
     if (s[*pos] == '"') return eigs_json_parse_string(s, pos);
-    if (s[*pos] == '[') return eigs_json_parse_array(s, pos);
-    if (s[*pos] == '{') return eigs_json_parse_object(s, pos);
+    /* Refuse to descend past the nesting limit (stack-exhaustion guard).
+     * The enclosing array/object loop breaks on the unconsumed bracket, so
+     * parsing terminates cleanly instead of crashing. */
+    if (s[*pos] == '[') {
+        if (g_json_depth >= JSON_MAX_DEPTH) return make_null();
+        g_json_depth++;
+        Value *v = eigs_json_parse_array(s, pos);
+        g_json_depth--;
+        return v;
+    }
+    if (s[*pos] == '{') {
+        if (g_json_depth >= JSON_MAX_DEPTH) return make_null();
+        g_json_depth++;
+        Value *v = eigs_json_parse_object(s, pos);
+        g_json_depth--;
+        return v;
+    }
     if (s[*pos] == '-' || isdigit(s[*pos])) return eigs_json_parse_number(s, pos);
     if (strncmp(s + *pos, "null", 4) == 0) { *pos += 4; return make_null(); }
     if (strncmp(s + *pos, "true", 4) == 0) { *pos += 4; return make_num(1); }

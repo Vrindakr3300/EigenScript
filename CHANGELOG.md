@@ -4,6 +4,16 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Security
+- **Bounded JSON nesting depth (stack-exhaustion DoS fix).** The recursive
+  JSON parser (`eigs_json_parse_value` → array/object) had no depth limit,
+  so deeply nested input like `[[[[…]]]]` exhausted the C stack and crashed
+  the process with SIGSEGV. Reachable by any program that `json_decode`s
+  untrusted input — notably an HTTP server decoding a request body — making
+  it a remote denial of service. Added a 200-level nesting cap; input past
+  it is refused and parsing terminates cleanly instead of crashing. Normal
+  documents are unaffected. Regression: `tests/test_json_depth.eigs`.
+
 ### Added
 - **`docs/LANGUAGE_CONTRACT.md`** — the language's semantic promises stated
   explicitly (equality, ordering, coercion, errors, numbers, truthiness,
