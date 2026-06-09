@@ -15,13 +15,9 @@
  *
  * Both incoming request state (request_body, session_id, request_headers)
  * and outgoing response data (http_post) are nondeterministic from the
- * script's perspective. Wrap returns so each value lands on the trace
- * tape as an `N` record for Phase 3 replay determinism. */
-#define TRACE_NONDET_RET(name, expr) do { \
-    Value *_tr_v = (expr); \
-    if (__builtin_expect(g_trace_enabled, 0)) trace_nondet_value((name), _tr_v); \
-    return _tr_v; \
-} while (0)
+ * script's perspective. The TRACE_NONDET_RET wrapper (defined in trace.h)
+ * records each return value on the tape as an `N` record and, during
+ * Phase 3 replay, serves the recorded value back. */
 
 /* ================================================================
  * HTTP GLOBALS

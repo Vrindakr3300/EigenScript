@@ -79,4 +79,43 @@ int trace_query_prev(const char *interned_name, EigsSlot *out);
  */
 int trace_query_at(int kind, const char *interned_name, int line, EigsSlot *out);
 
+/* Phase 3 — replay.
+ *
+ * When EIGS_REPLAY=<path> is set at startup, the named tape is opened
+ * read-only and g_replay_enabled flips on. Hook sites in nondet builtins
+ * call trace_replay_take(fn, &out): if the next N record on the tape can
+ * be parsed into a Value, *out is set (caller owns the ref) and the
+ * function returns 1 — the builtin then short-circuits to that recorded
+ * value instead of invoking its underlying nondet source.
+ *
+ * Name mismatches are logged to stderr but the recorded value is used
+ * anyway (Phase 3.0 lenient policy — strict ordering is the contract,
+ * names are for human-readable debug). EOF or unparseable records return
+ * 0 and the builtin falls back to its normal source. */
+extern int g_replay_enabled;
+int trace_replay_take(const char *fn, struct Value **out);
+
+/* Centralized nondet-return macro for builtins.
+ *
+ * Expansion order:
+ *   1. If replay is active and the next N record produces a value,
+ *      return it (skip the real source entirely).
+ *   2. Otherwise evaluate the source expression once.
+ *   3. If tracing is enabled, record the produced value on the tape.
+ *   4. Return.
+ *
+ * Hot-path cost when both disabled: two predicted-not-taken loads + branches.
+ * Each call site must have `Value` defined (i.e. include eigenscript.h
+ * before trace.h). */
+#define TRACE_NONDET_RET(name, expr) do {                            \
+    Value *_tr_v;                                                    \
+    if (__builtin_expect(g_replay_enabled, 0) &&                     \
+        trace_replay_take((name), &_tr_v))                           \
+        return _tr_v;                                                \
+    _tr_v = (expr);                                                  \
+    if (__builtin_expect(g_trace_enabled, 0))                        \
+        trace_nondet_value((name), _tr_v);                           \
+    return _tr_v;                                                    \
+} while (0)
+
 #endif /* EIGENSCRIPT_TRACE_H */

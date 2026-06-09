@@ -38,6 +38,7 @@
                                     * tape stays sized for visual debug */
 
 int g_trace_enabled = 0;
+int g_replay_enabled = 0;
 
 /* ----- Phase 3.0a: prev-value table.
  *
@@ -229,6 +230,9 @@ static int   g_trace_initialized = 0;
 static int g_last_line  = -1;
 static int g_line_dirty = 0;
 
+/* Forward decl — implementation below; called from trace_init. */
+static void trace_replay_init(void);
+
 void trace_init(void) {
     if (g_trace_initialized) return;
     g_trace_initialized = 1;
@@ -240,6 +244,10 @@ void trace_init(void) {
      * g_trace_fp inside the writers. */
     g_trace_enabled = 1;
 
+    /* Phase 3 — if EIGS_REPLAY is set, open that tape for streaming reads.
+     * Done first so trace_init can succeed even if EIGS_TRACE is unset. */
+    trace_replay_init();
+
     const char *path = getenv("EIGS_TRACE");
     if (!path || !*path) return;
 
@@ -250,6 +258,168 @@ void trace_init(void) {
         return;
     }
     setvbuf(g_trace_fp, NULL, _IOFBF, 64 * 1024);
+}
+
+/* ----- Phase 3: replay reader.
+ *
+ * Streams an existing tape (written by a prior EIGS_TRACE run) and serves
+ * the N records to nondet builtins in order via trace_replay_take. L and
+ * A records are skipped — the contract is that nondet outcomes appear in
+ * the same order both runs, not that line numbers line up exactly. */
+
+static FILE *g_replay_fp = NULL;
+static char *g_replay_line = NULL;     /* growable read buffer */
+static size_t g_replay_cap = 0;
+
+static void trace_replay_init(void) {
+    const char *path = getenv("EIGS_REPLAY");
+    if (!path || !*path) return;
+    g_replay_fp = fopen(path, "r");
+    if (!g_replay_fp) {
+        fprintf(stderr, "trace: cannot open EIGS_REPLAY=%s: %s\n",
+                path, strerror(errno));
+        return;
+    }
+    g_replay_enabled = 1;
+}
+
+static void replay_shutdown(void) {
+    if (g_replay_fp) { fclose(g_replay_fp); g_replay_fp = NULL; }
+    free(g_replay_line); g_replay_line = NULL; g_replay_cap = 0;
+    g_replay_enabled = 0;
+}
+
+/* getline that does not need _GNU_SOURCE — keeps a growable buffer in the
+ * file-static slot, reads up to and including the next newline (or EOF).
+ * Returns the length (newline NOT included, NUL-terminated) or -1 at EOF. */
+static int read_tape_line(void) {
+    if (!g_replay_fp) return -1;
+    if (g_replay_cap < 256) {
+        g_replay_cap = 256;
+        g_replay_line = realloc(g_replay_line, g_replay_cap);
+        if (!g_replay_line) { g_replay_cap = 0; return -1; }
+    }
+    size_t len = 0;
+    int c;
+    while ((c = fgetc(g_replay_fp)) != EOF) {
+        if (len + 2 > g_replay_cap) {
+            size_t nc = g_replay_cap * 2;
+            char *nb = realloc(g_replay_line, nc);
+            if (!nb) return -1;
+            g_replay_line = nb; g_replay_cap = nc;
+        }
+        if (c == '\n') break;
+        g_replay_line[len++] = (char)c;
+    }
+    if (c == EOF && len == 0) return -1;
+    g_replay_line[len] = '\0';
+    return (int)len;
+}
+
+/* Un-escape a tape-format quoted string in place. Reads the byte stream
+ * starting at `*p` (which must point one past the opening quote), writes
+ * the decoded bytes to `out` (max `out_cap-1` plus NUL), advances `*p`
+ * past the closing quote. Returns the decoded length on success, -1 on
+ * malformed input. Handles \", \\, \n, \r, \xNN; everything else literal. */
+static int unescape_string(const char **p, char *out, int out_cap) {
+    int n = 0;
+    const char *s = *p;
+    while (*s && *s != '"') {
+        if (n + 1 >= out_cap) return -1;
+        if (*s == '\\') {
+            s++;
+            switch (*s) {
+                case '"':  out[n++] = '"';  s++; break;
+                case '\\': out[n++] = '\\'; s++; break;
+                case 'n':  out[n++] = '\n'; s++; break;
+                case 'r':  out[n++] = '\r'; s++; break;
+                case 'x': {
+                    s++;
+                    int hi = -1, lo = -1;
+                    if (s[0]) hi = (s[0] >= '0' && s[0] <= '9') ? s[0] - '0'
+                                  : (s[0] >= 'a' && s[0] <= 'f') ? s[0] - 'a' + 10
+                                  : (s[0] >= 'A' && s[0] <= 'F') ? s[0] - 'A' + 10 : -1;
+                    if (hi >= 0 && s[1]) lo = (s[1] >= '0' && s[1] <= '9') ? s[1] - '0'
+                                  : (s[1] >= 'a' && s[1] <= 'f') ? s[1] - 'a' + 10
+                                  : (s[1] >= 'A' && s[1] <= 'F') ? s[1] - 'A' + 10 : -1;
+                    if (hi < 0 || lo < 0) return -1;
+                    out[n++] = (char)((hi << 4) | lo);
+                    s += 2;
+                    break;
+                }
+                default: return -1;
+            }
+        } else {
+            out[n++] = *s++;
+        }
+    }
+    if (*s != '"') return -1;
+    *p = s + 1;
+    out[n] = '\0';
+    return n;
+}
+
+/* Parse one value from the tape encoding. Supports the primitive shapes
+ * (num, null, true/false, "string"). Lists/dicts/buffers/heap markers are
+ * not yet replayable — return NULL so the caller falls back to the real
+ * source. */
+static Value *parse_value(const char *s) {
+    while (*s == ' ') s++;
+    if (!*s) return NULL;
+    if (strcmp(s, "null") == 0) return make_null();
+    if (strcmp(s, "true") == 0) return make_num(1.0);
+    if (strcmp(s, "false") == 0) return make_num(0.0);
+    if (*s == '"') {
+        const char *p = s + 1;
+        /* Worst case the decoded string is the same length as the
+         * encoded body (escapes only shrink). */
+        size_t cap = strlen(p) + 1;
+        char *buf = malloc(cap);
+        if (!buf) return NULL;
+        int n = unescape_string(&p, buf, (int)cap);
+        if (n < 0) { free(buf); return NULL; }
+        Value *v = make_str(buf);
+        free(buf);
+        return v;
+    }
+    /* Numeric: strtod must consume the whole token. */
+    char *end = NULL;
+    double d = strtod(s, &end);
+    if (end == s) return NULL;
+    while (*end == ' ') end++;
+    if (*end != '\0') return NULL;
+    return make_num(d);
+}
+
+int trace_replay_take(const char *fn, Value **out) {
+    if (!g_replay_fp || !out) return 0;
+    for (;;) {
+        int len = read_tape_line();
+        if (len < 0) {
+            /* Tape exhausted — turn off replay so future calls skip the
+             * read overhead, and let the builtin run normally. */
+            replay_shutdown();
+            return 0;
+        }
+        if (len < 2 || g_replay_line[0] != 'N' || g_replay_line[1] != ' ')
+            continue;  /* skip L, A, blanks, anything else */
+
+        char *p = g_replay_line + 2;
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        const char *rec_name = p;
+        const char *rec_val  = eq + 1;
+
+        if (fn && strcmp(rec_name, fn) != 0) {
+            fprintf(stderr, "trace: replay name mismatch — expected '%s', got '%s' (using anyway)\n",
+                    fn, rec_name);
+        }
+        Value *v = parse_value(rec_val);
+        if (!v) return 0;   /* unparseable — fall through to live source */
+        *out = v;
+        return 1;
+    }
 }
 
 void trace_shutdown(void) {
@@ -275,6 +445,8 @@ void trace_shutdown(void) {
         g_prev_cap = 0;
         g_prev_count = 0;
     }
+
+    replay_shutdown();
 }
 
 void trace_line(int line) {

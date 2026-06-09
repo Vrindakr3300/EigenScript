@@ -9,14 +9,8 @@
 #include "builtins_internal.h"
 #include "trace.h"
 
-/* Wrap a nondeterministic builtin return so the value is recorded onto
- * the trace tape. The expression is evaluated once. Phase 2 uses this
- * for random*, monotonic_*, env_get, random_hex. */
-#define TRACE_NONDET_RET(name, expr) do { \
-    Value *_tr_v = (expr); \
-    if (__builtin_expect(g_trace_enabled, 0)) trace_nondet_value((name), _tr_v); \
-    return _tr_v; \
-} while (0)
+/* TRACE_NONDET_RET lives in trace.h — centralized in Phase 3 so the
+ * replay short-circuit applies to every nondet builtin uniformly. */
 
 #include <pthread.h>
 #include <termios.h>

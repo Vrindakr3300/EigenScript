@@ -9,12 +9,7 @@
 #include "vm.h"
 #include "trace.h"
 
-#define TRACE_NONDET_RET(name, expr) do { \
-    Value *_tr_v = (expr); \
-    if (__builtin_expect(g_trace_enabled, 0)) trace_nondet_value((name), _tr_v); \
-    return _tr_v; \
-} while (0)
-
+/* TRACE_NONDET_RET lives in trace.h. */
 
 /* Forward decls for helpers shared with the arena/observer machinery. */
 Value* make_num_permanent(double n);
