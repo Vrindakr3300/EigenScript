@@ -907,8 +907,18 @@ int jit_helper_call(int argc) {
     Value *result = fn_val->data.builtin(arg);
     g_builtin_call_env = saved;
 
-    if (!result) result = make_null();
-    else if (result != arg) val_incref(result);
+    if (!result) {
+        result = make_null();
+    } else if (result != arg) {
+        /* Direct-borrow heuristic — see CASE(CALL) for rationale. */
+        if (arg && arg->type == VAL_LIST) {
+            int n = arg->data.list.count;
+            Value **items = arg->data.list.items;
+            for (int i = 0; i < n; i++) {
+                if (items[i] == result) { val_incref(result); break; }
+            }
+        }
+    }
     if (!consumes_arg && result != arg) val_decref(arg);
     vm_push(result);
     return 0;
@@ -1862,12 +1872,25 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             Value *result = fn_val->data.builtin(arg);
             g_builtin_call_env = saved;
 
-            if (!result) result = make_null();
-            else if (result != arg) val_incref(result);
-            /* Decref arg *after* incref'ing result, in case the builtin
-             * returns a borrowed pointer into arg (e.g., coalesce returns
-             * a list item). Otherwise the arg-free cascades through list
-             * items and frees result before the incref. */
+            if (!result) {
+                result = make_null();
+            } else if (result != arg) {
+                /* Direct-borrow heuristic: if result is one of arg's
+                 * top-level items (e.g., coalesce/append/dict_set return
+                 * arg->data.list.items[0]), incref it so it survives the
+                 * arg-decref below. Builtins returning a fresh allocation
+                 * (range, make_*) do not match this scan, so no spurious
+                 * +1 ref is added. Nested borrows (get_at: items[0][idx])
+                 * must still incref locally — only direct children are
+                 * scanned here. */
+                if (arg && arg->type == VAL_LIST) {
+                    int n = arg->data.list.count;
+                    Value **items = arg->data.list.items;
+                    for (int i = 0; i < n; i++) {
+                        if (items[i] == result) { val_incref(result); break; }
+                    }
+                }
+            }
             if (!consumes_arg && result != arg) val_decref(arg);
             /* If result == arg, the arg's refcount transfers to the result */
             vm_push(result);
@@ -2985,9 +3008,21 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             g_builtin_call_env = frame->env;
             Value *result = fn->data.builtin(arg);
             g_builtin_call_env = saved;
+            if (!result) {
+                result = make_null();
+            } else if (result != arg) {
+                /* Direct-borrow heuristic — see CASE(CALL) for rationale.
+                 * Must run before val_decref(arg) so the items array is
+                 * still valid. */
+                if (arg && arg->type == VAL_LIST) {
+                    int n = arg->data.list.count;
+                    Value **items = arg->data.list.items;
+                    for (int i = 0; i < n; i++) {
+                        if (items[i] == result) { val_incref(result); break; }
+                    }
+                }
+            }
             if (result != arg) val_decref(arg);
-            if (!result) result = make_null();
-            else if (result != arg) val_incref(result);
             slot_decref(table_s);
             vm_push(result);
             CHECK_ERROR();
