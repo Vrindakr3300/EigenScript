@@ -1,0 +1,184 @@
+# ============================================================
+# Invariant Demo: compute_change_stability — the C/S kernel
+# ============================================================
+#
+# 14th and final port. Targets the one EGC core function not
+# already exercised by ports 1-13: compute_change_stability.
+# This is the discrete C/S decomposition every other module
+# implicitly invokes:
+#
+#   C = #{ components with |Δ| > ε }   ("changing")
+#   S = N − C                          ("stable")
+#   ds²_CS = S² − C²
+#
+#   ds² > 0  → time-like (stability dominates)
+#   ds² = 0  → light-like (boundary, S == C)
+#   ds² < 0  → space-like (motion dominates)
+#
+# Every prior port computes deltas in some space and classifies
+# by sign of S² − C². This port hits the function directly.
+#
+# Three demos:
+#   (1) Regime sweep: stable / changing / mixed / boundary
+#   (2) Apply to an arm descent trajectory: classify each
+#       step's joint-delta and watch the regime change as the
+#       arm converges (timelike at end when joints stop moving).
+#   (3) Threshold sensitivity: same delta vector, different ε
+
+load_file of "lib/format.eigs"
+load_file of "lib/math.eigs"
+
+# ---- compute_change_stability ----
+# delta: list of numbers. eps_change: float.
+# Returns [C, S, ds2_CS].
+define compute_cs(delta, eps) as:
+    n is len of delta
+    C is 0
+    for i in range of n:
+        a is delta[i]
+        if a < 0:
+            a is 0 - a
+        if a > eps:
+            C is C + 1
+    S is n - C
+    return [C, S, S * S - C * C]
+
+# ============================================================
+# Demo 1: regime sweep
+# ============================================================
+print of "=== Demo 1: C/S regime sweep on synthetic deltas (ε = 1e-3) ==="
+EPS is 0.001
+
+# all stable
+d_stable is [0.0, 0.0001, 0 - 0.0002, 0.0005]
+r is compute_cs of [d_stable, EPS]
+print of f"  all stable [0, 1e-4, -2e-4, 5e-4]:  C={r[0]} S={r[1]} ds²={r[2]}  → time-like"
+
+# all changing
+d_change is [0.5, 0 - 1.0, 0.3, 0 - 0.8]
+r is compute_cs of [d_change, EPS]
+print of f"  all changing [0.5, -1, 0.3, -0.8]:  C={r[0]} S={r[1]} ds²={r[2]}  → space-like"
+
+# mixed, more stable
+d_mix1 is [0.5, 0.0001, 0.0, 0 - 0.0001]
+r is compute_cs of [d_mix1, EPS]
+print of f"  mixed (3S 1C):                       C={r[0]} S={r[1]} ds²={r[2]}  → time-like"
+
+# mixed, more changing
+d_mix2 is [0.5, 0 - 0.7, 0.0001, 0.6]
+r is compute_cs of [d_mix2, EPS]
+print of f"  mixed (1S 3C):                       C={r[0]} S={r[1]} ds²={r[2]}  → space-like"
+
+# boundary: S == C
+d_bound is [0.5, 0 - 0.7, 0.0001, 0.0]
+r is compute_cs of [d_bound, EPS]
+print of f"  boundary (S=C=2):                    C={r[0]} S={r[1]} ds²={r[2]}  → light-like"
+
+# ============================================================
+# Demo 2: classify each step of a real arm descent
+# ============================================================
+print of ""
+print of "=== Demo 2: arm descent — joint-delta regimes per tick ==="
+
+L1 is 0.9
+L2 is 0.9
+GO is 4.0
+LAM is 0.02
+TARGET is [0.8, 0.5]
+OBS_C is [0.6, 0.7]
+OBS_R is 0.25
+ETA is 0.12
+
+define fk(theta1, theta2) as:
+    return [
+        L1 * (cos of theta1) + L2 * (cos of (theta1 + theta2)),
+        L1 * (sin of theta1) + L2 * (sin of (theta1 + theta2))
+    ]
+
+define grad_arm(Q) as:
+    p is fk of [Q[0], Q[1]]
+    px is p[0]
+    py is p[1]
+    J00 is 0 - L1 * (sin of Q[0]) - L2 * (sin of (Q[0] + Q[1]))
+    J01 is 0 - L2 * (sin of (Q[0] + Q[1]))
+    J10 is L1 * (cos of Q[0]) + L2 * (cos of (Q[0] + Q[1]))
+    J11 is L2 * (cos of (Q[0] + Q[1]))
+    ex is px - TARGET[0]
+    ey is py - TARGET[1]
+    gt0 is 2 * (J00 * ex + J10 * ey)
+    gt1 is 2 * (J01 * ex + J11 * ey)
+    ox is px - OBS_C[0]
+    oy is py - OBS_C[1]
+    d_obs is sqrt of (ox * ox + oy * oy)
+    go0 is 0.0
+    go1 is 0.0
+    if OBS_R - d_obs > 0:
+        coef is GO * 2 * (OBS_R - d_obs) * (0 - 1 / d_obs)
+        go0 is coef * (J00 * ox + J10 * oy)
+        go1 is coef * (J01 * ox + J11 * oy)
+    gr0 is 2 * LAM * Q[0]
+    gr1 is 2 * LAM * Q[1]
+    return [gt0 + go0 + gr0, gt1 + go1 + gr1]
+
+EPS_CONVERGE is 0.001
+Q is [0 - 1.4, 1.2]
+N_TICKS is 80
+n_time is 0
+n_light is 0
+n_space is 0
+
+csv is "tick,th0,th1,dth0,dth1,C,S,ds2,regime\n"
+for t in range of N_TICKS:
+    g is grad_arm of Q
+    d0 is 0 - ETA * g[0]
+    d1 is 0 - ETA * g[1]
+    cs is compute_cs of [[d0, d1], EPS_CONVERGE]
+    C is cs[0]
+    S is cs[1]
+    ds2 is cs[2]
+    regime is "light"
+    if ds2 > 0:
+        regime is "time"
+        n_time is n_time + 1
+    if ds2 < 0:
+        regime is "space"
+        n_space is n_space + 1
+    if ds2 == 0:
+        n_light is n_light + 1
+    csv is csv + (str of t) + "," + (fmt_num of [Q[0], 6]) + "," + (fmt_num of [Q[1], 6]) + "," + (fmt_num of [d0, 6]) + "," + (fmt_num of [d1, 6]) + "," + (str of C) + "," + (str of S) + "," + (str of ds2) + "," + regime + "\n"
+    Q is [Q[0] + d0, Q[1] + d1]
+
+write_text of ["/tmp/egc_core_eigs.csv", csv]
+final_pos is fk of [Q[0], Q[1]]
+print of f"  initial Q = [-1.4, 1.2]  target = [0.8, 0.5]"
+print of f"  after {N_TICKS} ticks:  pos = [{final_pos[0]}, {final_pos[1]}]"
+print of f"  regime histogram across {N_TICKS} ticks:"
+print of f"    space-like (ds²=-4, both moving): {n_space}"
+print of f"    light-like (ds²= 0, mixed):       {n_light}"
+print of f"    time-like  (ds²= 4, both stable): {n_time}"
+print of f"  → expect early ticks space-like (big steps), late ticks time-like (converged)"
+
+# ============================================================
+# Demo 3: threshold sensitivity
+# ============================================================
+print of ""
+print of "=== Demo 3: same delta, sweep ε to see regime crossover ==="
+delta is [0.5, 0.005, 0.0005, 0.00005, 0 - 0.05]
+print of f"  delta = [0.5, 0.005, 0.0005, 5e-5, -0.05]  (mixed scales)"
+for ei in range of 5:
+    eps_choice is [0.1, 0.01, 0.001, 0.0001, 0.00001][ei]
+    r is compute_cs of [delta, eps_choice]
+    print of f"    ε={eps_choice}:  C={r[0]} S={r[1]} ds²={r[2]}"
+print of "  → ε is a measurement device. C/S regime is observer-relative."
+
+# Perf
+times is []
+for trial in range of 5:
+    t0 is monotonic_ms of null
+    for k in range of 10000:
+        r is compute_cs of [delta, 0.001]
+    append of [times, (monotonic_ms of null) - t0]
+
+print of ""
+print of f"eigs ms (10000 compute_cs calls on n=5 delta): {times[0]} {times[1]} {times[2]} {times[3]} {times[4]}"
+print of "wrote /tmp/egc_core_eigs.csv"

@@ -1,0 +1,248 @@
+# ============================================================
+# Invariant Demo: Meta-control via self-observation
+# ============================================================
+#
+# Ports eigen_meta_control: the system observes its OWN trajectory,
+# diagnoses oscillation / stagnation / erratic motion, and updates its
+# OWN parameters in response. This is the 6th distinct algorithmic
+# shape across the EGC ports:
+#
+#   - arm: gradient descent on ds²        (descend)
+#   - xor: discrete bit-rotor             (preserve, iterated)
+#   - geodesic: RK4 on ẍ = -Γẋẋ          (flow)
+#   - lorentz: Λ(β) preserves t²-x²       (preserve, parametric)
+#   - qec: project to codespace           (restore)
+#   - meta: observe self, adjust self     (self-tune)
+#
+# Distinction: the other five shapes act on object-level state. This one
+# acts on the *controller's parameters* — a meta-level state — using
+# the object-level trajectory as the signal. Two coupled flows: state
+# evolves under control, control parameters evolve under observation
+# of state.
+#
+# Demo: 2-D point chases a target using `s ← s + v; v ← (1-d)·v + η·(t-s)`.
+# Start with η=1.8 (will oscillate). Run two arms:
+#   A) static params — oscillates indefinitely or converges only slowly
+#   B) self-tuning — detect oscillation, decrease η, increase damping
+# Compare convergence over the same N_TICKS.
+
+load_file of "lib/format.eigs"
+load_file of "lib/math.eigs"
+
+# ---- Vector helpers (2-D inline) ----
+define dot2(a, b) as:
+    return a[0] * b[0] + a[1] * b[1]
+
+define norm2(v) as:
+    return sqrt of (v[0] * v[0] + v[1] * v[1])
+
+# Cosine similarity, clipped to [-1, 1]. Returns 0 on degenerate norms.
+define cosine_sim(a, b) as:
+    na is norm2 of a
+    nb is norm2 of b
+    den is na * nb
+    if den < 0.0000000001:
+        return 0.0
+    s is (dot2 of [a, b]) / den
+    if s > 1.0:
+        s is 1.0
+    if s < 0 - 1.0:
+        s is 0 - 1.0
+    return s
+
+# detect_oscillation: compare current to recent history, max cosine sim
+# Returns [oscillating, strength]
+define detect_oscillation(hist, window, threshold) as:
+    n is len of hist
+    if n < 2:
+        return [0, 0.0]
+    cur is hist[n - 1]
+    w is window
+    if (n - 1) < w:
+        w is n - 1
+    max_sim is 0 - 2.0
+    for i in range of w:
+        past is hist[n - 2 - i]
+        s is cosine_sim of [cur, past]
+        if s > max_sim:
+            max_sim is s
+    osc is 0
+    if max_sim > threshold:
+        osc is 1
+    strength is 0.0
+    if osc == 1:
+        strength is max_sim
+    return [osc, strength]
+
+# ---- Control step: simple PD-like controller ----
+# state evolves: vel ← (1-damping)·vel + eta·(target - state); state ← state + vel
+define control_step(state, vel, target, eta, damping) as:
+    err_x is target[0] - state[0]
+    err_y is target[1] - state[1]
+    vx is (1.0 - damping) * vel[0] + eta * err_x
+    vy is (1.0 - damping) * vel[1] + eta * err_y
+    new_state is [state[0] + vx, state[1] + vy]
+    new_vel is [vx, vy]
+    return [new_state, new_vel]
+
+# ---- Meta update: adjust eta/damping based on diagnosis ----
+# diagnosis from observe_perf below
+# meta_eta = adaptation rate
+define meta_update(eta, damping, is_osc, is_conv, smoothness, meta_eta) as:
+    new_eta is eta
+    new_damping is damping
+    # oscillating → decrease eta, increase damping
+    if is_osc == 1:
+        new_eta is new_eta * (1.0 - meta_eta * 0.5)
+        new_damping is new_damping + meta_eta * 0.1
+    # not converging → increase eta, decrease damping
+    if is_conv == 0:
+        new_eta is new_eta * (1.0 + meta_eta * 0.5)
+        new_damping is new_damping - meta_eta * 0.1
+    # erratic → decrease eta
+    if smoothness < 0.5:
+        new_eta is new_eta * (1.0 - meta_eta * 0.5)
+    # bounds
+    if new_eta < 0.001:
+        new_eta is 0.001
+    if new_eta > 2.5:
+        new_eta is 2.5
+    if new_damping < 0.0:
+        new_damping is 0.0
+    if new_damping > 0.95:
+        new_damping is 0.95
+    return [new_eta, new_damping]
+
+# observe_perf: returns [needs_adj, oscillating, converging, smoothness, strength]
+define observe_perf(hist, target, osc_thresh) as:
+    n is len of hist
+    min_hist is 10
+    if n < min_hist:
+        return [0, 0, 1, 1.0, 0.0]
+    # window: last min_hist states
+    start is n - min_hist
+    recent is []
+    for i in range of min_hist:
+        append of [recent, hist[start + i]]
+    # oscillation
+    osc_res is detect_oscillation of [recent, 5, osc_thresh]
+    is_osc is osc_res[0]
+    strength is osc_res[1]
+    # convergence: dist last vs first
+    d_first_a is recent[0][0] - target[0]
+    d_first_b is recent[0][1] - target[1]
+    d_first is sqrt of (d_first_a * d_first_a + d_first_b * d_first_b)
+    d_last_a is recent[min_hist - 1][0] - target[0]
+    d_last_b is recent[min_hist - 1][1] - target[1]
+    d_last is sqrt of (d_last_a * d_last_a + d_last_b * d_last_b)
+    is_conv is 0
+    if d_last < d_first:
+        is_conv is 1
+    # smoothness: 1 / (1 + mean velocity-change-norm)
+    smoothness is 1.0
+    if min_hist >= 3:
+        # velocities = adjacent diffs
+        sum_vc is 0.0
+        n_vc is 0
+        for i in range of (min_hist - 2):
+            v1x is recent[i + 1][0] - recent[i][0]
+            v1y is recent[i + 1][1] - recent[i][1]
+            v2x is recent[i + 2][0] - recent[i + 1][0]
+            v2y is recent[i + 2][1] - recent[i + 1][1]
+            dx is v2x - v1x
+            dy is v2y - v1y
+            sum_vc is sum_vc + (sqrt of (dx * dx + dy * dy))
+            n_vc is n_vc + 1
+        mean_vc is sum_vc / n_vc
+        smoothness is 1.0 / (1.0 + mean_vc)
+    needs is 0
+    if is_osc == 1:
+        needs is 1
+    if is_conv == 0:
+        needs is 1
+    if smoothness < 0.5:
+        needs is 1
+    return [needs, is_osc, is_conv, smoothness, strength]
+
+# ============================================================
+# Two runs: A (static) vs B (self-tuning)
+# ============================================================
+N_TICKS is 200
+START is [5.0, 5.0]
+TARGET is [0.0, 0.0]
+ETA0 is 1.8
+DAMP0 is 0.0
+OSC_THRESH is 0.92
+META_ETA is 0.5
+META_PERIOD is 5
+
+define run_simulation(meta_on) as:
+    state is [START[0], START[1]]
+    vel is [0.0, 0.0]
+    eta is ETA0
+    damping is DAMP0
+    hist is [[state[0], state[1]]]
+    csv is "tick,x,y,vx,vy,eta,damping,dist_to_target,osc_strength,adjusted\n"
+    for t in range of N_TICKS:
+        adjusted is 0
+        osc_strength is 0.0
+        if meta_on == 1:
+            if (t % META_PERIOD) == 0:
+                obs is observe_perf of [hist, TARGET, OSC_THRESH]
+                osc_strength is obs[4]
+                if obs[0] == 1:
+                    mu is meta_update of [eta, damping, obs[1], obs[2], obs[3], META_ETA]
+                    eta is mu[0]
+                    damping is mu[1]
+                    adjusted is 1
+        step is control_step of [state, vel, TARGET, eta, damping]
+        state is step[0]
+        vel is step[1]
+        append of [hist, [state[0], state[1]]]
+        dx is state[0] - TARGET[0]
+        dy is state[1] - TARGET[1]
+        dist is sqrt of (dx * dx + dy * dy)
+        csv is csv + (str of t) + "," + (fmt_num of [state[0], 8]) + "," + (fmt_num of [state[1], 8]) + "," + (fmt_num of [vel[0], 8]) + "," + (fmt_num of [vel[1], 8]) + "," + (fmt_num of [eta, 6]) + "," + (fmt_num of [damping, 6]) + "," + (fmt_num of [dist, 8]) + "," + (fmt_num of [osc_strength, 6]) + "," + (str of adjusted) + "\n"
+    final_dist_x is state[0] - TARGET[0]
+    final_dist_y is state[1] - TARGET[1]
+    final_dist is sqrt of (final_dist_x * final_dist_x + final_dist_y * final_dist_y)
+    return [csv, final_dist, eta, damping]
+
+print of "=== Run A: static parameters (no self-tuning) ==="
+res_A is run_simulation of 0
+write_text of ["/tmp/egc_meta_eigs_static.csv", res_A[0]]
+print of f"  final distance to target: {res_A[1]}"
+print of f"  final eta: {res_A[2]} damping: {res_A[3]} (unchanged)"
+
+print of ""
+print of "=== Run B: self-tuning (meta-control on) ==="
+res_B is run_simulation of 1
+write_text of ["/tmp/egc_meta_eigs_meta.csv", res_B[0]]
+print of f"  final distance to target: {res_B[1]}"
+print of f"  final eta: {res_B[2]} damping: {res_B[3]}"
+
+print of ""
+ratio is res_A[1] / res_B[1]
+print of f"  improvement factor (A / B): {ratio}x"
+
+# Perf
+times is []
+for trial in range of 5:
+    t0 is monotonic_ms of null
+    for k in range of 10:
+        r is run_simulation of 1
+    append of [times, (monotonic_ms of null) - t0]
+
+sorted_t is []
+for i in range of (len of times):
+    append of [sorted_t, times[i]]
+for i in range of (len of sorted_t):
+    for j in range of ((len of sorted_t) - i - 1):
+        if sorted_t[j] > sorted_t[j+1]:
+            tmp is sorted_t[j]
+            sorted_t[j] is sorted_t[j+1]
+            sorted_t[j+1] is tmp
+
+print of ""
+print of f"eigs ms (10 self-tuning runs of {N_TICKS} ticks): min={sorted_t[0]} median={sorted_t[2]} max={sorted_t[4]}"
+print of "wrote /tmp/egc_meta_eigs_{static,meta}.csv"

@@ -1,0 +1,218 @@
+# ============================================================
+# Invariant Demo: Weak measurement (gentle observation + accumulation)
+# ============================================================
+#
+# Ports eigen_weak_measurement: a different shape — accumulate-without-
+# collapse. Where the prior 7 ports were about state evolution
+# (descend, preserve, flow, restore, self-tune, compose), this one is
+# about *information extraction*: pull a strong signal out of noisy
+# weak observations.
+#
+#   - arm: gradient descent on ds²       (descend)
+#   - xor: discrete bit-rotor            (preserve, iterated)
+#   - geodesic: RK4 on ẍ = -Γẋẋ         (flow)
+#   - lorentz: Λ(β) preserves t²-x²      (preserve, parametric)
+#   - qec: project to codespace          (restore)
+#   - meta: observe self, adjust self    (self-tune)
+#   - multi: N descents + 1 observer     (compose)
+#   - weak: accumulate weak observations (extract from noise)
+#
+# Closest cousin: QEC also reduces noise, but via a discrete code
+# (syndrome lookup → drop bad sensor). Weak measurement is continuous:
+# *every* observation is "bad" individually (noise), strong signal
+# emerges from recency-weighted averaging.
+#
+# Demo: true target at known position; stereo rig produces noisy
+# left/right observations each tick; estimate disparity → depth.
+#   A) strong measurement: take latest noisy disparity directly
+#   B) weak measurement + accumulation over window=10
+# Compare: per-tick |depth_estimate - true_depth|, coherence of the
+# estimate stream.
+
+load_file of "lib/format.eigs"
+load_file of "lib/math.eigs"
+
+# ---- 2-D helpers ----
+define norm2(v) as:
+    return sqrt of (v[0] * v[0] + v[1] * v[1])
+
+# Box-Muller
+TWO_PI is 6.2831853071795865
+define randn() as:
+    u1 is random of null
+    u2 is random of null
+    if u1 <= 0.0:
+        u1 is 0.0000000001
+    return (sqrt of (0 - 2.0 * (log of u1))) * (cos of (TWO_PI * u2))
+
+# ---- Weak measurement operator (2x2 inline) ----
+# M_weak = [[1+eps, 0], [0, 1-eps]]
+# Applies to normalized 2-D state; renormalizes; returns
+# (perturbed_state, weak_value = state_norm · perturbed_norm)
+define apply_weak(state, strength) as:
+    n is norm2 of state
+    if n < 0.000000001:
+        return [[state[0], state[1]], 0.0]
+    nx is state[0] / n
+    ny is state[1] / n
+    # M @ normalized
+    mx is (1.0 + strength) * nx
+    my is (1.0 - strength) * ny
+    mn is sqrt of (mx * mx + my * my)
+    if mn < 0.000000001:
+        return [[state[0], state[1]], 0.0]
+    px is mx / mn
+    py is my / mn
+    weak_val is nx * px + ny * py
+    return [[px * n, py * n], weak_val]
+
+# ---- Stereo weak measurement: depth from disparity ----
+# Returns [left_measured, right_measured, depth]
+define stereo_weak(left, right, strength) as:
+    lr is apply_weak of [left, strength]
+    rr is apply_weak of [right, strength]
+    dx is left[0] - right[0]
+    dy is left[1] - right[1]
+    disparity is sqrt of (dx * dx + dy * dy)
+    if disparity < 0.000001:
+        return [lr[0], rr[0], 1000000.0]
+    return [lr[0], rr[0], 1.0 / disparity]
+
+# ---- Accumulator: recency-weighted average ----
+# weights[i] = 0.5^(n-1-i)
+define accumulate_weak(measurements) as:
+    n is len of measurements
+    if n == 0:
+        return 0.0
+    total_w is 0.0
+    weighted_sum is 0.0
+    for i in range of n:
+        w is 1.0
+        # 0.5^(n-1-i)
+        exp_k is n - 1 - i
+        for k in range of exp_k:
+            w is w * 0.5
+        weighted_sum is weighted_sum + measurements[i] * w
+        total_w is total_w + w
+    if total_w < 0.000000001:
+        return 0.0
+    return weighted_sum / total_w
+
+# ---- Coherence: 1 / (1 + mean |acceleration|) for scalar series ----
+define coherence_scalar(series) as:
+    n is len of series
+    if n < 3:
+        return 1.0
+    sum_acc is 0.0
+    n_acc is 0
+    for i in range of (n - 2):
+        v1 is series[i + 1] - series[i]
+        v2 is series[i + 2] - series[i + 1]
+        a is v2 - v1
+        if a < 0:
+            a is 0 - a
+        sum_acc is sum_acc + a
+        n_acc is n_acc + 1
+    mean_acc is sum_acc / n_acc
+    return 1.0 / (1.0 + mean_acc)
+
+# ============================================================
+# Scenario: stereo rig estimates depth of static target
+# ============================================================
+# True disparity = 0.5  →  true depth = 1/0.5 = 2.0
+# Each tick: left = TARGET + noise; right = TARGET + offset + noise.
+# We don't tell the system the true positions; it just sees the
+# noisy observations and estimates disparity.
+
+TRUE_LEFT is [0.0, 0.0]
+TRUE_RIGHT is [0.5, 0.0]
+TRUE_DEPTH is 2.0
+NOISE_SIGMA is 0.05
+STRENGTH is 0.1
+WINDOW is 10
+N_TICKS is 500
+
+define run_estimator(mode) as:
+    history is []
+    estimate_series is []
+    abs_err_series is []
+    csv is "tick,left_x,left_y,right_x,right_y,raw_disp,raw_depth,est_depth,abs_err\n"
+    sum_sq_err is 0.0
+    for t in range of N_TICKS:
+        lx is TRUE_LEFT[0] + (randn of null) * NOISE_SIGMA
+        ly is TRUE_LEFT[1] + (randn of null) * NOISE_SIGMA
+        rx is TRUE_RIGHT[0] + (randn of null) * NOISE_SIGMA
+        ry is TRUE_RIGHT[1] + (randn of null) * NOISE_SIGMA
+        left is [lx, ly]
+        right is [rx, ry]
+        sr is stereo_weak of [left, right, STRENGTH]
+        raw_depth is sr[2]
+        dx is lx - rx
+        dy is ly - ry
+        raw_disp is sqrt of (dx * dx + dy * dy)
+        est is raw_depth
+        if mode == 1:
+            # weak + accumulate over window
+            append of [history, raw_depth]
+            n is len of history
+            if n > WINDOW:
+                trimmed is []
+                start is n - WINDOW
+                for k in range of WINDOW:
+                    append of [trimmed, history[start + k]]
+                history is trimmed
+            est is accumulate_weak of history
+        append of [estimate_series, est]
+        ae is est - TRUE_DEPTH
+        if ae < 0:
+            ae is 0 - ae
+        append of [abs_err_series, ae]
+        sum_sq_err is sum_sq_err + ae * ae
+        csv is csv + (str of t) + "," + (fmt_num of [lx, 6]) + "," + (fmt_num of [ly, 6]) + "," + (fmt_num of [rx, 6]) + "," + (fmt_num of [ry, 6]) + "," + (fmt_num of [raw_disp, 6]) + "," + (fmt_num of [raw_depth, 6]) + "," + (fmt_num of [est, 6]) + "," + (fmt_num of [ae, 6]) + "\n"
+    rmse is sqrt of (sum_sq_err / N_TICKS)
+    coh is coherence_scalar of estimate_series
+    return [csv, rmse, coh]
+
+# Note: each run uses its own RNG draws (Eigs has 1 PRNG).
+# Statistical agreement (not tick-by-tick) expected with Python.
+
+print of "=== Run A: strong measurement (no accumulation) ==="
+res_A is run_estimator of 0
+write_text of ["/tmp/egc_weak_eigs_A.csv", res_A[0]]
+print of f"  RMSE of depth estimate: {res_A[1]}"
+print of f"  coherence of estimate stream: {res_A[2]}"
+
+print of ""
+print of "=== Run B: weak measurement + accumulation (window=10) ==="
+res_B is run_estimator of 1
+write_text of ["/tmp/egc_weak_eigs_B.csv", res_B[0]]
+print of f"  RMSE of depth estimate: {res_B[1]}"
+print of f"  coherence of estimate stream: {res_B[2]}"
+
+print of ""
+rmse_ratio is res_A[1] / res_B[1]
+coh_ratio is res_B[2] / res_A[2]
+print of f"  RMSE improvement (A / B): {rmse_ratio}x"
+print of f"  coherence improvement (B / A): {coh_ratio}x"
+
+# Perf
+times is []
+for trial in range of 5:
+    t0 is monotonic_ms of null
+    for k in range of 10:
+        r is run_estimator of 1
+    append of [times, (monotonic_ms of null) - t0]
+
+sorted_t is []
+for i in range of (len of times):
+    append of [sorted_t, times[i]]
+for i in range of (len of sorted_t):
+    for j in range of ((len of sorted_t) - i - 1):
+        if sorted_t[j] > sorted_t[j+1]:
+            tmp is sorted_t[j]
+            sorted_t[j] is sorted_t[j+1]
+            sorted_t[j+1] is tmp
+
+print of ""
+print of f"eigs ms (10 weak runs of {N_TICKS} ticks): min={sorted_t[0]} median={sorted_t[2]} max={sorted_t[4]}"
+print of "wrote /tmp/egc_weak_eigs_{A,B}.csv"

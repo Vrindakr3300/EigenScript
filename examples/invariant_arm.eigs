@@ -1,0 +1,130 @@
+# ============================================================
+# Invariant Demo: 2-DOF arm control (EGC arm_control port)
+# ============================================================
+#
+# Reproduces eigen_arm_control.run_arm_simulation with the same
+# parameters, using the universal invariant engine. Dumps the
+# trajectory to /tmp/egc_arm_eigs.csv for tick-by-tick comparison
+# against the Python original.
+
+load_file of "lib/observer.eigs"
+load_file of "lib/invariant.eigs"
+load_file of "lib/format.eigs"
+
+target is [1.2, 0.3]
+obs_c  is [0.6, 0.1]
+obs_r  is 0.25
+GO     is 4.0
+LAM    is 0.02
+L1     is 0.9
+L2     is 0.9
+
+define fk(Q) as:
+    x is L1 * (cos of Q[0]) + L2 * (cos of (Q[0] + Q[1]))
+    y is L1 * (sin of Q[0]) + L2 * (sin of (Q[0] + Q[1]))
+    return [x, y]
+
+define ds2_arm(Q) as:
+    p is fk of Q
+    dx is p[0] - target[0]
+    dy is p[1] - target[1]
+    target_term is dx * dx + dy * dy
+    ox is p[0] - obs_c[0]
+    oy is p[1] - obs_c[1]
+    d_obs is sqrt of (ox * ox + oy * oy)
+    obs_term is 0
+    if obs_r - d_obs > 0:
+        gap is obs_r - d_obs
+        obs_term is GO * gap * gap
+    reg_term is LAM * (Q[0] * Q[0] + Q[1] * Q[1])
+    return target_term + obs_term + reg_term
+
+define grad_arm(Q) as:
+    p is fk of Q
+    px is p[0]
+    py is p[1]
+    # Jacobian J: 2x2
+    J00 is 0 - L1 * (sin of Q[0]) - L2 * (sin of (Q[0] + Q[1]))
+    J01 is 0 - L2 * (sin of (Q[0] + Q[1]))
+    J10 is L1 * (cos of Q[0]) + L2 * (cos of (Q[0] + Q[1]))
+    J11 is L2 * (cos of (Q[0] + Q[1]))
+    # target gradient: 2 * J^T (p - target)
+    ex is px - target[0]
+    ey is py - target[1]
+    gt0 is 2 * (J00 * ex + J10 * ey)
+    gt1 is 2 * (J01 * ex + J11 * ey)
+    # obstacle gradient
+    ox is px - obs_c[0]
+    oy is py - obs_c[1]
+    d_obs is sqrt of (ox * ox + oy * oy)
+    go0 is 0
+    go1 is 0
+    if obs_r - d_obs > 0:
+        coef is GO * 2 * (obs_r - d_obs) * (0 - 1 / d_obs)
+        go0 is coef * (J00 * ox + J10 * oy)
+        go1 is coef * (J01 * ox + J11 * oy)
+    # regularization gradient
+    gr0 is 2 * LAM * Q[0]
+    gr1 is 2 * LAM * Q[1]
+    return [gt0 + go0 + gr0, gt1 + go1 + gr1]
+
+define step_add(Q, dQ) as:
+    return [Q[0] + dQ[0], Q[1] + dQ[1]]
+
+inv is make_invariant of [ds2_arm, grad_arm, step_add]
+
+# Pure descent with FIXED eta (no adaptive lr) to match Python exactly.
+# Python EGC arm_control.py does Q_{t+1} = Q_t - eta * grad with no adaptation.
+Q is [0 - 1.4, 1.2]
+ETA is 0.12
+N is 140
+
+# fmt_num at 15 decimals matches Python's %.15g. NB: lib/format.eigs's
+# fmt_num mishandles negatives (-1.4 → "-2.6"), so we wrap with sign handling.
+define fmt_signed(v, d) as:
+    if v < 0:
+        return "-" + (fmt_num of [0 - v, d])
+    return fmt_num of [v, d]
+
+csv_text is "tick,theta1,theta2,ds2,gnorm\n"
+for t in range of N:
+    ds2_val is ds2_arm of Q
+    g is grad_arm of Q
+    gn is sqrt of (g[0] * g[0] + g[1] * g[1])
+    t1s is fmt_signed of [Q[0], 15]
+    t2s is fmt_signed of [Q[1], 15]
+    dss is fmt_signed of [ds2_val, 15]
+    gns is fmt_signed of [gn, 15]
+    csv_text is csv_text + (str of t) + "," + t1s + "," + t2s + "," + dss + "," + gns + "\n"
+    Q is [Q[0] - ETA * g[0], Q[1] - ETA * g[1]]
+write_text of ["/tmp/egc_arm_eigs.csv", csv_text]
+
+# Perf: n=5 timings (no I/O)
+times is []
+for trial in range of 5:
+    Q is [0 - 1.4, 1.2]
+    t0 is monotonic_ms of null
+    for t in range of N:
+        g is grad_arm of Q
+        Q is [Q[0] - ETA * g[0], Q[1] - ETA * g[1]]
+    append of [times, (monotonic_ms of null) - t0]
+
+# print min/median/max
+sorted_t is []
+for i in range of (len of times):
+    append of [sorted_t, times[i]]
+for i in range of (len of sorted_t):
+    for j in range of ((len of sorted_t) - i - 1):
+        if sorted_t[j] > sorted_t[j+1]:
+            tmp is sorted_t[j]
+            sorted_t[j] is sorted_t[j+1]
+            sorted_t[j+1] is tmp
+
+min_t is sorted_t[0]
+med_t is sorted_t[2]
+max_t is sorted_t[4]
+final_ds2 is ds2_arm of Q
+print of f"eigs ms: min={min_t} median={med_t} max={max_t}"
+print of f"final ds2: {final_ds2}"
+print of f"final theta: ({Q[0]}, {Q[1]})"
+print of "wrote /tmp/egc_arm_eigs.csv"

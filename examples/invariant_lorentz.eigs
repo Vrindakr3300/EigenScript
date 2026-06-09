@@ -1,0 +1,157 @@
+# ============================================================
+# Invariant Demo: Lorentz boosts (EGC lorentz port)
+# ============================================================
+#
+# Ports the core of eigen_lorentz: boost matrices Λ(β), application
+# to states [t, x], and verification that ds² = t² - x² is preserved.
+#
+# This is the namesake of the universal invariant framework:
+# cs_signature(delta) classifies elements by |delta| > eps, returning
+# [C, S, S²-C²]. The Minkowski metric ds² = t² - x² IS that signature
+# at n=1, with t taking the role of the timelike component.
+#
+# Two demonstrations:
+#   1. β-sweep: ds² preserved across β ∈ [0, 0.99]
+#   2. Velocity addition: Λ(β₁) ∘ Λ(β₂) ≡ Λ((β₁+β₂)/(1+β₁β₂))
+#
+# Match against Python EGC's apply_boost — should agree to machine
+# precision and demonstrate the preservation property is exact, not
+# approximate, in both implementations.
+
+load_file of "lib/observer.eigs"
+load_file of "lib/format.eigs"
+
+# ---- Core mechanics ----
+
+# γ = 1/√(1 - β²)
+define lorentz_factor(beta) as:
+    return 1.0 / (sqrt of (1.0 - beta * beta))
+
+# Apply boost Λ(β) to state [t, x]:
+#   t' = γ(t - βx)
+#   x' = γ(x - βt)
+define apply_boost(state, beta) as:
+    gamma is lorentz_factor of beta
+    t_new is gamma * (state[0] - beta * state[1])
+    x_new is gamma * (state[1] - beta * state[0])
+    return [t_new, x_new]
+
+# Inverse: Λ(-β) — same γ, flip sign on the βγ off-diagonal
+define inverse_boost(state, beta) as:
+    gamma is lorentz_factor of beta
+    t_new is gamma * (state[0] + beta * state[1])
+    x_new is gamma * (state[1] + beta * state[0])
+    return [t_new, x_new]
+
+# ds² = t² - x²
+define ds2_lorentz(state) as:
+    return state[0] * state[0] - state[1] * state[1]
+
+# regime: timelike (ds²>0), spacelike (ds²<0), lightlike (≈0)
+define regime(ds2_val, eps) as:
+    if ds2_val > eps:
+        return "timelike"
+    if ds2_val < (0 - eps):
+        return "spacelike"
+    return "lightlike"
+
+# Velocity addition: β = (β₁ + β₂) / (1 + β₁ β₂)
+define velocity_add(b1, b2) as:
+    return (b1 + b2) / (1.0 + b1 * b2)
+
+# ============================================================
+# Demo 1: β-sweep, verify ds² preserved across many β values
+# ============================================================
+
+S0 is [3.0, 2.0]  # ds² = 9 - 4 = 5, timelike
+DS2_0 is ds2_lorentz of S0
+print of f"initial state: t={S0[0]} x={S0[1]} ds²={DS2_0} regime={regime of [DS2_0, 0.0000000001]}"
+
+define fmt_signed(v, d) as:
+    if v < 0:
+        return "-" + (fmt_num of [0 - v, d])
+    return fmt_num of [v, d]
+
+# β = 0.00, 0.05, 0.10, ..., 0.95
+csv_text is "beta,t_boost,x_boost,ds2_boost,err\n"
+max_err is 0.0
+N_BETAS is 20
+for i in range of N_BETAS:
+    beta is 0.05 * i
+    boosted is apply_boost of [S0, beta]
+    ds2_b is ds2_lorentz of boosted
+    err is ds2_b - DS2_0
+    if err < 0:
+        err is 0 - err
+    if err > max_err:
+        max_err is err
+    csv_text is csv_text + (fmt_num of [beta, 4]) + "," + (fmt_signed of [boosted[0], 15]) + "," + (fmt_signed of [boosted[1], 15]) + "," + (fmt_signed of [ds2_b, 15]) + "," + (fmt_signed of [err, 18]) + "\n"
+write_text of ["/tmp/egc_lorentz_eigs.csv", csv_text]
+print of f"β-sweep: max |Δds²| over {N_BETAS} boosts = {max_err}"
+
+# ============================================================
+# Demo 2: Velocity addition (composition of two boosts)
+# ============================================================
+B1 is 0.3
+B2 is 0.4
+B_COMBINED is velocity_add of [B1, B2]
+print of f"composing β₁={B1} and β₂={B2}: expected β={B_COMBINED}"
+
+# Apply two boosts sequentially
+once is apply_boost of [S0, B1]
+twice is apply_boost of [once, B2]
+# Apply single combined boost
+single is apply_boost of [S0, B_COMBINED]
+# These should match
+dt_err is twice[0] - single[0]
+if dt_err < 0:
+    dt_err is 0 - dt_err
+dx_err is twice[1] - single[1]
+if dx_err < 0:
+    dx_err is 0 - dx_err
+print of f"two-step result:  [{twice[0]}, {twice[1]}]"
+print of f"single-β result:  [{single[0]}, {single[1]}]"
+print of f"max |Δ| (group composition): {dt_err} (t), {dx_err} (x)"
+
+# ============================================================
+# Demo 3: Inverse boost recovers original
+# ============================================================
+B is 0.6
+fwd is apply_boost of [S0, B]
+back is inverse_boost of [fwd, B]
+rt_err_t is back[0] - S0[0]
+if rt_err_t < 0:
+    rt_err_t is 0 - rt_err_t
+rt_err_x is back[1] - S0[1]
+if rt_err_x < 0:
+    rt_err_x is 0 - rt_err_x
+print of f"roundtrip Λ(-β)Λ(β): max |Δ| = {rt_err_t} (t), {rt_err_x} (x)"
+
+# ============================================================
+# Perf: n=5 timings for 10k boosts
+# ============================================================
+times is []
+for trial in range of 5:
+    t0 is monotonic_ms of null
+    state is [3.0, 2.0]
+    for k in range of 10000:
+        beta is 0.0001 * k
+        if beta >= 0.99:
+            beta is 0.99
+        state is apply_boost of [state, beta]
+        # Undo to keep state bounded
+        state is inverse_boost of [state, beta]
+    append of [times, (monotonic_ms of null) - t0]
+
+sorted_t is []
+for i in range of (len of times):
+    append of [sorted_t, times[i]]
+for i in range of (len of sorted_t):
+    for j in range of ((len of sorted_t) - i - 1):
+        if sorted_t[j] > sorted_t[j+1]:
+            tmp is sorted_t[j]
+            sorted_t[j] is sorted_t[j+1]
+            sorted_t[j+1] is tmp
+
+print of f"eigs ms (10k boost+inv-boost pairs): min={sorted_t[0]} median={sorted_t[2]} max={sorted_t[4]}"
+print of "wrote /tmp/egc_lorentz_eigs.csv"

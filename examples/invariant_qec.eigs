@@ -1,0 +1,284 @@
+# ============================================================
+# Invariant Demo: Quantum-inspired Error Correction (EGC qec port)
+# ============================================================
+#
+# Ports eigen_qec: classical 3-sensor repetition code with syndrome
+# extraction and majority-vote correction. This is a different shape
+# from the previous four ports:
+#
+#   - arm: gradient descent on ds²            (descend)
+#   - xor: discrete bit-rotor                 (preserve, iterated)
+#   - geodesic: RK4 on ẍ = -Γẋẋ              (flow)
+#   - lorentz: Λ(β) preserves t²-x²           (preserve, parametric)
+#   - qec: project state back to codespace   (restore)
+#
+# Invariant: all redundant sensor readings agree (parity = 0).
+# When violated, syndrome pattern identifies the bad sensor and we
+# correct by averaging the rest. Not preservation, not descent —
+# *restoration*.
+#
+# Two demonstrations:
+#   1. Deterministic: inject known burst errors, verify correction
+#   2. Statistical: 1000 random trials at fixed error_rate, compare
+#      detection rate / localization accuracy / residual error
+#      against Python EGC baseline.
+
+load_file of "lib/observer.eigs"
+load_file of "lib/format.eigs"
+load_file of "lib/math.eigs"
+
+# ---- Core mechanics ----
+
+# Vector norm (2-norm) for small lists
+define vec_norm(v) as:
+    s is 0.0
+    for i in range of (len of v):
+        s is s + v[i] * v[i]
+    return sqrt of s
+
+# Vector difference
+define vec_sub(a, b) as:
+    out is []
+    for i in range of (len of a):
+        append of [out, a[i] - b[i]]
+    return out
+
+# Vector mean across list of vectors
+define vec_mean(vs) as:
+    n is len of vs
+    d is len of vs[0]
+    out is []
+    for j in range of d:
+        s is 0.0
+        for i in range of n:
+            s is s + vs[i][j]
+        append of [out, s / n]
+    return out
+
+# Encode: replicate state n_copies times
+define encode_redundant(state, n_copies) as:
+    out is []
+    for i in range of n_copies:
+        # Shallow copy each element so writes don't alias
+        copy_i is []
+        for j in range of (len of state):
+            append of [copy_i, state[j]]
+        append of [out, copy_i]
+    return out
+
+# Compute parity syndromes:
+#   For n sensors: pairwise [d(0,1), d(1,2), ..., d(n-2,n-1)] then wrap d(0,n-1)
+define compute_syndromes(measurements) as:
+    n is len of measurements
+    if n < 2:
+        return []
+    syn is []
+    for i in range of (n - 1):
+        append of [syn, vec_norm of (vec_sub of [measurements[i], measurements[i + 1]])]
+    if n >= 3:
+        append of [syn, vec_norm of (vec_sub of [measurements[0], measurements[n - 1]])]
+    return syn
+
+# Detect which sensor is the outlier (3-sensor case syndrome lookup)
+#   syndromes = [d_01, d_12, d_02]
+#   [1,0,1] → sensor 0
+#   [1,1,0] → sensor 1
+#   [0,1,1] → sensor 2
+#   [0,0,0] → no error
+# Returns -1 for no error / ambiguous (since EigenScript lacks Option)
+define detect_error_location(syndromes, threshold) as:
+    nsyn is len of syndromes
+    if nsyn == 0:
+        return 0 - 1
+    # Binary pattern
+    pat is []
+    for i in range of nsyn:
+        if syndromes[i] > threshold:
+            append of [pat, 1]
+        if syndromes[i] <= threshold:
+            append of [pat, 0]
+    if nsyn == 3:
+        if pat[0] == 0 and pat[1] == 0 and pat[2] == 0:
+            return 0 - 1
+        if pat[0] == 1 and pat[1] == 0 and pat[2] == 1:
+            return 0
+        if pat[0] == 1 and pat[1] == 1 and pat[2] == 0:
+            return 1
+        if pat[0] == 0 and pat[1] == 1 and pat[2] == 1:
+            return 2
+        return 0 - 1
+    # n-sensor fallback: count check-failures per sensor, return max
+    counts is []
+    for i in range of nsyn:
+        append of [counts, 0]
+    for i in range of nsyn:
+        if syndromes[i] > threshold:
+            counts[i] is counts[i] + 1
+            j is (i + 1) % nsyn
+            counts[j] is counts[j] + 1
+    best is 0
+    bestv is counts[0]
+    for i in range of nsyn:
+        if counts[i] > bestv:
+            bestv is counts[i]
+            best is i
+    if bestv == 0:
+        return 0 - 1
+    return best
+
+# Correct: drop faulty sensor, average rest. If no error, average all.
+# Returns [corrected_state, error_location, error_detected, syndromes]
+define correct_errors(measurements, threshold) as:
+    n is len of measurements
+    syn is compute_syndromes of measurements
+    loc is detect_error_location of [syn, threshold]
+    valid is []
+    if loc < 0:
+        for i in range of n:
+            append of [valid, measurements[i]]
+    if loc >= 0:
+        for i in range of n:
+            if i != loc:
+                append of [valid, measurements[i]]
+    corrected is vec_mean of valid
+    detected is 0
+    if loc >= 0:
+        detected is 1
+    return [corrected, loc, detected, syn]
+
+# ============================================================
+# Demo 1: Deterministic error injection
+# ============================================================
+print of "=== Deterministic error injection ==="
+
+TRUE_STATE is [3.0, 4.0]
+THRESH is 0.5
+
+# Case A: no error
+ms_A is encode_redundant of [TRUE_STATE, 3]
+res_A is correct_errors of [ms_A, THRESH]
+print of f"  case A (no error): loc={res_A[1]} corrected={res_A[0]}"
+
+# Case B: error on sensor 1 (add [5, 5])
+ms_B is encode_redundant of [TRUE_STATE, 3]
+ms_B[1] is [ms_B[1][0] + 5.0, ms_B[1][1] + 5.0]
+res_B is correct_errors of [ms_B, THRESH]
+print of f"  case B (err on s1): loc={res_B[1]} corrected={res_B[0]}"
+
+# Case C: error on sensor 0
+ms_C is encode_redundant of [TRUE_STATE, 3]
+ms_C[0] is [ms_C[0][0] + 3.5, ms_C[0][1] - 2.7]
+res_C is correct_errors of [ms_C, THRESH]
+print of f"  case C (err on s0): loc={res_C[1]} corrected={res_C[0]}"
+
+# Case D: error on sensor 2
+ms_D is encode_redundant of [TRUE_STATE, 3]
+ms_D[2] is [ms_D[2][0] - 4.1, ms_D[2][1] + 2.2]
+res_D is correct_errors of [ms_D, THRESH]
+print of f"  case D (err on s2): loc={res_D[1]} corrected={res_D[0]}"
+
+# Verify: all corrected states should equal TRUE_STATE
+all_ok is 1
+if res_A[0][0] != TRUE_STATE[0] or res_A[0][1] != TRUE_STATE[1]:
+    all_ok is 0
+if res_B[0][0] != TRUE_STATE[0] or res_B[0][1] != TRUE_STATE[1]:
+    all_ok is 0
+if res_C[0][0] != TRUE_STATE[0] or res_C[0][1] != TRUE_STATE[1]:
+    all_ok is 0
+if res_D[0][0] != TRUE_STATE[0] or res_D[0][1] != TRUE_STATE[1]:
+    all_ok is 0
+print of f"  all four cases correct? {all_ok == 1}"
+
+# ============================================================
+# Demo 2: Statistical (Box-Muller gaussian noise)
+# ============================================================
+print of ""
+print of "=== Statistical (1000 trials) ==="
+
+# Box-Muller: two uniforms → one standard normal
+TWO_PI is 6.2831853071795865
+define randn() as:
+    u1 is random of null
+    u2 is random of null
+    if u1 <= 0.0:
+        u1 is 0.0000000001
+    return (sqrt of (0 - 2.0 * (log of u1))) * (cos of (TWO_PI * u2))
+
+ERROR_RATE is 0.3
+ERROR_MAG is 1.0
+NORMAL_NOISE is ERROR_MAG * 0.1
+N_TRIALS is 1000
+
+n_errors_injected is 0
+n_detected is 0
+n_localized is 0
+sum_residual is 0.0
+sum_uncorrected_residual is 0.0
+
+for t in range of N_TRIALS:
+    ms is encode_redundant of [TRUE_STATE, 3]
+    # Decide which (if any) sensors get burst error
+    true_err_loc is 0 - 1
+    n_bursts is 0
+    for s in range of 3:
+        is_burst is 0
+        if (random of null) < ERROR_RATE:
+            is_burst is 1
+            n_bursts is n_bursts + 1
+            if true_err_loc < 0:
+                true_err_loc is s
+        if is_burst == 1:
+            ms[s] is [ms[s][0] + (randn of null) * ERROR_MAG, ms[s][1] + (randn of null) * ERROR_MAG]
+        if is_burst == 0:
+            ms[s] is [ms[s][0] + (randn of null) * NORMAL_NOISE, ms[s][1] + (randn of null) * NORMAL_NOISE]
+    if n_bursts >= 1:
+        n_errors_injected is n_errors_injected + 1
+    res is correct_errors of [ms, THRESH]
+    detected is res[2]
+    loc is res[1]
+    if n_bursts >= 1 and detected == 1:
+        n_detected is n_detected + 1
+    # Localization: correct only if exactly one burst and loc matches it
+    if n_bursts == 1 and loc == true_err_loc:
+        n_localized is n_localized + 1
+    # Residual error: corrected vs true
+    corrected is res[0]
+    rd is vec_norm of (vec_sub of [corrected, TRUE_STATE])
+    sum_residual is sum_residual + rd
+    # Baseline: naive mean of all measurements (no correction)
+    naive is vec_mean of ms
+    ru is vec_norm of (vec_sub of [naive, TRUE_STATE])
+    sum_uncorrected_residual is sum_uncorrected_residual + ru
+
+print of f"  trials w/ ≥1 burst error: {n_errors_injected} / {N_TRIALS}"
+print of f"  detection rate (of trials w/ burst): {n_detected} / {n_errors_injected}"
+print of f"  localization accuracy (single-burst trials only): {n_localized}"
+print of f"  mean residual (corrected): {sum_residual / N_TRIALS}"
+print of f"  mean residual (naive avg): {sum_uncorrected_residual / N_TRIALS}"
+ratio is sum_uncorrected_residual / sum_residual
+print of f"  QEC improvement factor: {ratio}x"
+
+# ============================================================
+# Perf
+# ============================================================
+times is []
+for trial in range of 5:
+    t0 is monotonic_ms of null
+    for k in range of 1000:
+        ms is encode_redundant of [TRUE_STATE, 3]
+        ms[1] is [ms[1][0] + 5.0, ms[1][1] + 5.0]
+        r is correct_errors of [ms, THRESH]
+    append of [times, (monotonic_ms of null) - t0]
+
+sorted_t is []
+for i in range of (len of times):
+    append of [sorted_t, times[i]]
+for i in range of (len of sorted_t):
+    for j in range of ((len of sorted_t) - i - 1):
+        if sorted_t[j] > sorted_t[j+1]:
+            tmp is sorted_t[j]
+            sorted_t[j] is sorted_t[j+1]
+            sorted_t[j+1] is tmp
+
+print of ""
+print of f"eigs ms (1000 deterministic correct cycles): min={sorted_t[0]} median={sorted_t[2]} max={sorted_t[4]}"

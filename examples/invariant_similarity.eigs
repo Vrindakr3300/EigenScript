@@ -1,0 +1,357 @@
+# ============================================================
+# Invariant Demo: Lorentz similarity + frequency-selective damping
+# ============================================================
+#
+# 12th port. Cousin shape to decomposition (port 10) — same
+# observation-filtering ambition, different mechanism:
+#
+#   - decomposition: predict from history, suppress residual
+#       → fails on noisy tracking (over-suppresses signal)
+#   - similarity:    FFT the state history, dampen only mid-freq
+#       → preserves DC trend, kills period-2/3 oscillations
+#
+# Two pieces:
+#
+# A) Lightlike observer (loop detector):
+#      ⟨u,v⟩_L = u·v − ||u|| · ||v||
+#    Self-similarity is 0 (lightlike) — breaks feedback loops
+#    where standard cosine sim returns 1 (self-reinforcement).
+#
+# B) Frequency-selective damping:
+#      DFT of recent state history → dominant freq
+#      if dominant freq ∈ [0.25, 0.5] Hz: strong dampening
+#      else: minimal
+#
+# Demo: rerun the decomposition tracking scenario with three
+# filters — raw, decomposition's coherence filter, similarity's
+# FFT damping — and compare RMSE.
+
+load_file of "lib/format.eigs"
+load_file of "lib/math.eigs"
+
+TWO_PI is 6.2831853071795865
+
+# ---- Vec helpers ----
+define vsub(a, b) as:
+    return [a[0] - b[0], a[1] - b[1]]
+define vnorm(v) as:
+    return sqrt of (v[0] * v[0] + v[1] * v[1])
+define randn() as:
+    u1 is random of null
+    u2 is random of null
+    if u1 <= 0.0:
+        u1 is 0.0000000001
+    return (sqrt of (0 - 2.0 * (log of u1))) * (cos of (TWO_PI * u2))
+
+# ============================================================
+# Part A: Lorentz vs standard cosine similarity
+# ============================================================
+
+define vdot(u, v) as:
+    n is len of u
+    s is 0.0
+    for i in range of n:
+        s is s + u[i] * v[i]
+    return s
+
+define vec_norm(v) as:
+    n is len of v
+    s is 0.0
+    for i in range of n:
+        s is s + v[i] * v[i]
+    return sqrt of s
+
+define cosine_similarity(u, v) as:
+    nu is vec_norm of u
+    nv is vec_norm of v
+    d is nu * nv
+    if d < 0.0000000001:
+        return 0.0
+    s is (vdot of [u, v]) / d
+    if s > 1.0:
+        s is 1.0
+    if s < 0 - 1.0:
+        s is 0 - 1.0
+    return s
+
+# Lightlike: numerator = u·v − ||u||·||v||  (≤ 0 by Cauchy-Schwarz)
+# denominator squared = |⟨u,u⟩_L| · |⟨v,v⟩_L| = 0 · 0 = 0 (lightlike)
+# → similarity = 0 whenever the lightlike denominator vanishes.
+# EGC returns 0 in that case (the "observer cannot observe itself").
+define lorentz_similarity(u, v) as:
+    nu is vec_norm of u
+    nv is vec_norm of v
+    spatial is vdot of [u, v]
+    num is spatial - nu * nv
+    uu is nu * nu - nu * nu
+    vv is nv * nv - nv * nv
+    if uu < 0:
+        uu is 0 - uu
+    if vv < 0:
+        vv is 0 - vv
+    denom_sq is uu * vv
+    if denom_sq < 0.0000000001:
+        return 0.0
+    denom is sqrt of denom_sq
+    if denom < 0.0000000001:
+        return 0.0
+    s is num / denom
+    if s > 1.0:
+        s is 1.0
+    if s < 0 - 1.0:
+        s is 0 - 1.0
+    return s
+
+# ---- detect_oscillation (time-domain, window=3) ----
+# Returns [oscillating(0/1), strength]
+define detect_oscillation(history, window, thresh) as:
+    n is len of history
+    if n < 2:
+        return [0, 0.0]
+    cur is history[n - 1]
+    cw is window
+    if cw > (n - 1):
+        cw is n - 1
+    max_sim is 0.0
+    for i in range of cw:
+        past is history[n - 2 - i]
+        sim is cosine_similarity of [cur, past]
+        if sim > max_sim:
+            max_sim is sim
+    if max_sim > thresh:
+        return [1, max_sim]
+    return [0, 0.0]
+
+# ---- lightlike_damping_factor: sigmoid response ----
+define lightlike_damping(strength, max_d, steep) as:
+    z is steep * (strength - 0.5)
+    # sigmoid 1/(1+e^{-z})
+    s is 1.0 / (1.0 + (exp of (0 - z)))
+    d is max_d * s
+    if d < 0.0:
+        d is 0.0
+    if d > max_d:
+        d is max_d
+    return d
+
+# ============================================================
+# Part B: Frequency-selective damping (FFT-based)
+# ============================================================
+
+# Naive DFT for real input. Returns power spectrum [P_0 ... P_{n-1}].
+define dft_power(x) as:
+    n is len of x
+    pwr is []
+    for k in range of n:
+        re is 0.0
+        im is 0.0
+        for j in range of n:
+            angle is 0 - TWO_PI * k * j / n
+            c is cos of angle
+            s is sin of angle
+            re is re + x[j] * c
+            im is im + x[j] * s
+        append of [pwr, re * re + im * im]
+    return pwr
+
+# detect_oscillation_frequency on 2-D state history.
+# Returns [oscillating(0/1), dominant_freq, strength].
+# Uses last 2*min_history samples; subtracts per-dim mean; sums
+# power across dims; finds argmax over positive freqs.
+define detect_osc_freq(history, sample_rate, min_history) as:
+    n is len of history
+    if n < min_history:
+        return [0, 0.0, 0.0]
+    take is min_history * 2
+    if take > n:
+        take is n
+    start is n - take
+    # extract per-dim signals
+    sx is []
+    sy is []
+    for i in range of take:
+        append of [sx, history[start + i][0]]
+        append of [sy, history[start + i][1]]
+    # mean-centre
+    mx is 0.0
+    my is 0.0
+    for i in range of take:
+        mx is mx + sx[i]
+        my is my + sy[i]
+    mx is mx / take
+    my is my / take
+    cx is []
+    cy is []
+    for i in range of take:
+        append of [cx, sx[i] - mx]
+        append of [cy, sy[i] - my]
+    px is dft_power of cx
+    py is dft_power of cy
+    total is []
+    for i in range of take:
+        append of [total, (px[i] + py[i]) / 2.0]
+    # positive freqs: bins k=1..take/2 (k=0 is DC, skip; k=take/2 is Nyquist)
+    nyq is floor of (take / 2)
+    pos_pwr is []
+    pos_freq is []
+    for k in range of nyq:
+        if k >= 1:
+            append of [pos_pwr, total[k]]
+            append of [pos_freq, k * sample_rate / take]
+    # include Nyquist
+    append of [pos_pwr, total[nyq]]
+    append of [pos_freq, nyq * sample_rate / take]
+    if (len of pos_freq) == 0:
+        return [0, 0.0, 0.0]
+    # find argmax
+    dom_idx is 0
+    dom_p is pos_pwr[0]
+    for i in range of (len of pos_pwr):
+        if pos_pwr[i] > dom_p:
+            dom_p is pos_pwr[i]
+            dom_idx is i
+    dom_freq is pos_freq[dom_idx]
+    total_p is 0.0
+    for i in range of (len of pos_pwr):
+        total_p is total_p + pos_pwr[i]
+    if total_p < 0.0000000001:
+        return [0, 0.0, 0.0]
+    strength is dom_p / total_p
+    osc is 0
+    if strength > 0.2:
+        if dom_freq > 0.05:
+            osc is 1
+    return [osc, dom_freq, strength]
+
+# frequency_selective_damping
+define freq_damp(history, sample_rate, fmin, fmax, max_d) as:
+    r is detect_osc_freq of [history, sample_rate, 8]
+    osc is r[0]
+    f is r[1]
+    s is r[2]
+    if osc == 0:
+        return 0.0
+    if f >= fmin:
+        if f <= fmax:
+            return max_d * s
+    if f < fmin:
+        ratio is f / fmin
+        d is max_d * s * ratio * 0.3
+        if d > max_d:
+            d is max_d
+        return d
+    ratio is fmax / f
+    d is max_d * s * ratio * 0.5
+    if d > max_d:
+        d is max_d
+    return d
+
+# ============================================================
+# Part 1: self-similarity comparison
+# ============================================================
+print of "=== Self-similarity: cosine vs Lorentz ==="
+U is [3.0, 4.0]
+print of f"  u = [3, 4]  ||u|| = {vec_norm of U}"
+print of f"  cosine(u, u) = {cosine_similarity of [U, U]}    (self-reinforcement)"
+print of f"  lorentz(u, u) = {lorentz_similarity of [U, U]}  (lightlike, no self-observe)"
+V is [6.0, 8.0]
+print of f"  cosine(u, 2u) = {cosine_similarity of [U, V]}    (parallel)"
+print of f"  lorentz(u, 2u) = {lorentz_similarity of [U, V]}  (lightlike, parallel)"
+W is [1.0, 0.0]
+print of f"  cosine(u, [1,0]) = {cosine_similarity of [U, W]}"
+print of f"  lorentz(u, [1,0]) = {lorentz_similarity of [U, W]}  (spacelike)"
+
+# ============================================================
+# Part 2: oscillation detection on period-2 trajectory
+# ============================================================
+print of ""
+print of "=== Period-2 loop: time-domain detection ==="
+loop_traj is []
+for t in range of 10:
+    if t % 2 == 0:
+        append of [loop_traj, [1.0, 0.0]]
+    else:
+        append of [loop_traj, [0 - 1.0, 0.0]]
+# Note: standard cosine of [1,0] and [-1,0] = -1, so max_sim = -1, no detection.
+# Use [1,0] and [1, 0.05] alternation for soft loop.
+soft_loop is []
+for t in range of 10:
+    if t % 2 == 0:
+        append of [soft_loop, [1.0, 0.0]]
+    else:
+        append of [soft_loop, [0.99, 0.05]]
+r is detect_oscillation of [soft_loop, 3, 0.95]
+print of f"  soft period-2 trajectory (10 ticks):"
+print of f"    oscillating={r[0]}  strength={r[1]}"
+d is lightlike_damping of [r[1], 0.5, 10.0]
+print of f"    lightlike damping factor: {d}"
+
+# ============================================================
+# Part 3: tracking — raw vs FFT-damped (the user's question)
+# ============================================================
+print of ""
+print of "=== Tracking: same scenario as decomposition demo ==="
+print of "  TRUE_VEL=[0.10, 0.05], NOISE_SIGMA=0.05, ETA=0.30, 200 ticks"
+
+TRUE_VEL is [0.10, 0.05]
+NOISE_SIGMA is 0.05
+ETA is 0.30
+N_TICKS is 200
+HIST_LEN is 16
+
+define run_track(mode) as:
+    state is [0.0, 0.0]
+    history is []
+    sum_sq_err is 0.0
+    sum_damp is 0.0
+    n_damp_fires is 0
+    for t in range of N_TICKS:
+        # true and obs
+        tx is TRUE_VEL[0] * t
+        ty is TRUE_VEL[1] * t
+        ox is tx + (randn of null) * NOISE_SIGMA
+        oy is ty + (randn of null) * NOISE_SIGMA
+        # determine effective eta
+        e_eff is ETA
+        d is 0.0
+        if mode == 1:
+            # similarity FFT-selective damping
+            d is freq_damp of [history, 1.0, 0.25, 0.5, 0.5]
+            e_eff is ETA * (1.0 - d)
+            if d > 0.0:
+                sum_damp is sum_damp + d
+                n_damp_fires is n_damp_fires + 1
+        state is [state[0] + e_eff * (ox - state[0]), state[1] + e_eff * (oy - state[1])]
+        ex is state[0] - tx
+        ey is state[1] - ty
+        sum_sq_err is sum_sq_err + ex * ex + ey * ey
+        append of [history, [state[0], state[1]]]
+        nh is len of history
+        if nh > HIST_LEN:
+            trimmed is []
+            start is nh - HIST_LEN
+            for k in range of HIST_LEN:
+                append of [trimmed, history[start + k]]
+            history is trimmed
+    rmse is sqrt of (sum_sq_err / N_TICKS)
+    mean_damp is 0.0
+    if n_damp_fires > 0:
+        mean_damp is sum_damp / n_damp_fires
+    return [rmse, n_damp_fires, mean_damp]
+
+a is run_track of 0
+print of f"  raw (no filter):           RMSE={a[0]}"
+b is run_track of 1
+print of f"  sim FFT-selective damp:    RMSE={b[0]}  fires={b[1]}/{N_TICKS}  mean_d={b[2]}"
+print of f"  decomposition (port 10):   RMSE=7.296910  (reference, much worse)"
+
+# Perf
+times is []
+for trial in range of 3:
+    t0 is monotonic_ms of null
+    for k in range of 5:
+        r is run_track of 1
+    append of [times, (monotonic_ms of null) - t0]
+
+print of ""
+print of f"eigs ms (5 tracking runs with FFT damping, {N_TICKS} ticks): {times[0]} {times[1]} {times[2]}"

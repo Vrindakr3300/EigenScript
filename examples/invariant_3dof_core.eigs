@@ -1,0 +1,196 @@
+# ============================================================
+# Invariant Demo: 3-DOF spatial arm gradient descent on ds²
+# ============================================================
+#
+# 13th port. Full pipeline:
+#   forward_kinematics_3d → ds²_3d (target + obstacle + reg)
+#   → analytical gradient via 3×3 Jacobian → θ ← θ - η·∇ds²
+#
+# Same *shape* as port 1 (arm, descend), now in 3D with
+# obstacles. The point of this port isn't a new pattern —
+# it's a full worked example exercising every primitive
+# (kinematics, multi-term ds², analytical Jacobian, descent).
+#
+# Configuration: ZYY arm with link lengths L1=L2=L3=0.9.
+#   θ₁ rotates base about z; θ₂, θ₃ rotate about local y.
+# Workspace: 3-D point + spherical obstacle.
+#
+# ds² = ‖p - target‖² + G₀·max(0, r - d_obs)² + λ‖θ‖²
+#
+# Demo runs 200 ticks, expects exact tick-by-tick agreement
+# with EGC's eigen_3dof_core (deterministic descent).
+
+load_file of "lib/format.eigs"
+load_file of "lib/math.eigs"
+
+L1 is 0.9
+L2 is 0.9
+L3 is 0.9
+GO is 4.0
+LAM is 0.02
+ETA is 0.08
+N_TICKS is 200
+
+# ---- forward kinematics (returns [x, y, z]) ----
+define fk3(theta1, theta2, theta3) as:
+    c1 is cos of theta1
+    s1 is sin of theta1
+    c2 is cos of theta2
+    s2 is sin of theta2
+    c23 is cos of (theta2 + theta3)
+    s23 is sin of (theta2 + theta3)
+    r is L2 * c2 + L3 * c23
+    z is L1 + L2 * s2 + L3 * s23
+    return [r * c1, r * s1, z]
+
+# ---- 3×3 Jacobian as flat 9-list, row-major [J00..J22] ----
+define jac3(theta1, theta2, theta3) as:
+    c1 is cos of theta1
+    s1 is sin of theta1
+    c2 is cos of theta2
+    s2 is sin of theta2
+    c23 is cos of (theta2 + theta3)
+    s23 is sin of (theta2 + theta3)
+    r is L2 * c2 + L3 * c23
+    dr2 is 0 - L2 * s2 - L3 * s23
+    dr3 is 0 - L3 * s23
+    dz2 is L2 * c2 + L3 * c23
+    dz3 is L3 * c23
+    return [
+        0 - r * s1, dr2 * c1, dr3 * c1,
+        r * c1,     dr2 * s1, dr3 * s1,
+        0.0,        dz2,      dz3
+    ]
+
+# ---- J^T @ v   (J is 3×3 flat, v is 3-list) → 3-list ----
+define jTv(j, v) as:
+    return [
+        j[0] * v[0] + j[3] * v[1] + j[6] * v[2],
+        j[1] * v[0] + j[4] * v[1] + j[7] * v[2],
+        j[2] * v[0] + j[5] * v[1] + j[8] * v[2]
+    ]
+
+# ---- det(J) for 3×3 ----
+define det3(j) as:
+    a is j[0] * (j[4] * j[8] - j[5] * j[7])
+    b is j[1] * (j[3] * j[8] - j[5] * j[6])
+    c is j[2] * (j[3] * j[7] - j[4] * j[6])
+    return a - b + c
+
+define vnorm3(v) as:
+    return sqrt of (v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+
+# ---- ds² ----
+# obstacles: list of [[cx, cy, cz], radius]
+define compute_ds2(theta, target, obstacles) as:
+    p is fk3 of [theta[0], theta[1], theta[2]]
+    dx is p[0] - target[0]
+    dy is p[1] - target[1]
+    dz is p[2] - target[2]
+    target_term is dx * dx + dy * dy + dz * dz
+    obs_term is 0.0
+    d_obs_min is 1000000.0
+    for i in range of (len of obstacles):
+        oc is obstacles[i][0]
+        rad is obstacles[i][1]
+        ddx is p[0] - oc[0]
+        ddy is p[1] - oc[1]
+        ddz is p[2] - oc[2]
+        d is sqrt of (ddx * ddx + ddy * ddy + ddz * ddz)
+        if d < d_obs_min:
+            d_obs_min is d
+        pen is rad - d
+        if pen > 0:
+            obs_term is obs_term + GO * pen * pen
+    reg_term is LAM * (theta[0] * theta[0] + theta[1] * theta[1] + theta[2] * theta[2])
+    return [target_term + obs_term + reg_term, target_term, obs_term, reg_term, d_obs_min]
+
+# ---- gradient ----
+define compute_grad(theta, target, obstacles) as:
+    p is fk3 of [theta[0], theta[1], theta[2]]
+    j is jac3 of [theta[0], theta[1], theta[2]]
+    # target gradient: 2 * J^T (p - t)
+    diff is [p[0] - target[0], p[1] - target[1], p[2] - target[2]]
+    jt is jTv of [j, diff]
+    g0 is 2.0 * jt[0]
+    g1 is 2.0 * jt[1]
+    g2 is 2.0 * jt[2]
+    # obstacle gradient
+    for i in range of (len of obstacles):
+        oc is obstacles[i][0]
+        rad is obstacles[i][1]
+        ddx is p[0] - oc[0]
+        ddy is p[1] - oc[1]
+        ddz is p[2] - oc[2]
+        d is sqrt of (ddx * ddx + ddy * ddy + ddz * ddz)
+        pen is rad - d
+        if pen > 0:
+            if d > 0.000000000001:
+                jto is jTv of [j, [ddx, ddy, ddz]]
+                k is GO * 2.0 * pen * (0 - 1.0 / d)
+                g0 is g0 + k * jto[0]
+                g1 is g1 + k * jto[1]
+                g2 is g2 + k * jto[2]
+    # regularization gradient
+    g0 is g0 + 2.0 * LAM * theta[0]
+    g1 is g1 + 2.0 * LAM * theta[1]
+    g2 is g2 + 2.0 * LAM * theta[2]
+    return [g0, g1, g2]
+
+# ============================================================
+# Demo
+# ============================================================
+
+THETA_INIT is [0.0, 0.5, 0 - 0.5]
+TARGET is [0.8, 0.5, 1.5]
+OBSTACLES is [[[0.5, 0.5, 1.0], 0.30]]
+
+print of "=== 3-DOF arm: gradient descent on ds² ==="
+print of f"  init θ = [0.0, 0.5, -0.5]"
+print of f"  target = [0.8, 0.5, 1.5]"
+print of f"  one obstacle: centre [0.5, 0.5, 1.0]  radius 0.30"
+
+# Initial state
+init_ds2 is compute_ds2 of [THETA_INIT, TARGET, OBSTACLES]
+init_pos is fk3 of [THETA_INIT[0], THETA_INIT[1], THETA_INIT[2]]
+print of f"  init pos = [{init_pos[0]}, {init_pos[1]}, {init_pos[2]}]"
+print of f"  init ds² = {init_ds2[0]}  (target={init_ds2[1]}  obs={init_ds2[2]}  reg={init_ds2[3]})"
+print of f"  init d_obs_min = {init_ds2[4]}"
+
+# Run descent
+theta is [THETA_INIT[0], THETA_INIT[1], THETA_INIT[2]]
+csv is "tick,th0,th1,th2,x,y,z,ds2,target_term,obs_term,reg_term,d_obs_min,grad_norm,det_J\n"
+
+for t in range of N_TICKS:
+    ds2_info is compute_ds2 of [theta, TARGET, OBSTACLES]
+    grad is compute_grad of [theta, TARGET, OBSTACLES]
+    pos is fk3 of [theta[0], theta[1], theta[2]]
+    j is jac3 of [theta[0], theta[1], theta[2]]
+    gnorm is vnorm3 of grad
+    dj is det3 of j
+    csv is csv + (str of t) + "," + (fmt_num of [theta[0], 8]) + "," + (fmt_num of [theta[1], 8]) + "," + (fmt_num of [theta[2], 8]) + "," + (fmt_num of [pos[0], 8]) + "," + (fmt_num of [pos[1], 8]) + "," + (fmt_num of [pos[2], 8]) + "," + (fmt_num of [ds2_info[0], 8]) + "," + (fmt_num of [ds2_info[1], 8]) + "," + (fmt_num of [ds2_info[2], 8]) + "," + (fmt_num of [ds2_info[3], 8]) + "," + (fmt_num of [ds2_info[4], 8]) + "," + (fmt_num of [gnorm, 8]) + "," + (fmt_num of [dj, 8]) + "\n"
+    theta is [theta[0] - ETA * grad[0], theta[1] - ETA * grad[1], theta[2] - ETA * grad[2]]
+
+write_text of ["/tmp/egc_3dof_eigs.csv", csv]
+
+final_ds2 is compute_ds2 of [theta, TARGET, OBSTACLES]
+final_pos is fk3 of [theta[0], theta[1], theta[2]]
+print of ""
+print of f"  final θ = [{theta[0]}, {theta[1]}, {theta[2]}]"
+print of f"  final pos = [{final_pos[0]}, {final_pos[1]}, {final_pos[2]}]"
+print of f"  final ds² = {final_ds2[0]}  (target={final_ds2[1]}  obs={final_ds2[2]}  reg={final_ds2[3]})"
+print of f"  final d_obs_min = {final_ds2[4]}"
+
+# Perf
+times is []
+for trial in range of 3:
+    t0 is monotonic_ms of null
+    theta_p is [THETA_INIT[0], THETA_INIT[1], THETA_INIT[2]]
+    for t in range of N_TICKS:
+        g is compute_grad of [theta_p, TARGET, OBSTACLES]
+        theta_p is [theta_p[0] - ETA * g[0], theta_p[1] - ETA * g[1], theta_p[2] - ETA * g[2]]
+    append of [times, (monotonic_ms of null) - t0]
+
+print of ""
+print of f"eigs ms ({N_TICKS} descent ticks): {times[0]} {times[1]} {times[2]}"
+print of "wrote /tmp/egc_3dof_eigs.csv"

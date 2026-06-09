@@ -1,0 +1,262 @@
+# ============================================================
+# Invariant Demo: Multi-agent coordination via shared observer
+# ============================================================
+#
+# Ports eigen_multi_agent: N agents each pursue their own target via
+# gradient descent, but a SHARED lightlike observer measures pairwise
+# inter-agent similarity (cos-sim of state vectors). When agents are
+# "crowded together" (high pairwise sim → collective conflict), the
+# observer applies system-wide damping; when spread out, releases it.
+#
+# This is the 7th port. The new dimension being tested is
+# *composability*: not a new shape, but N copies of shape #1 (descend)
+# coupled through one observer. The framework's claim is "1 observer
+# can coordinate N agents". This demo asks: does that survive porting?
+#
+# Demo: 3 agents start near each other (high pairwise cos-sim), targets
+# are well-separated. Compare two runs:
+#   A) max_damping = 0 — naive proportional, no observer mediation
+#   B) max_damping = 0.5 — observer slows the crowd, releases as they
+#                          spread out
+#
+# Expected: both converge (eta small enough to be stable), but B traces
+# different early-tick trajectories where the observer was active.
+
+load_file of "lib/format.eigs"
+load_file of "lib/math.eigs"
+
+# ---- 2-D helpers ----
+define dot2(a, b) as:
+    return a[0] * b[0] + a[1] * b[1]
+
+define norm2(v) as:
+    return sqrt of (v[0] * v[0] + v[1] * v[1])
+
+define cosine_sim(a, b) as:
+    na is norm2 of a
+    nb is norm2 of b
+    den is na * nb
+    if den < 0.000000001:
+        return 0.0
+    s is (dot2 of [a, b]) / den
+    if s > 1.0:
+        s is 1.0
+    if s < 0 - 1.0:
+        s is 0 - 1.0
+    return s
+
+# detect_oscillation: max cos sim between current and recent past
+# hist is list-of-2D-vectors, window int, threshold float
+define detect_osc(hist, window, threshold) as:
+    n is len of hist
+    if n < 2:
+        return [0, 0.0]
+    cur is hist[n - 1]
+    w is window
+    if (n - 1) < w:
+        w is n - 1
+    max_sim is 0 - 2.0
+    for i in range of w:
+        past is hist[n - 2 - i]
+        s is cosine_sim of [cur, past]
+        if s > max_sim:
+            max_sim is s
+    is_osc is 0
+    if max_sim > threshold:
+        is_osc is 1
+    strength is 0.0
+    if is_osc == 1:
+        strength is max_sim
+    return [is_osc, strength]
+
+# Absolute value helper
+define abs_val(x) as:
+    if x < 0:
+        return 0 - x
+    return x
+
+# ---- Collective observer ----
+# Inputs:
+#   states: list of N 2-D states
+#   hist_flat: list of N trajectories (each = list of 2-D)
+#   threshold: observer threshold
+# Returns: [collective_osc, agent_osc_list, collective_sim]
+define collective_observer(states, hist_flat, threshold) as:
+    n is len of states
+    if n == 0:
+        return [0, [], 0.0]
+    # Per-agent oscillation check
+    agent_osc is []
+    for i in range of n:
+        h is hist_flat[i]
+        if (len of h) >= 2:
+            r is detect_osc of [h, 3, threshold]
+            append of [agent_osc, r[0]]
+        if (len of h) < 2:
+            append of [agent_osc, 0]
+    # Pairwise similarities (current states)
+    max_pair_sim is 0.0
+    for i in range of n:
+        for j in range of n:
+            if j > i:
+                si is states[i]
+                sj is states[j]
+                ni is norm2 of si
+                nj is norm2 of sj
+                if ni > 0.000000001 and nj > 0.000000001:
+                    s is (dot2 of [si, sj]) / (ni * nj)
+                    a is abs_val of s
+                    if a > max_pair_sim:
+                        max_pair_sim is a
+    individual_osc is 0
+    for i in range of n:
+        if agent_osc[i] == 1:
+            individual_osc is 1
+    pairwise_conflict is 0
+    if max_pair_sim > threshold:
+        pairwise_conflict is 1
+    collective_osc is 0
+    if individual_osc == 1:
+        collective_osc is 1
+    if pairwise_conflict == 1:
+        collective_osc is 1
+    return [collective_osc, agent_osc, max_pair_sim]
+
+# ---- Paradox-mediated damping ----
+# Per-agent damping = max(individual_damping, collective_damping)
+define paradox_damping(agent_idx, coll_osc, agent_osc, coll_sim, max_damping) as:
+    ind is 0.0
+    if agent_osc[agent_idx] == 1:
+        ind is max_damping * 0.5
+    coll is 0.0
+    if coll_osc == 1:
+        c is coll_sim
+        if c > 1.0:
+            c is 1.0
+        coll is max_damping * c
+    total is ind
+    if coll > total:
+        total is coll
+    if total < 0.0:
+        total is 0.0
+    if total > max_damping:
+        total is max_damping
+    return total
+
+# ---- Multi-agent step ----
+# Returns [new_states, dampings, coll_osc, coll_sim]
+define multi_step(states, targets, hist_flat, eta, max_damping, threshold) as:
+    n is len of states
+    obs is collective_observer of [states, hist_flat, threshold]
+    coll_osc is obs[0]
+    agent_osc is obs[1]
+    coll_sim is obs[2]
+    new_states is []
+    dampings is []
+    for i in range of n:
+        d is paradox_damping of [i, coll_osc, agent_osc, coll_sim, max_damping]
+        append of [dampings, d]
+        # gradient = target - state
+        gx is targets[i][0] - states[i][0]
+        gy is targets[i][1] - states[i][1]
+        vx is eta * gx * (1.0 - d)
+        vy is eta * gy * (1.0 - d)
+        append of [new_states, [states[i][0] + vx, states[i][1] + vy]]
+    return [new_states, dampings, coll_osc, coll_sim]
+
+# ============================================================
+# Run: 3 agents, clustered start, separated targets
+# ============================================================
+N_AGENTS is 3
+N_ITERS is 200
+ETA is 0.1
+THRESH is 0.92
+HIST_WIN is 10
+TOLERANCE is 0.05
+
+# Clustered start (high pairwise cos-sim ~1.0)
+INIT is [[5.0, 5.0], [5.5, 5.0], [5.0, 5.5]]
+# Well-separated targets
+TARGETS is [[0.0, 0.0], [10.0, 0.0], [5.0, 10.0]]
+
+define run_sim(max_damping) as:
+    states is []
+    trajs is []
+    for i in range of N_AGENTS:
+        s_i is [INIT[i][0], INIT[i][1]]
+        append of [states, s_i]
+        append of [trajs, [[INIT[i][0], INIT[i][1]]]]
+    csv is "tick,a0_x,a0_y,a1_x,a1_y,a2_x,a2_y,d0,d1,d2,coll_sim,coll_osc,dist0,dist1,dist2\n"
+    converged_at is 0 - 1
+    for t in range of N_ITERS:
+        # Build per-agent history (last HIST_WIN entries)
+        hist_flat is []
+        for i in range of N_AGENTS:
+            tr is trajs[i]
+            tn is len of tr
+            start is tn - HIST_WIN
+            if start < 0:
+                start is 0
+            sub is []
+            for k in range of (tn - start):
+                append of [sub, tr[start + k]]
+            append of [hist_flat, sub]
+        step is multi_step of [states, TARGETS, hist_flat, ETA, max_damping, THRESH]
+        states is step[0]
+        dampings is step[1]
+        coll_osc is step[2]
+        coll_sim is step[3]
+        for i in range of N_AGENTS:
+            append of [trajs[i], [states[i][0], states[i][1]]]
+        # Distances to targets
+        d0x is states[0][0] - TARGETS[0][0]
+        d0y is states[0][1] - TARGETS[0][1]
+        dist0 is sqrt of (d0x * d0x + d0y * d0y)
+        d1x is states[1][0] - TARGETS[1][0]
+        d1y is states[1][1] - TARGETS[1][1]
+        dist1 is sqrt of (d1x * d1x + d1y * d1y)
+        d2x is states[2][0] - TARGETS[2][0]
+        d2y is states[2][1] - TARGETS[2][1]
+        dist2 is sqrt of (d2x * d2x + d2y * d2y)
+        csv is csv + (str of t) + "," + (fmt_num of [states[0][0], 8]) + "," + (fmt_num of [states[0][1], 8]) + "," + (fmt_num of [states[1][0], 8]) + "," + (fmt_num of [states[1][1], 8]) + "," + (fmt_num of [states[2][0], 8]) + "," + (fmt_num of [states[2][1], 8]) + "," + (fmt_num of [dampings[0], 6]) + "," + (fmt_num of [dampings[1], 6]) + "," + (fmt_num of [dampings[2], 6]) + "," + (fmt_num of [coll_sim, 6]) + "," + (str of coll_osc) + "," + (fmt_num of [dist0, 8]) + "," + (fmt_num of [dist1, 8]) + "," + (fmt_num of [dist2, 8]) + "\n"
+        if converged_at < 0:
+            if dist0 < TOLERANCE and dist1 < TOLERANCE and dist2 < TOLERANCE:
+                converged_at is t
+    return [csv, converged_at, states]
+
+print of "=== Run A: max_damping = 0 (no observer mediation) ==="
+res_A is run_sim of 0.0
+write_text of ["/tmp/egc_multi_eigs_A.csv", res_A[0]]
+print of f"  converged at tick: {res_A[1]}"
+sA is res_A[2]
+print of f"  final positions: {sA[0]} {sA[1]} {sA[2]}"
+
+print of ""
+print of "=== Run B: max_damping = 0.5 (observer mediates crowd) ==="
+res_B is run_sim of 0.5
+write_text of ["/tmp/egc_multi_eigs_B.csv", res_B[0]]
+print of f"  converged at tick: {res_B[1]}"
+sB is res_B[2]
+print of f"  final positions: {sB[0]} {sB[1]} {sB[2]}"
+
+# Perf
+times is []
+for trial in range of 5:
+    t0 is monotonic_ms of null
+    for k in range of 10:
+        r is run_sim of 0.5
+    append of [times, (monotonic_ms of null) - t0]
+
+sorted_t is []
+for i in range of (len of times):
+    append of [sorted_t, times[i]]
+for i in range of (len of sorted_t):
+    for j in range of ((len of sorted_t) - i - 1):
+        if sorted_t[j] > sorted_t[j+1]:
+            tmp is sorted_t[j]
+            sorted_t[j] is sorted_t[j+1]
+            sorted_t[j+1] is tmp
+
+print of ""
+print of f"eigs ms (10 mediated runs of {N_ITERS} ticks): min={sorted_t[0]} median={sorted_t[2]} max={sorted_t[4]}"
+print of "wrote /tmp/egc_multi_eigs_{A,B}.csv"

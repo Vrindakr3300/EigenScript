@@ -1,0 +1,339 @@
+# ============================================================
+# Invariant Demo: Noperthedron — geometric ds² (no dynamics)
+# ============================================================
+#
+# Ports eigen_noperthedron: the 9th port and a 7th distinct shape.
+# Every prior port was a *flow* in some sense (descend, preserve,
+# restore, observe-self, accumulate). This one is a *static
+# existence question*: given a shape, does ds² > 0 ever occur across
+# its configuration space? If yes, the shape has Rupert's property
+# (can pass through itself); if no, it's Rupert-negative.
+#
+# Steininger & Yurkevich (2025) proved the 90-vertex Noperthedron is
+# Rupert-negative — across ~18M tested configurations, collision
+# always occurs. Framework claim: ds² = S² - C² is always negative.
+#
+#   - arm/edl: descend on ds²              (flow toward eigenstate)
+#   - xor/lorentz: preserve ds²            (orbit at fixed level)
+#   - geodesic: ds² preserved by ODE       (flow on manifold)
+#   - qec: restore ds² = 0                 (project to codespace)
+#   - meta: observe self, tune self        (2-level hierarchy)
+#   - multi: 1 observer, N agents          (compose)
+#   - weak: accumulate weak observations   (extract signal)
+#   - noperthedron: classify ds² sign      (static existence)
+#
+# Demo: generate 90 vertices, sample N random orientation pairs,
+# compute discrete ds² via 256-cell 3D occupancy grid. Report
+# fractions {ds² > 0, ds² < 0, ds² ≈ 0}. Expect ~100% space-like
+# (matching the proof).
+
+load_file of "lib/format.eigs"
+load_file of "lib/math.eigs"
+
+TWO_PI is 6.2831853071795865
+PI is 3.141592653589793
+
+# ============================================================
+# Base points (Steininger & Yurkevich 2025)
+# ============================================================
+# C₁: |C₁| = 1 exactly (rational)
+# C₂, C₃: |Cᵢ| ≈ 0.986–0.987
+define base_points() as:
+    c1 is [152024884.0 / 259375205.0, 0.0, 210152163.0 / 259375205.0]
+    c2 is [6632738028.0 / 10000000000.0, 6106948881.0 / 10000000000.0, 3980949609.0 / 10000000000.0]
+    c3 is [8193990033.0 / 10000000000.0, 5298215096.0 / 10000000000.0, 1230614493.0 / 10000000000.0]
+    return [c1, c2, c3]
+
+# ============================================================
+# 3x3 rotation matrices (returned as flat 9-element lists)
+# ============================================================
+define rot_z(ang) as:
+    c is cos of ang
+    s is sin of ang
+    return [c, 0 - s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0]
+
+define rot_y(ang) as:
+    c is cos of ang
+    s is sin of ang
+    return [c, 0.0, s, 0.0, 1.0, 0.0, 0 - s, 0.0, c]
+
+# Apply 3x3 matrix (flat) to 3-vector
+define mat_apply(m, v) as:
+    x is m[0] * v[0] + m[1] * v[1] + m[2] * v[2]
+    y is m[3] * v[0] + m[4] * v[1] + m[5] * v[2]
+    z is m[6] * v[0] + m[7] * v[1] + m[8] * v[2]
+    return [x, y, z]
+
+# A @ B where both are 3x3 flat
+define mat_mul(a, b) as:
+    r is []
+    for i in range of 3:
+        for j in range of 3:
+            s is 0.0
+            for k in range of 3:
+                s is s + a[i * 3 + k] * b[k * 3 + j]
+            append of [r, s]
+    return r
+
+# Rotation from spherical coords: R_z(phi) @ R_y(theta)
+define rot_spherical(theta, phi) as:
+    rz is rot_z of phi
+    ry is rot_y of theta
+    return mat_mul of [rz, ry]
+
+# ============================================================
+# Generate 90 vertices: 3 base × 15 rotations × 2 reflections
+# ============================================================
+define gen_vertices() as:
+    bp is base_points of null
+    verts is []
+    for b in range of 3:
+        for k in range of 15:
+            ang is TWO_PI * k / 15.0
+            r is rot_z of ang
+            rotated is mat_apply of [r, bp[b]]
+            append of [verts, rotated]
+            neg is [0 - rotated[0], 0 - rotated[1], 0 - rotated[2]]
+            append of [verts, neg]
+    return verts
+
+# ============================================================
+# Orient all vertices: vertices @ R.T  (apply R to each row)
+# ============================================================
+define orient(verts, r_mat) as:
+    out is []
+    for i in range of (len of verts):
+        append of [out, mat_apply of [r_mat, verts[i]]]
+    return out
+
+# ============================================================
+# Occupancy bitstring (length=256, list of 0/1)
+# ============================================================
+N_BITS is 256
+GRID_SIZE is 6
+BOUNDS_MIN is 0 - 2.0
+BOUNDS_RANGE is 4.0
+
+define vertices_to_occ(verts) as:
+    occ is []
+    for i in range of N_BITS:
+        append of [occ, 0]
+    for i in range of (len of verts):
+        v is verts[i]
+        gx_f is ((v[0] - BOUNDS_MIN) / BOUNDS_RANGE) * (GRID_SIZE - 1)
+        gy_f is ((v[1] - BOUNDS_MIN) / BOUNDS_RANGE) * (GRID_SIZE - 1)
+        gz_f is ((v[2] - BOUNDS_MIN) / BOUNDS_RANGE) * (GRID_SIZE - 1)
+        gx is floor of gx_f
+        gy is floor of gy_f
+        gz is floor of gz_f
+        if gx < 0:
+            gx is 0
+        if gx > (GRID_SIZE - 1):
+            gx is GRID_SIZE - 1
+        if gy < 0:
+            gy is 0
+        if gy > (GRID_SIZE - 1):
+            gy is GRID_SIZE - 1
+        if gz < 0:
+            gz is 0
+        if gz > (GRID_SIZE - 1):
+            gz is GRID_SIZE - 1
+        idx is gx * GRID_SIZE * GRID_SIZE + gy * GRID_SIZE + gz
+        bit_pos is idx % N_BITS
+        occ[bit_pos] is 1
+    return occ
+
+# AND-popcount: |a & b|
+define and_pop(a, b) as:
+    c is 0
+    for i in range of N_BITS:
+        if a[i] == 1 and b[i] == 1:
+            c is c + 1
+    return c
+
+# Single popcount
+define pop(a) as:
+    c is 0
+    for i in range of N_BITS:
+        if a[i] == 1:
+            c is c + 1
+    return c
+
+# Discrete ds² via occupancy grid
+# Returns [C, S, ds²]
+define passage_ds2_discrete(v1, v2) as:
+    b1 is vertices_to_occ of v1
+    b2 is vertices_to_occ of v2
+    C is and_pop of [b1, b2]
+    pop1 is pop of b1
+    pop2 is pop of b2
+    or_count is pop1 + pop2 - C
+    total is or_count
+    if total == 0:
+        total is N_BITS - C
+    S is total - C
+    ds2 is S * S - C * C
+    return [C, S, ds2]
+
+# ============================================================
+# Continuous metric (heuristic distance-based)
+# ============================================================
+THRESH is 0.15
+
+define min_distance(v1, v2) as:
+    min_d is 1000000.0
+    for i in range of (len of v1):
+        for j in range of (len of v2):
+            dx is v1[i][0] - v2[j][0]
+            dy is v1[i][1] - v2[j][1]
+            dz is v1[i][2] - v2[j][2]
+            d is sqrt of (dx * dx + dy * dy + dz * dz)
+            if d < min_d:
+                min_d is d
+    return min_d
+
+define overlap_frac(v1, v2, threshold) as:
+    n1 is len of v1
+    n2 is len of v2
+    cnt is 0
+    for i in range of n1:
+        md is 1000000.0
+        for j in range of n2:
+            dx is v1[i][0] - v2[j][0]
+            dy is v1[i][1] - v2[j][1]
+            dz is v1[i][2] - v2[j][2]
+            d is sqrt of (dx * dx + dy * dy + dz * dz)
+            if d < md:
+                md is d
+        if md < threshold:
+            cnt is cnt + 1
+    return cnt * 1.0 / n1
+
+# Continuous ds² (heuristic): C, S scaled to ~0-100
+define passage_ds2_continuous(v1, v2) as:
+    md is min_distance of [v1, v2]
+    of_ is overlap_frac of [v1, v2, THRESH]
+    C is of_ * 100.0
+    S is (1.0 - of_) * 100.0
+    if md < THRESH:
+        C is C + 20.0 * (THRESH - md) / THRESH
+    if md >= THRESH:
+        ratio is md / THRESH
+        if ratio > 2.0:
+            ratio is 2.0
+        S is S + 10.0 * ratio
+    ds2 is S * S - C * C
+    return [C, S, ds2]
+
+# ============================================================
+# Sampling driver
+# ============================================================
+define sample_uniform(lo, hi) as:
+    return lo + (random of null) * (hi - lo)
+
+# Returns [n_time, n_space, n_light, ds2_min, ds2_max, ds2_sum, C_sum, S_sum]
+define run_samples(verts, n_samples, mode) as:
+    n_time is 0
+    n_space is 0
+    n_light is 0
+    ds2_min is 1000000000.0
+    ds2_max is 0 - 1000000000.0
+    ds2_sum is 0.0
+    C_sum is 0.0
+    S_sum is 0.0
+    light_eps is 1.0
+    for s in range of n_samples:
+        theta1 is sample_uniform of [0.0, PI]
+        phi1 is sample_uniform of [0.0, TWO_PI]
+        theta2 is sample_uniform of [0.0, PI]
+        phi2 is sample_uniform of [0.0, TWO_PI]
+        r1 is rot_spherical of [theta1, phi1]
+        r2 is rot_spherical of [theta2, phi2]
+        v1 is orient of [verts, r1]
+        v2 is orient of [verts, r2]
+        if mode == 0:
+            res is passage_ds2_continuous of [v1, v2]
+        if mode == 1:
+            res is passage_ds2_discrete of [v1, v2]
+        C is res[0]
+        S is res[1]
+        ds2 is res[2]
+        C_sum is C_sum + C
+        S_sum is S_sum + S
+        ds2_sum is ds2_sum + ds2
+        if ds2 < ds2_min:
+            ds2_min is ds2
+        if ds2 > ds2_max:
+            ds2_max is ds2
+        if ds2 > 0:
+            n_time is n_time + 1
+        if ds2 < 0:
+            n_space is n_space + 1
+        ads2 is ds2
+        if ads2 < 0:
+            ads2 is 0 - ads2
+        if ads2 < light_eps:
+            n_light is n_light + 1
+    return [n_time, n_space, n_light, ds2_min, ds2_max, ds2_sum, C_sum, S_sum]
+
+# ============================================================
+# Run
+# ============================================================
+N_SAMPLES is 100
+
+print of "=== Generating Noperthedron ==="
+verts is gen_vertices of null
+print of f"  {len of verts} vertices generated"
+# Verify base point magnitudes
+bp is base_points of null
+print of f"  |C1| = {sqrt of (bp[0][0]*bp[0][0] + bp[0][1]*bp[0][1] + bp[0][2]*bp[0][2])}"
+print of f"  |C2| = {sqrt of (bp[1][0]*bp[1][0] + bp[1][1]*bp[1][1] + bp[1][2]*bp[1][2])}"
+print of f"  |C3| = {sqrt of (bp[2][0]*bp[2][0] + bp[2][1]*bp[2][1] + bp[2][2]*bp[2][2])}"
+
+print of ""
+print of f"=== Continuous metric: {N_SAMPLES} samples ==="
+res_c is run_samples of [verts, N_SAMPLES, 0]
+print of f"  ds² range: [{res_c[3]}, {res_c[4]}]"
+print of f"  ds² mean: {res_c[5] / N_SAMPLES}"
+print of f"  time-like (ds²>0): {res_c[0]} / {N_SAMPLES} = {res_c[0] * 100.0 / N_SAMPLES}%"
+print of f"  space-like (ds²<0): {res_c[1]} / {N_SAMPLES} = {res_c[1] * 100.0 / N_SAMPLES}%"
+print of f"  light-like (|ds²|<1): {res_c[2]} / {N_SAMPLES}"
+print of f"  mean C={res_c[6] / N_SAMPLES}  mean S={res_c[7] / N_SAMPLES}"
+has_passage_c is 0
+if res_c[0] > 0:
+    has_passage_c is 1
+print of f"  Rupert-positive (continuous)? {has_passage_c == 1}"
+
+print of ""
+print of f"=== Discrete metric: {N_SAMPLES} samples ==="
+res_d is run_samples of [verts, N_SAMPLES, 1]
+print of f"  ds² range: [{res_d[3]}, {res_d[4]}]"
+print of f"  ds² mean: {res_d[5] / N_SAMPLES}"
+print of f"  time-like (ds²>0): {res_d[0]} / {N_SAMPLES} = {res_d[0] * 100.0 / N_SAMPLES}%"
+print of f"  space-like (ds²<0): {res_d[1]} / {N_SAMPLES} = {res_d[1] * 100.0 / N_SAMPLES}%"
+print of f"  light-like (|ds²|<1): {res_d[2]} / {N_SAMPLES}"
+print of f"  mean C={res_d[6] / N_SAMPLES}  mean S={res_d[7] / N_SAMPLES}"
+has_passage_d is 0
+if res_d[0] > 0:
+    has_passage_d is 1
+print of f"  Rupert-positive (discrete)? {has_passage_d == 1}"
+
+# Perf
+times is []
+for trial in range of 3:
+    t0 is monotonic_ms of null
+    r is run_samples of [verts, 50, 1]
+    append of [times, (monotonic_ms of null) - t0]
+
+sorted_t is []
+for i in range of (len of times):
+    append of [sorted_t, times[i]]
+for i in range of (len of sorted_t):
+    for j in range of ((len of sorted_t) - i - 1):
+        if sorted_t[j] > sorted_t[j+1]:
+            tmp is sorted_t[j]
+            sorted_t[j] is sorted_t[j+1]
+            sorted_t[j+1] is tmp
+
+print of ""
+print of f"eigs ms (50 discrete samples × 3 trials): min={sorted_t[0]} median={sorted_t[1]} max={sorted_t[2]}"

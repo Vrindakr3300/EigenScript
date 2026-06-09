@@ -1,0 +1,103 @@
+# ============================================================
+# Invariant Library — universal ds² flow engine
+# ============================================================
+#
+# Every dynamical system in the eigen-geometric framework is the same
+# three-line algorithm with a different invariant:
+#
+#   1. Pick an invariant (something to preserve or to descend toward)
+#   2. Define ds²(Q) measuring distance-from-invariant
+#   3. Either descend (Q_{t+1} = Q_t − η∇ds²) or transform (Q_{t+1} = T(Q_t))
+#
+# An Invariant is a record of three callables:
+#   ds2(Q)      → scalar: distance-from-invariant at state Q
+#   grad(Q)     → vector: ∇ds², same shape as Q
+#   step(Q, dQ) → Q_next: how to apply a delta
+#
+# Preserving invariants (XOR rotor, Lorentz boost) put the transform in
+# step() and return zeros from grad(). Descending invariants put the work
+# in grad() and leave step() as plain addition. The engine doesn't care
+# which: same loop, different invariant.
+#
+# How to use:
+#   load_file of "lib/observer.eigs"
+#   load_file of "lib/invariant.eigs"
+#
+#   inv is make_invariant of [ds2_fn, grad_fn, step_fn]
+#   r is run_descent of [inv, Q0, lr, eps_change, max_iter]
+#   r is run_preserving of [inv, Q0, n_steps]
+
+# ---- constructor: bundle three callables into an Invariant record ----
+define make_invariant(ds2_fn, grad_fn, step_fn) as:
+    return {"ds2": ds2_fn, "grad": grad_fn, "step": step_fn}
+
+# ---- run_descent: Q_{t+1} = Q_t − η∇ds², observer-adaptive lr ----
+# Returns {"Q", "history", "iterations", "status"}.
+# history[t] = [Q, ds2_value, [C, S, ds2_cs], grad_norm].
+# Adaptive lr matches lib/optimize.eigs convention:
+#   oscillating → lr × 0.7
+#   improving   → lr × 1.05
+#   converged / equilibrium → early return
+define run_descent(inv, Q0, lr, eps_change, max_iter) as:
+    Q is []
+    for i in range of (len of Q0):
+        append of [Q, Q0[i]]
+
+    history is []
+    ds2_val is inv["ds2"] of Q
+    iters is 0
+
+    for t in range of max_iter:
+        iters is iters + 1
+        g is inv["grad"] of Q
+
+        delta is []
+        for i in range of (len of g):
+            append of [delta, 0 - lr * g[i]]
+
+        Q is inv["step"] of [Q, delta]
+        ds2_val is inv["ds2"] of Q
+
+        sig is cs_signature of [delta, eps_change]
+
+        gn_sq is 0
+        for i in range of (len of g):
+            gn_sq is gn_sq + g[i] * g[i]
+        gnorm is sqrt of gn_sq
+
+        append of [history, [Q, ds2_val, sig, gnorm]]
+
+        status is report of ds2_val
+        if status == "oscillating":
+            lr is lr * 0.7
+        elif status == "improving":
+            lr is lr * 1.05
+        elif status == "converged":
+            return {"Q": Q, "history": history, "iterations": iters, "status": "converged"}
+        # NB: not breaking on "equilibrium". The observer reports equilibrium on
+        # a freshly-observed scalar before enough samples accumulate to detect
+        # real movement — bailing on it terminates after 1 iter on any nontrivial
+        # loss. (Same quirk in lib/optimize.eigs's gradient_descent_multi.)
+
+    return {"Q": Q, "history": history, "iterations": iters, "status": report of ds2_val}
+
+# ---- run_preserving: Q_{t+1} = step(Q_t, 0). For transform invariants. ----
+# ds²(Q_t) should be constant by construction; we record it each tick so
+# the caller can verify the invariant actually holds.
+# Returns {"Q", "history", "iterations"} where history[t] = [Q, ds2_value].
+define run_preserving(inv, Q0, n_steps) as:
+    Q is []
+    for i in range of (len of Q0):
+        append of [Q, Q0[i]]
+
+    zero is []
+    for i in range of (len of Q0):
+        append of [zero, 0]
+
+    history is []
+    for t in range of n_steps:
+        Q is inv["step"] of [Q, zero]
+        ds2_val is inv["ds2"] of Q
+        append of [history, [Q, ds2_val]]
+
+    return {"Q": Q, "history": history, "iterations": n_steps}

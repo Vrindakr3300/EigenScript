@@ -1,0 +1,57 @@
+# ============================================================
+# Invariant Demo: 2D target reaching (descending invariant)
+# ============================================================
+#
+# The simplest descending invariant: minimize Euclidean distance
+# to a target point. Q is a 2D position; ds² = |Q − target|².
+# Run the universal engine on this invariant — same engine that
+# would run the arm controller or the training loss.
+
+load_file of "lib/observer.eigs"
+load_file of "lib/invariant.eigs"
+
+target is [1.0, 0.5]
+
+define ds2_target(Q) as:
+    dx is Q[0] - target[0]
+    dy is Q[1] - target[1]
+    return dx * dx + dy * dy
+
+define grad_target(Q) as:
+    return [2 * (Q[0] - target[0]), 2 * (Q[1] - target[1])]
+
+define step_add(Q, dQ) as:
+    return [Q[0] + dQ[0], Q[1] + dQ[1]]
+
+inv is make_invariant of [ds2_target, grad_target, step_add]
+result is run_descent of [inv, [0.0, 0.0], 0.3, 0.001, 50]
+
+final_Q is result["Q"]
+history is result["history"]
+iters is result["iterations"]
+status is result["status"]
+final_ds2 is history[(len of history) - 1][1]
+
+print of "==== invariant_target: 2D point reaching ===="
+print of f"target: {target}"
+print of f"final Q: {final_Q}"
+print of f"final ds²: {final_ds2}"
+print of f"iterations: {iters}"
+print of f"status: {status}"
+
+# Show C/S signature trajectory — confirms every step is timelike (2/2 stable
+# components → C=2,S=0 once converged) or spacelike during descent
+print of ""
+print of "C/S signature trajectory (first 10 ticks):"
+print of "  tick  C  S  ds²_cs  ds²"
+n_show is 10
+if (len of history) < n_show:
+    n_show is len of history
+for t in range of n_show:
+    row is history[t]
+    sig is row[2]
+    Cv is sig[0]
+    Sv is sig[1]
+    cs_ds2 is sig[2]
+    row_ds2 is row[1]
+    print of f"  {t}    {Cv}  {Sv}  {cs_ds2}    {row_ds2}"

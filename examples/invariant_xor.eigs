@@ -1,0 +1,63 @@
+# ============================================================
+# Invariant Demo: XOR rotor (preserving invariant)
+# ============================================================
+#
+# The transform Q_{t+1} = Q_t ⊕ axis preserves Hamming structure:
+# popcount(Q ⊕ axis) is constant under the transform. This is a
+# *preserving* invariant — there is no gradient to descend.
+# The same universal engine runs it via run_preserving instead of
+# run_descent. Different invariant, same machinery.
+#
+# Expect period-2 oscillation: Q after 2 XORs == Q_0.
+
+load_file of "lib/observer.eigs"
+load_file of "lib/invariant.eigs"
+
+axis is [1, 0, 1, 1, 0, 1, 0, 0]
+
+# popcount as the observable invariant
+define ds2_xor(Q) as:
+    n is 0
+    for i in range of (len of Q):
+        n is n + Q[i]
+    return n
+
+# preserving invariant → no gradient
+define grad_xor(Q) as:
+    z is []
+    for i in range of (len of Q):
+        append of [z, 0]
+    return z
+
+# the transform: state ⊕ axis (dQ ignored — preserving step)
+define step_xor(Q, dQ) as:
+    out is []
+    for i in range of (len of Q):
+        append of [out, Q[i] ^ axis[i]]
+    return out
+
+inv is make_invariant of [ds2_xor, grad_xor, step_xor]
+Q0 is [1, 1, 0, 1, 0, 0, 1, 0]
+result is run_preserving of [inv, Q0, 4]
+
+history is result["history"]
+
+print of "==== invariant_xor: bit-vector rotor ===="
+print of f"axis: {axis}"
+print of f"start Q_0: {Q0}"
+for t in range of (len of history):
+    row is history[t]
+    Qt is row[0]
+    pop is row[1]
+    print of f"  tick {t}: Q = {Qt}, popcount = {pop}"
+
+# Verify period-2: after 2 XORs (history[1]) Q should equal Q_0
+q2 is history[1][0]
+period_ok is 1
+for i in range of (len of Q0):
+    if q2[i] != Q0[i]:
+        period_ok is 0
+if period_ok == 1:
+    print of "period-2 oscillation confirmed (Q after 2 XORs == Q_0)"
+else:
+    print of "unexpected — Q after 2 XORs != Q_0"

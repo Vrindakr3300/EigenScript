@@ -1,0 +1,344 @@
+# ============================================================
+# Invariant Demo: Adaptive parameter detection
+# ============================================================
+#
+# 11th port, 9th distinct shape: online parameter detection.
+# Not a controller itself — a meta-layer that derives the
+# controller's hyperparameters (c, threshold, τ, η) from
+# trajectory statistics so any downstream controller is
+# scale-invariant.
+#
+#   - arm/edl/qec/meta/multi: each *uses* fixed hyperparameters
+#   - adaptive: *infers* hyperparameters from observed motion
+#
+# Shape #9 because it doesn't push state; it pushes
+# *configuration*. The output is a parameter dictionary that
+# downstream invariants consume.
+#
+# Three sanity checks:
+#   1. Clean drift v=0.5 → detected c ≈ 0.5
+#   2. Clean drift v=2.0 → detected c ≈ 2.0
+#   3. Noisy drift v=0.5 ± 0.2 → c slightly above 0.5,
+#      threshold below clean baseline (high variability)
+# Then verifies Lorentz renormalization invariant: rescaling
+# (t, x, c) → (t, x·α, c·α) preserves ds² = t² − x²/c².
+
+load_file of "lib/format.eigs"
+load_file of "lib/math.eigs"
+
+# ---- Helpers ----
+define vsub(a, b) as:
+    return [a[0] - b[0], a[1] - b[1]]
+
+define vnorm(v) as:
+    return sqrt of (v[0] * v[0] + v[1] * v[1])
+
+# Box-Muller
+TWO_PI is 6.2831853071795865
+define randn() as:
+    u1 is random of null
+    u2 is random of null
+    if u1 <= 0.0:
+        u1 is 0.0000000001
+    return (sqrt of (0 - 2.0 * (log of u1))) * (cos of (TWO_PI * u2))
+
+# ---- Sort a flat list (insertion sort, n<=200 in tests) ----
+define sort_asc(items) as:
+    out is []
+    for i in range of (len of items):
+        append of [out, items[i]]
+    n is len of out
+    for i in range of (n - 1):
+        for j in range of (n - 1 - i):
+            if out[j] > out[j + 1]:
+                tmp is out[j]
+                out[j] is out[j + 1]
+                out[j + 1] is tmp
+    return out
+
+# ---- Numpy-style percentile (linear interp, q in [0,100]) ----
+define percentile(items, q) as:
+    n is len of items
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return items[0]
+    s is sort_asc of items
+    idx is (n - 1) * q / 100.0
+    lo is floor of idx
+    hi is lo + 1
+    if hi >= n:
+        return s[n - 1]
+    frac is idx - lo
+    return s[lo] + frac * (s[hi] - s[lo])
+
+# ---- Mean / variance (population) ----
+define mean_val(items) as:
+    n is len of items
+    if n == 0:
+        return 0.0
+    s is 0.0
+    for i in range of n:
+        s is s + items[i]
+    return s / n
+
+define var_val(items) as:
+    n is len of items
+    if n == 0:
+        return 0.0
+    mu is mean_val of items
+    s is 0.0
+    for i in range of n:
+        d is items[i] - mu
+        s is s + d * d
+    return s / n
+
+# ---- Velocity magnitudes of a 2-D state trajectory ----
+define vel_mags(traj) as:
+    out is []
+    n is len of traj
+    for i in range of (n - 1):
+        a is traj[i + 1]
+        b is traj[i]
+        d is [a[0] - b[0], a[1] - b[1]]
+        append of [out, sqrt of (d[0] * d[0] + d[1] * d[1])]
+    return out
+
+# ---- estimate_characteristic_velocity ----
+define estimate_c(traj, min_samples) as:
+    if (len of traj) < min_samples:
+        return 1.0
+    mags is vel_mags of traj
+    if (len of mags) == 0:
+        return 1.0
+    c is percentile of [mags, 95.0]
+    if c < 0.01:
+        c is 0.01
+    return c
+
+# ---- estimate_oscillation_threshold ----
+define estimate_thresh(traj, min_samples) as:
+    if (len of traj) < min_samples:
+        return 0.92
+    mags is vel_mags of traj
+    if (len of mags) < 2:
+        return 0.92
+    mu is mean_val of mags
+    var is var_val of mags
+    if mu > 0.000001:
+        norm_var is var / (mu * mu)
+    else:
+        norm_var is 0.0
+    if norm_var < 0.0:
+        norm_var is 0.0
+    if norm_var > 1.0:
+        norm_var is 1.0
+    thresh is 0.95 - 0.25 * norm_var
+    if thresh < 0.7:
+        thresh is 0.7
+    if thresh > 0.95:
+        thresh is 0.95
+    return thresh
+
+# ---- estimate_natural_timescale: autocorrelation half-life of velocity ----
+# Mirrors EGC: compute autocorr of velocity series, find first lag where ac < 0.5.
+# Velocity here is the 2-D vector; autocorr collapses dims like decomposition's.
+define ac_velocity(vels, max_lag) as:
+    n is len of vels
+    out is []
+    if n == 0:
+        for k in range of (max_lag + 1):
+            append of [out, 0.0]
+        return out
+    mx is 0.0
+    my is 0.0
+    for i in range of n:
+        mx is mx + vels[i][0]
+        my is my + vels[i][1]
+    mx is mx / n
+    my is my / n
+    cx is []
+    cy is []
+    for i in range of n:
+        append of [cx, vels[i][0] - mx]
+        append of [cy, vels[i][1] - my]
+    var is 0.0
+    for i in range of n:
+        var is var + cx[i] * cx[i] + cy[i] * cy[i]
+    var is var / n
+    if var < 0.000000000001:
+        for k in range of (max_lag + 1):
+            append of [out, 1.0]
+        return out
+    for lag in range of (max_lag + 1):
+        if lag >= n:
+            append of [out, 0.0]
+        else:
+            s is 0.0
+            cnt is n - lag
+            for i in range of cnt:
+                s is s + cx[i + lag] * cx[i] + cy[i + lag] * cy[i]
+            append of [out, (s / cnt) / var]
+    return out
+
+define estimate_tau(traj, min_samples) as:
+    if (len of traj) < min_samples:
+        return 5.0
+    vels is []
+    n is len of traj
+    for i in range of (n - 1):
+        a is traj[i + 1]
+        b is traj[i]
+        append of [vels, [a[0] - b[0], a[1] - b[1]]]
+    if (len of vels) < 3:
+        return 5.0
+    ml is 10
+    if ((len of vels) - 1) < ml:
+        ml is (len of vels) - 1
+    ac is ac_velocity of [vels, ml]
+    tau is 5.0
+    found is 0
+    for lag in range of (len of ac):
+        if found == 0:
+            if lag >= 1:
+                if ac[lag] < 0.5:
+                    tau is lag
+                    found is 1
+    if tau < 1.0:
+        tau is 1.0
+    return tau
+
+# ---- detect_system_parameters ----
+define detect_params(traj) as:
+    min_samples is 15
+    if (len of traj) < min_samples:
+        return [1.0, 0.92, 5.0, 0.1, 0.0]
+    c is estimate_c of [traj, 10]
+    thresh is estimate_thresh of [traj, 10]
+    tau is estimate_tau of [traj, 10]
+    eta is 1.0 / tau
+    if eta < 0.05:
+        eta is 0.05
+    if eta > 0.5:
+        eta is 0.5
+    conf is ((len of traj) - min_samples) / 50.0
+    if conf > 1.0:
+        conf is 1.0
+    if conf < 0.0:
+        conf is 0.0
+    return [c, thresh, tau, eta, conf]
+
+# ---- renormalize_lorentz_state: (t, x, c_old, c_new) → (t, x·α) ----
+define renormalize_lorentz(t, x, old_c, new_c) as:
+    ao is old_c
+    if ao < 0:
+        ao is 0 - ao
+    an is new_c
+    if an < 0:
+        an is 0 - an
+    if ao < 0.000000001:
+        return [t, x]
+    if an < 0.000000001:
+        return [t, x]
+    alpha is new_c / old_c
+    return [t, x * alpha]
+
+# ============================================================
+# Demo
+# ============================================================
+
+define build_clean_drift(v_per_step, n) as:
+    traj is []
+    for i in range of n:
+        append of [traj, [v_per_step * i, 0.0]]
+    return traj
+
+define build_noisy_drift(v_per_step, sigma, n) as:
+    traj is []
+    x is 0.0
+    y is 0.0
+    for i in range of n:
+        append of [traj, [x, y]]
+        x is x + v_per_step + (randn of null) * sigma
+        y is y + (randn of null) * sigma
+    return traj
+
+print of "=== Parameter detection on three trajectories ==="
+print of ""
+
+t1 is build_clean_drift of [0.5, 25]
+p1 is detect_params of t1
+print of f"  clean v=0.5: c={p1[0]} thresh={p1[1]} tau={p1[2]} eta={p1[3]} conf={p1[4]}"
+
+t2 is build_clean_drift of [2.0, 25]
+p2 is detect_params of t2
+print of f"  clean v=2.0: c={p2[0]} thresh={p2[1]} tau={p2[2]} eta={p2[3]} conf={p2[4]}"
+
+t3 is build_noisy_drift of [0.5, 0.2, 25]
+p3 is detect_params of t3
+print of f"  noisy v=0.5±0.2: c={p3[0]} thresh={p3[1]} tau={p3[2]} eta={p3[3]} conf={p3[4]}"
+
+print of ""
+print of "=== Lorentz renormalization: ds² = t² − x²/c² preserved? ==="
+T is 3.0
+X is 4.0
+C_OLD is 1.0
+C_NEW is 2.0
+ds2_before is T * T - X * X / (C_OLD * C_OLD)
+r is renormalize_lorentz of [T, X, C_OLD, C_NEW]
+T2 is r[0]
+X2 is r[1]
+ds2_after is T2 * T2 - X2 * X2 / (C_NEW * C_NEW)
+print of f"  before: t={T} x={X} c={C_OLD}  ds²={ds2_before}"
+print of f"  after:  t={T2} x={X2} c={C_NEW}  ds²={ds2_after}"
+delta is ds2_after - ds2_before
+if delta < 0:
+    delta is 0 - delta
+print of f"  |Δ ds²| = {delta}"
+
+print of ""
+print of "=== Adaptive vs fixed η on target-reaching ==="
+
+TARGET is [0.0, 0.0]
+
+define run_reach(start, eta_mode, n_ticks) as:
+    state is [start[0], start[1]]
+    history is []
+    sum_dist is 0.0
+    for t in range of n_ticks:
+        append of [history, [state[0], state[1]]]
+        # eta_mode = 0: fixed 0.1, = 1: adaptive
+        if eta_mode == 1:
+            params is detect_params of history
+            eta is params[3]
+        else:
+            eta is 0.1
+        dx is TARGET[0] - state[0]
+        dy is TARGET[1] - state[1]
+        state is [state[0] + eta * dx, state[1] + eta * dy]
+        d is vnorm of state
+        sum_dist is sum_dist + d
+    final_d is vnorm of state
+    return [final_d, sum_dist / n_ticks]
+
+cases is [["slow start [0.5,0.5]", [0.5, 0.5]], ["fast start [20,20]", [20.0, 20.0]]]
+for ci in range of (len of cases):
+    label is cases[ci][0]
+    start is cases[ci][1]
+    fixed is run_reach of [start, 0, 60]
+    adapt is run_reach of [start, 1, 60]
+    print of f"  {label}"
+    print of f"    fixed η=0.1:  final_dist={fixed[0]}  mean_dist={fixed[1]}"
+    print of f"    adaptive η:   final_dist={adapt[0]}  mean_dist={adapt[1]}"
+
+# Perf
+times is []
+for trial in range of 5:
+    t0 is monotonic_ms of null
+    for k in range of 20:
+        p is detect_params of t3
+    append of [times, (monotonic_ms of null) - t0]
+
+sorted_t is sort_asc of times
+print of ""
+print of f"eigs ms (20 detect_params on n=25 traj): min={sorted_t[0]} median={sorted_t[2]} max={sorted_t[4]}"

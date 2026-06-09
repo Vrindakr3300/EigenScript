@@ -1,0 +1,265 @@
+# ============================================================
+# Invariant Demo: Coherent / Incoherent decomposition
+# ============================================================
+#
+# 10th port, 8th distinct shape: decompose-then-filter.
+# Splits an observation into a *coherent* component (predictable
+# from history via linear extrapolation) and an *incoherent*
+# component (residual noise). Selectively suppresses the noise.
+#
+# Different in kind from prior 7:
+#   - arm/edl: descend on ds²            (descend)
+#   - xor: discrete preserve              (preserve, iterated)
+#   - geodesic: ODE flow                  (flow)
+#   - lorentz: parametric preserve        (preserve, parametric)
+#   - qec: syndrome restore               (restore, discrete)
+#   - meta: self-observe, self-tune       (self-tune)
+#   - multi: N descents + observer        (compose)
+#   - weak: weighted average over noise   (accumulate)
+#   - noperthedron: classify by ds² sign  (static existence)
+#   - decomposition: split obs into subspaces, act on aligned part
+#
+# Closest cousins: weak (also noise reduction) and qec (also
+# split-then-restore). Distinct because:
+#   - weak averages every obs with equal-shape weights;
+#     decomposition predicts the next obs and treats only the
+#     deviation as noise.
+#   - qec is discrete (syndromes are bit patterns, fix = drop bad
+#     sensor); decomposition is continuous (coherence is a scalar
+#     in [0,1], filter = linear blend).
+#
+# Demo: track a target drifting linearly under heavy noise.
+#   A) raw observation -> control
+#   B) decompose obs, suppress noise, control on filtered obs
+# Compare: per-tick |state - true_target|, tracking RMSE.
+
+load_file of "lib/format.eigs"
+load_file of "lib/math.eigs"
+
+# ---- 2-D helpers ----
+define norm2(v) as:
+    return sqrt of (v[0] * v[0] + v[1] * v[1])
+
+define vsub(a, b) as:
+    return [a[0] - b[0], a[1] - b[1]]
+
+define vadd(a, b) as:
+    return [a[0] + b[0], a[1] + b[1]]
+
+define vscale(a, s) as:
+    return [a[0] * s, a[1] * s]
+
+# Box-Muller
+TWO_PI is 6.2831853071795865
+define randn() as:
+    u1 is random of null
+    u2 is random of null
+    if u1 <= 0.0:
+        u1 is 0.0000000001
+    return (sqrt of (0 - 2.0 * (log of u1))) * (cos of (TWO_PI * u2))
+
+# ---- Autocorrelation of 2-D velocity series ----
+# signal is a list of [vx, vy] velocities (centred internally).
+# Returns autocorr at lags 0..max_lag.
+define autocorr_2d(signal, max_lag) as:
+    n is len of signal
+    if n == 0:
+        out is []
+        for k in range of (max_lag + 1):
+            append of [out, 0.0]
+        return out
+    # mean
+    mx is 0.0
+    my is 0.0
+    for i in range of n:
+        mx is mx + signal[i][0]
+        my is my + signal[i][1]
+    mx is mx / n
+    my is my / n
+    # centred
+    cx is []
+    cy is []
+    for i in range of n:
+        append of [cx, signal[i][0] - mx]
+        append of [cy, signal[i][1] - my]
+    # variance (sum over both dims / n)
+    var is 0.0
+    for i in range of n:
+        var is var + cx[i] * cx[i] + cy[i] * cy[i]
+    var is var / n
+    out is []
+    if var < 0.000000000001:
+        for k in range of (max_lag + 1):
+            append of [out, 1.0]
+        return out
+    for lag in range of (max_lag + 1):
+        if lag >= n:
+            append of [out, 0.0]
+        else:
+            s is 0.0
+            cnt is n - lag
+            for i in range of cnt:
+                s is s + cx[i + lag] * cx[i] + cy[i + lag] * cy[i]
+            append of [out, (s / cnt) / var]
+    return out
+
+# ---- Coherence score from trajectory (states list) ----
+define coherence_score(trajectory, threshold_lag) as:
+    n is len of trajectory
+    if n < 3:
+        return 0.5
+    # build velocity signal
+    vels is []
+    for i in range of (n - 1):
+        a is trajectory[i + 1]
+        b is trajectory[i]
+        append of [vels, [a[0] - b[0], a[1] - b[1]]]
+    ac is autocorr_2d of [vels, threshold_lag]
+    # mean of |ac[1..threshold_lag]|
+    s is 0.0
+    cnt is 0
+    for k in range of threshold_lag:
+        v is ac[k + 1]
+        if v < 0:
+            v is 0 - v
+        s is s + v
+        cnt is cnt + 1
+    if cnt == 0:
+        return 0.0
+    coh is s / cnt
+    if coh < 0.0:
+        coh is 0.0
+    if coh > 1.0:
+        coh is 1.0
+    return coh
+
+# ---- Decompose observation: returns [coherent, incoherent, coh_score] ----
+define decompose_signal(obs, history, coh_thresh) as:
+    n is len of history
+    if n < 2:
+        return [[0.0, 0.0], [obs[0], obs[1]], 0.0]
+    coh is coherence_score of [history, 3]
+    # linear extrapolation predicted = last + (last - prev)
+    last is history[n - 1]
+    prev is history[n - 2]
+    vel is vsub of [last, prev]
+    pred is vadd of [last, vel]
+    if coh > coh_thresh:
+        coherent is pred
+        incoherent is vsub of [obs, pred]
+    else:
+        coherent is [0.0, 0.0]
+        incoherent is [obs[0], obs[1]]
+    return [coherent, incoherent, coh]
+
+# ---- Filtered observation: suppress incoherent component ----
+# Returns [filtered, coh_score]
+define filtered_observation(obs, history, coh_thresh, suppression) as:
+    d is decompose_signal of [obs, history, coh_thresh]
+    coherent is d[0]
+    incoherent is d[1]
+    coh is d[2]
+    keep is 1.0 - suppression
+    filtered is [coherent[0] + incoherent[0] * keep, coherent[1] + incoherent[1] * keep]
+    return [filtered, coh]
+
+# ============================================================
+# Scenario: linearly drifting target, heavy isotropic noise.
+# True state x_t = TRUE_VEL * t (starts at origin).
+# Observation each tick: o_t = x_t + N(0, NOISE_SIGMA).
+# Controller maintains its own estimate; updates by blending
+# its estimate with the (raw or filtered) observation.
+# ============================================================
+
+TRUE_VEL is [0.10, 0.05]
+NOISE_SIGMA is 0.05
+ETA is 0.30         # blend weight on observation
+COH_THRESH is 0.30
+SUPPRESSION is 0.80
+N_TICKS is 200
+HIST_LEN is 8       # how much trajectory to keep for coherence
+
+define run(mode) as:
+    state is [0.0, 0.0]
+    history is []
+    sum_sq_err is 0.0
+    coh_sum is 0.0
+    coh_count is 0
+    csv is "tick,true_x,true_y,obs_x,obs_y,filt_x,filt_y,est_x,est_y,err,coh\n"
+    for t in range of N_TICKS:
+        # true state
+        tx is TRUE_VEL[0] * t
+        ty is TRUE_VEL[1] * t
+        # noisy observation
+        ox is tx + (randn of null) * NOISE_SIGMA
+        oy is ty + (randn of null) * NOISE_SIGMA
+        obs is [ox, oy]
+        filt is obs
+        coh is 0.0
+        if mode == 1:
+            r is filtered_observation of [obs, history, COH_THRESH, SUPPRESSION]
+            filt is r[0]
+            coh is r[1]
+        # blend filtered obs into state estimate
+        state is [filt[0] * ETA + state[0] * (1.0 - ETA), filt[1] * ETA + state[1] * (1.0 - ETA)]
+        # error vs true
+        ex is state[0] - tx
+        ey is state[1] - ty
+        err is sqrt of (ex * ex + ey * ey)
+        sum_sq_err is sum_sq_err + err * err
+        if mode == 1:
+            coh_sum is coh_sum + coh
+            coh_count is coh_count + 1
+        # update history (state estimate, not raw obs — matches EGC)
+        append of [history, [state[0], state[1]]]
+        n is len of history
+        if n > HIST_LEN:
+            trimmed is []
+            start is n - HIST_LEN
+            for k in range of HIST_LEN:
+                append of [trimmed, history[start + k]]
+            history is trimmed
+        csv is csv + (str of t) + "," + (fmt_num of [tx, 6]) + "," + (fmt_num of [ty, 6]) + "," + (fmt_num of [ox, 6]) + "," + (fmt_num of [oy, 6]) + "," + (fmt_num of [filt[0], 6]) + "," + (fmt_num of [filt[1], 6]) + "," + (fmt_num of [state[0], 6]) + "," + (fmt_num of [state[1], 6]) + "," + (fmt_num of [err, 6]) + "," + (fmt_num of [coh, 6]) + "\n"
+    rmse is sqrt of (sum_sq_err / N_TICKS)
+    mean_coh is 0.0
+    if coh_count > 0:
+        mean_coh is coh_sum / coh_count
+    return [csv, rmse, mean_coh]
+
+print of "=== Run A: raw observation -> blend ==="
+res_A is run of 0
+write_text of ["/tmp/egc_decomp_eigs_A.csv", res_A[0]]
+print of f"  tracking RMSE: {res_A[1]}"
+
+print of ""
+print of "=== Run B: decompose + suppress noise -> blend ==="
+res_B is run of 1
+write_text of ["/tmp/egc_decomp_eigs_B.csv", res_B[0]]
+print of f"  tracking RMSE: {res_B[1]}"
+print of f"  mean coherence: {res_B[2]}"
+
+print of ""
+ratio is res_A[1] / res_B[1]
+print of f"  RMSE improvement (A / B): {ratio}x"
+
+# Perf
+times is []
+for trial in range of 5:
+    t0 is monotonic_ms of null
+    for k in range of 10:
+        r is run of 1
+    append of [times, (monotonic_ms of null) - t0]
+
+sorted_t is []
+for i in range of (len of times):
+    append of [sorted_t, times[i]]
+for i in range of (len of sorted_t):
+    for j in range of ((len of sorted_t) - i - 1):
+        if sorted_t[j] > sorted_t[j+1]:
+            tmp is sorted_t[j]
+            sorted_t[j] is sorted_t[j+1]
+            sorted_t[j+1] is tmp
+
+print of ""
+print of f"eigs ms (10 decomp runs of {N_TICKS} ticks): min={sorted_t[0]} median={sorted_t[2]} max={sorted_t[4]}"
+print of "wrote /tmp/egc_decomp_eigs_{A,B}.csv"

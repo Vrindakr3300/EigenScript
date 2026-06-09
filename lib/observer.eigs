@@ -103,3 +103,23 @@ define threshold_alert(val, lo, hi) as:
 define snapshot(x) as:
     state is observe of x
     return [x, state[0], state[1], state[2], state[3]]
+
+# ---- cs_signature: discrete change/stability decomposition of a delta ----
+# Universal lens from the eigen-geometric framework: every state-update
+# can be classified by counting components that changed (C) vs stayed (S).
+# ds² = S² − C² gives the local geometric signature:
+#   ds² < 0 → spacelike (motion dominates, C > S)
+#   ds² = 0 → lightlike (boundary, C == S)
+#   ds² > 0 → timelike  (stability dominates, S > C)
+# cs_signature of [delta, eps] -> [C, S, ds2_cs]
+define cs_signature(delta, eps) as:
+    n is len of delta
+    C is 0
+    for i in range of n:
+        d is delta[i]
+        if d < 0:
+            d is 0 - d
+        if d > eps:
+            C is C + 1
+    S is n - C
+    return [C, S, S * S - C * C]

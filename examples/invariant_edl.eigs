@@ -1,0 +1,283 @@
+# ============================================================
+# Invariant Demo: Mars EDL — entry/descent/landing as one flow
+# ============================================================
+#
+# Ports eigen_edl_core.run_edl_simulation: a Mars lander governed by
+# a single geometric invariant ds². NO state machine, no entry/descent/
+# landing mode switching — just gradient descent on ds² each tick, where
+# ds² has six terms:
+#
+#   ds² = W_pos·|pos - tgt_pos|²       (target position)
+#       + W_vel·|vel - tgt_vel|²       (velocity matching)
+#       + Σ G_terr·max(0, r-d)²        (terrain hazard penetration; skipped here)
+#       + G_vel·max(0, |v|-v_max)²    (velocity-cap penalty)
+#       + λ|u|²                        (control regularization)
+#
+# The gradient is taken w.r.t. the THRUST CONTROL (3 dofs), via
+# 10-step forward rollout under constant control + finite differences.
+# This gives ∇ds² enough reach to see how thrust choices propagate
+# through position.
+#
+# The same algorithmic shape as arm_control (gradient descent on ds²)
+# but the multi-term ds² + lookahead-gradient structure puts the
+# framework's reductionist claim to a real test: one invariant flow
+# replaces what traditionally would be three modes with handoffs.
+
+load_file of "lib/format.eigs"
+load_file of "lib/math.eigs"
+
+# ---- Mars physics constants ----
+MARS_G is 3.72076
+RHO0_MARS is 0.020
+SCALE_HEIGHT is 11100.0
+G0 is 9.80665
+ISP is 220.0
+CD is 1.5
+AREA is 15.0
+MASS is 900.0
+
+# ---- ds² hyperparameters (defaults from EGC) ----
+W_POS is 1.0
+W_VEL is 0.5
+GO_VEL is 10.0
+V_MAX is 2.0
+LAM is 0.01
+ETA is 0.5
+DT is 0.1
+HORIZON is 10
+THRUST_MAX is 15.0
+EPS_GRAD is 0.0001
+
+# ---- helpers ----
+define vec_norm3(a, b, c) as:
+    return sqrt of (a * a + b * b + c * c)
+
+# Atmospheric density (exp model)
+define mars_atmosphere(alt) as:
+    a is alt
+    if a < 0:
+        a is 0
+    return RHO0_MARS * (exp of (0 - a / SCALE_HEIGHT))
+
+# Drag acceleration: a_drag = -0.5 * rho * Cd * A / m * |v| * v
+# state vel = [vz, vx, vy]
+# Returns [adz, adx, ady]
+define drag_accel(alt, vz, vx, vy) as:
+    rho is mars_atmosphere of alt
+    speed is vec_norm3 of [vz, vx, vy]
+    if speed < 0.000000000001:
+        return [0.0, 0.0, 0.0]
+    k is 0 - 0.5 * rho * CD * AREA / MASS * speed
+    return [k * vz, k * vx, k * vy]
+
+# Dynamics: d(state)/dt under control [thz, thx, thy]
+# state = [alt, dr, cr, vz, vx, vy]
+# If fuel <= 0, thrust becomes zero.
+# Returns 6-element derivative.
+define dynamics(state, thz, thx, thy, fuel) as:
+    alt is state[0]
+    vz is state[3]
+    vx is state[4]
+    vy is state[5]
+    drag is drag_accel of [alt, vz, vx, vy]
+    tz is thz
+    tx is thx
+    ty is thy
+    if fuel <= 0:
+        tz is 0
+        tx is 0
+        ty is 0
+    az is (0 - MARS_G) + drag[0] + tz
+    ax is drag[1] + tx
+    ay is drag[2] + ty
+    return [vz, vx, vy, az, ax, ay]
+
+# ds² evaluator. (No terrain hazards in this demo.)
+define compute_ds2(state, ctrl, target) as:
+    pos_err_a is state[0] - target[0]
+    pos_err_b is state[1] - target[1]
+    pos_err_c is state[2] - target[2]
+    target_term is W_POS * (pos_err_a * pos_err_a + pos_err_b * pos_err_b + pos_err_c * pos_err_c)
+    vel_err_a is state[3] - target[3]
+    vel_err_b is state[4] - target[4]
+    vel_err_c is state[5] - target[5]
+    vel_match is W_VEL * (vel_err_a * vel_err_a + vel_err_b * vel_err_b + vel_err_c * vel_err_c)
+    speed is vec_norm3 of [state[3], state[4], state[5]]
+    excess is speed - V_MAX
+    if excess < 0:
+        excess is 0
+    vel_limit is GO_VEL * excess * excess
+    reg is LAM * (ctrl[0] * ctrl[0] + ctrl[1] * ctrl[1] + ctrl[2] * ctrl[2])
+    return target_term + vel_match + vel_limit + reg
+
+# Roll out HORIZON steps under constant control, then compute ds² at end.
+# Includes fuel burn and ground clamp inside the rollout.
+define ds2_after_rollout(state, ctrl, fuel, target) as:
+    s_alt is state[0]
+    s_dr is state[1]
+    s_cr is state[2]
+    s_vz is state[3]
+    s_vx is state[4]
+    s_vy is state[5]
+    f is fuel
+    tmag is vec_norm3 of [ctrl[0], ctrl[1], ctrl[2]]
+    landed is 0
+    for k in range of HORIZON:
+        if landed == 0:
+            s_state is [s_alt, s_dr, s_cr, s_vz, s_vx, s_vy]
+            d is dynamics of [s_state, ctrl[0], ctrl[1], ctrl[2], f]
+            s_alt is s_alt + DT * d[0]
+            s_dr  is s_dr  + DT * d[1]
+            s_cr  is s_cr  + DT * d[2]
+            s_vz  is s_vz  + DT * d[3]
+            s_vx  is s_vx  + DT * d[4]
+            s_vy  is s_vy  + DT * d[5]
+            if f > 0 and tmag > 0:
+                f is f - tmag * DT / (ISP * G0)
+                if f < 0:
+                    f is 0
+            if s_alt < 0:
+                s_alt is 0
+                if s_vz > 0:
+                    s_vz is 0
+                landed is 1
+    final_state is [s_alt, s_dr, s_cr, s_vz, s_vx, s_vy]
+    return compute_ds2 of [final_state, ctrl, target]
+
+# ∇ds² w.r.t. control via finite differences after rollout.
+# Returns [grad_z, grad_x, grad_y, grad_norm].
+define compute_grad(state, ctrl, fuel, target) as:
+    base is ds2_after_rollout of [state, ctrl, fuel, target]
+    c_z is [ctrl[0] + EPS_GRAD, ctrl[1], ctrl[2]]
+    c_x is [ctrl[0], ctrl[1] + EPS_GRAD, ctrl[2]]
+    c_y is [ctrl[0], ctrl[1], ctrl[2] + EPS_GRAD]
+    rz is ds2_after_rollout of [state, c_z, fuel, target]
+    rx is ds2_after_rollout of [state, c_x, fuel, target]
+    ry is ds2_after_rollout of [state, c_y, fuel, target]
+    gz is (rz - base) / EPS_GRAD
+    gx is (rx - base) / EPS_GRAD
+    gy is (ry - base) / EPS_GRAD
+    gn is vec_norm3 of [gz, gx, gy]
+    return [gz, gx, gy, gn]
+
+# ============================================================
+# Run: Mars EDL from 2 km altitude
+# ============================================================
+state is [2000.0, 0.0, 0.0, 0 - 80.0, 10.0, 0.0]
+target is [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+fuel is 200.0
+ctrl is [0.0, 0.0, 0.0]
+N_TICKS is 1000
+
+define fmt_signed(v, d) as:
+    if v < 0:
+        return "-" + (fmt_num of [0 - v, d])
+    return fmt_num of [v, d]
+
+csv_text is "tick,t,alt,dr,cr,vz,vx,vy,thrust_z,thrust_x,thrust_y,thrust_mag,fuel,ds2,gnorm\n"
+landed_tick is 0 - 1
+for t in range of N_TICKS:
+    if landed_tick < 0:
+        g is compute_grad of [state, ctrl, fuel, target]
+        gnorm is g[3]
+        # Update control via gradient descent
+        cz_new is ctrl[0] - ETA * g[0]
+        cx_new is ctrl[1] - ETA * g[1]
+        cy_new is ctrl[2] - ETA * g[2]
+        # Clamp thrust magnitude
+        tmag is vec_norm3 of [cz_new, cx_new, cy_new]
+        if tmag > THRUST_MAX:
+            scale is THRUST_MAX / tmag
+            cz_new is cz_new * scale
+            cx_new is cx_new * scale
+            cy_new is cy_new * scale
+            tmag is THRUST_MAX
+        ctrl is [cz_new, cx_new, cy_new]
+        # ds² for diagnostics
+        ds2 is compute_ds2 of [state, ctrl, target]
+        # Log
+        csv_text is csv_text + (str of t) + "," + (fmt_num of [t * DT, 4]) + "," + (fmt_signed of [state[0], 8]) + "," + (fmt_signed of [state[1], 8]) + "," + (fmt_signed of [state[2], 8]) + "," + (fmt_signed of [state[3], 8]) + "," + (fmt_signed of [state[4], 8]) + "," + (fmt_signed of [state[5], 8]) + "," + (fmt_signed of [ctrl[0], 8]) + "," + (fmt_signed of [ctrl[1], 8]) + "," + (fmt_signed of [ctrl[2], 8]) + "," + (fmt_num of [tmag, 8]) + "," + (fmt_num of [fuel, 8]) + "," + (fmt_signed of [ds2, 8]) + "," + (fmt_signed of [gnorm, 8]) + "\n"
+        # Check landing
+        if state[0] <= 0:
+            landed_tick is t
+        if landed_tick < 0:
+            # Physics step (Euler)
+            d is dynamics of [state, ctrl[0], ctrl[1], ctrl[2], fuel]
+            state is [state[0] + DT * d[0], state[1] + DT * d[1], state[2] + DT * d[2], state[3] + DT * d[3], state[4] + DT * d[4], state[5] + DT * d[5]]
+            # Fuel burn
+            if fuel > 0 and tmag > 0:
+                fuel is fuel - tmag * DT / (ISP * G0)
+                if fuel < 0:
+                    fuel is 0
+            # Ground clamp
+            if state[0] < 0:
+                state[0] is 0
+                if state[3] < 0:
+                    # no bouncing — clamp vertical velocity to <= 0
+                    state[3] is state[3]
+                if state[3] > 0:
+                    state[3] is 0
+
+write_text of ["/tmp/egc_edl_eigs.csv", csv_text]
+
+# Final report
+final_speed is vec_norm3 of [state[3], state[4], state[5]]
+print of f"--- EDL result ---"
+print of f"landed at tick: {landed_tick} (t={landed_tick * DT}s)"
+print of f"final position: alt={state[0]} dr={state[1]} cr={state[2]}"
+print of f"final velocity: vz={state[3]} vx={state[4]} vy={state[5]} |v|={final_speed}"
+print of f"fuel remaining: {fuel} kg"
+soft_land is "yes"
+if final_speed > V_MAX:
+    soft_land is "no (|v| > v_max)"
+print of f"soft landing? {soft_land}"
+
+# Perf: n=5 timings (no I/O)
+times is []
+for trial in range of 5:
+    state is [2000.0, 0.0, 0.0, 0 - 80.0, 10.0, 0.0]
+    fuel is 200.0
+    ctrl is [0.0, 0.0, 0.0]
+    t0 is monotonic_ms of null
+    landed_t is 0 - 1
+    for t in range of N_TICKS:
+        if landed_t < 0:
+            g is compute_grad of [state, ctrl, fuel, target]
+            cz_new is ctrl[0] - ETA * g[0]
+            cx_new is ctrl[1] - ETA * g[1]
+            cy_new is ctrl[2] - ETA * g[2]
+            tmag is vec_norm3 of [cz_new, cx_new, cy_new]
+            if tmag > THRUST_MAX:
+                scale is THRUST_MAX / tmag
+                cz_new is cz_new * scale
+                cx_new is cx_new * scale
+                cy_new is cy_new * scale
+                tmag is THRUST_MAX
+            ctrl is [cz_new, cx_new, cy_new]
+            if state[0] <= 0:
+                landed_t is t
+            if landed_t < 0:
+                d is dynamics of [state, ctrl[0], ctrl[1], ctrl[2], fuel]
+                state is [state[0] + DT * d[0], state[1] + DT * d[1], state[2] + DT * d[2], state[3] + DT * d[3], state[4] + DT * d[4], state[5] + DT * d[5]]
+                if fuel > 0 and tmag > 0:
+                    fuel is fuel - tmag * DT / (ISP * G0)
+                    if fuel < 0:
+                        fuel is 0
+                if state[0] < 0:
+                    state[0] is 0
+                    if state[3] > 0:
+                        state[3] is 0
+    append of [times, (monotonic_ms of null) - t0]
+
+sorted_t is []
+for i in range of (len of times):
+    append of [sorted_t, times[i]]
+for i in range of (len of sorted_t):
+    for j in range of ((len of sorted_t) - i - 1):
+        if sorted_t[j] > sorted_t[j+1]:
+            tmp is sorted_t[j]
+            sorted_t[j] is sorted_t[j+1]
+            sorted_t[j+1] is tmp
+
+print of f"eigs ms (full EDL run): min={sorted_t[0]} median={sorted_t[2]} max={sorted_t[4]}"
+print of "wrote /tmp/egc_edl_eigs.csv"
