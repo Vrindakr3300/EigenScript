@@ -909,8 +909,9 @@ int jit_helper_call(int argc) {
 
     if (!result) {
         result = make_null();
-    } else if (result != arg) {
-        /* Direct-borrow heuristic — see CASE(CALL) for rationale. */
+    } else if (!consumes_arg && result != arg) {
+        /* Direct-borrow heuristic — see CASE(CALL) for rationale and the
+         * !consumes_arg guard (free_val may have already freed arg). */
         if (arg && arg->type == VAL_LIST) {
             int n = arg->data.list.count;
             Value **items = arg->data.list.items;
@@ -3010,14 +3011,16 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             slot_decref(arg_s);
             Env *saved = g_builtin_call_env;
             g_builtin_call_env = frame->env;
+            int consumes_arg = (fn->data.builtin == builtin_free_val);
             Value *result = fn->data.builtin(arg);
             g_builtin_call_env = saved;
             if (!result) {
                 result = make_null();
-            } else if (result != arg) {
+            } else if (!consumes_arg && result != arg) {
                 /* Direct-borrow heuristic — see CASE(CALL) for rationale.
                  * Must run before val_decref(arg) so the items array is
-                 * still valid. */
+                 * still valid, and skipped when the builtin already
+                 * consumed arg (free_val), since arg would be freed. */
                 if (arg && arg->type == VAL_LIST) {
                     int n = arg->data.list.count;
                     Value **items = arg->data.list.items;
@@ -3026,7 +3029,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                     }
                 }
             }
-            if (result != arg) val_decref(arg);
+            if (!consumes_arg && result != arg) val_decref(arg);
             slot_decref(table_s);
             vm_push(result);
             CHECK_ERROR();
