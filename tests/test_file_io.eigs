@@ -1,8 +1,11 @@
 # Tests for read_text, write_text, exec_capture
 
 # ---- read_text ----
-# RT1: read existing file returns non-empty
-content is read_text of "/etc/hostname"
+# RT1: read existing file returns non-empty. Stage a known file first so
+# the test doesn't depend on Linux-specific paths (e.g. /etc/hostname
+# exists on Linux but not macOS).
+write_text of ["/tmp/eigen_test_rt1.txt", "hello"]
+content is read_text of "/tmp/eigen_test_rt1.txt"
 assert of [(len of content) > 0, "RT1 read existing file should be non-empty"]
 
 # RT2: read missing file returns empty string
