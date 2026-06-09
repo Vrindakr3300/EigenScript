@@ -198,6 +198,7 @@ void free_ast(ASTNode *node) {
             break;
         case AST_INTERROGATE:
             free_ast(node->data.interrogate.expr);
+            free_ast(node->data.interrogate.at_expr);
             break;
         case AST_IMPORT:
             free(node->data.import.module_name);
@@ -357,6 +358,7 @@ ASTNode *clone_ast(ASTNode *node) {
         case AST_INTERROGATE:
             n->data.interrogate.kind = node->data.interrogate.kind;
             n->data.interrogate.expr = clone_ast(node->data.interrogate.expr);
+            n->data.interrogate.at_expr = clone_ast(node->data.interrogate.at_expr);
             break;
         case AST_PREDICATE:
             n->data.predicate.kind = node->data.predicate.kind;
@@ -451,9 +453,15 @@ static ASTNode* parse_primary(Parser *p) {
         if (p_cur(p)->type == TOK_IS) {
             p_advance(p);
             ASTNode *expr = parse_expression(p);
+            ASTNode *at_expr = NULL;
+            if (p_cur(p)->type == TOK_AT) {
+                p_advance(p);
+                at_expr = parse_expression(p);
+            }
             ASTNode *n = make_node(AST_INTERROGATE, p_cur(p)->line);
             n->data.interrogate.kind = kind;
             n->data.interrogate.expr = expr;
+            n->data.interrogate.at_expr = at_expr;
             return n;
         }
         ASTNode *n = make_node(AST_IDENT, p_cur(p)->line);
@@ -468,6 +476,42 @@ static ASTNode* parse_primary(Parser *p) {
             index_node->data.index.index = idx;
             n = index_node;
         }
+        return n;
+    }
+
+    /* `prev of x` — the value bound to x just before its most recent
+     * assignment. Always uses the named form: prev requires a binding
+     * to look back through, so only IDENT operands are meaningful.
+     * Optional `at <expr>` suffix queries past-line state. */
+    if (t->type == TOK_PREV) {
+        p_advance(p);
+        if (p_cur(p)->type == TOK_OF) {
+            p_advance(p);
+            ASTNode *expr = parse_expression(p);
+            ASTNode *at_expr = NULL;
+            if (p_cur(p)->type == TOK_AT) {
+                p_advance(p);
+                at_expr = parse_expression(p);
+            }
+            ASTNode *n = make_node(AST_INTERROGATE, p_cur(p)->line);
+            n->data.interrogate.kind = 6;
+            n->data.interrogate.expr = expr;
+            n->data.interrogate.at_expr = at_expr;
+            return n;
+        }
+        ASTNode *n = make_node(AST_IDENT, p_cur(p)->line);
+        n->data.ident.name = xstrdup(t->str_val);
+        set_name_hash(n, n->data.ident.name);
+        return n;
+    }
+
+    /* Bare `at` outside an interrogative falls back to IDENT, like
+     * the question-word soft-keyword path. */
+    if (t->type == TOK_AT) {
+        p_advance(p);
+        ASTNode *n = make_node(AST_IDENT, p_cur(p)->line);
+        n->data.ident.name = xstrdup(t->str_val);
+        set_name_hash(n, n->data.ident.name);
         return n;
     }
 

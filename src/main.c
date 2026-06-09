@@ -4,6 +4,7 @@
 
 #include "eigenscript.h"
 #include "vm.h"
+#include "trace.h"
 #if EIGENSCRIPT_EXT_HTTP
 #include "ext_http_internal.h"
 #endif
@@ -160,6 +161,8 @@ static void set_exe_dir(const char *argv0) {
 
 int main(int argc, char **argv) {
     set_exe_dir(argc > 0 ? argv[0] : NULL);
+    trace_init();
+    atexit(trace_shutdown);
 
     if (argc >= 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
         printf("%s\n", EIGENSCRIPT_VERSION);

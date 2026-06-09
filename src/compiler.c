@@ -155,6 +155,7 @@ static int op_stack_effect(uint8_t op) {
     case OP_LOCAL_IDX_DOT_SET:  /* peek TOS, write = 0 */
         return 0;
     case OP_INTERROGATE_NAMED:  /* pop 1, push 1 = 0 */
+    case OP_INTERROGATE_NAMED_AT:  /* pop line, push result = 0 */
         return 0;
     /* Index set: pop value, pop index, pop target, push value = -2 */
     case OP_INDEX_SET:
@@ -403,6 +404,8 @@ static void collect_referenced_names_skip(ASTNode *node, ASTNode *skip, NameSet 
         break;
     case AST_INTERROGATE:
         collect_referenced_names_skip(node->data.interrogate.expr, skip, out);
+        if (node->data.interrogate.at_expr)
+            collect_referenced_names_skip(node->data.interrogate.at_expr, skip, out);
         break;
     case AST_TRY:
         for (int i = 0; i < node->data.trycatch.try_count; i++)
@@ -521,6 +524,8 @@ static void collect_referenced_names(ASTNode *node, NameSet *out) {
         break;
     case AST_INTERROGATE:
         collect_referenced_names(node->data.interrogate.expr, out);
+        if (node->data.interrogate.at_expr)
+            collect_referenced_names(node->data.interrogate.at_expr, out);
         break;
     case AST_PREDICATE:
         /* PREDICATE uses similar shape to relation/interrogate; descend on whatever lives in it */
@@ -701,6 +706,7 @@ static void scan_for_interrogated(ASTNode *node, NameSet *out) {
             name_set_add(out, node->data.interrogate.expr->data.ident.name);
         }
         scan_for_interrogated(node->data.interrogate.expr, out);
+        scan_for_interrogated(node->data.interrogate.at_expr, out);
         break;
     case AST_BINOP:
         scan_for_interrogated(node->data.binop.left, out);
@@ -1627,11 +1633,24 @@ static void compile_node(Compiler *c, ASTNode *node) {
     }
 
     case AST_INTERROGATE: {
-        compile_node(c, node->data.interrogate.expr);
         int kind = node->data.interrogate.kind;
-        if ((kind == 1 || kind == 2) && node->data.interrogate.expr->type == AST_IDENT) {
-            /* who/when with known binding name: emit name index */
-            int name_idx = add_string_constant(c, node->data.interrogate.expr->data.ident.name);
+        ASTNode *expr = node->data.interrogate.expr;
+        ASTNode *at_expr = node->data.interrogate.at_expr;
+
+        if (at_expr && expr && expr->type == AST_IDENT) {
+            /* `<kw> is x at <expr>` — operand value is not needed; only
+             * the name (compile-time known). Push line, emit AT op. */
+            compile_node(c, at_expr);
+            int name_idx = add_string_constant(c, expr->data.ident.name);
+            emit_op_u16_u16(c, OP_INTERROGATE_NAMED_AT,
+                            (uint16_t)kind, (uint16_t)name_idx, node->line);
+            break;
+        }
+
+        compile_node(c, expr);
+        if ((kind == 1 || kind == 2 || kind == 6) && expr->type == AST_IDENT) {
+            /* who/when/prev with known binding name: emit name index */
+            int name_idx = add_string_constant(c, expr->data.ident.name);
             emit_op_u16_u16(c, OP_INTERROGATE_NAMED, (uint16_t)kind, (uint16_t)name_idx, node->line);
         } else {
             emit_op_u16(c, OP_INTERROGATE, (uint16_t)kind, node->line);

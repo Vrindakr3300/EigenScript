@@ -30,6 +30,7 @@ static TokType keyword_type(const char *word) {
     case 'a':
         if (strcmp(word, "as") == 0) return TOK_AS;
         if (strcmp(word, "and") == 0) return TOK_AND;
+        if (strcmp(word, "at") == 0) return TOK_AT;
         break;
     case 'b':
         if (strcmp(word, "break") == 0) return TOK_BREAK;
@@ -77,6 +78,9 @@ static TokType keyword_type(const char *word) {
         if (strcmp(word, "of") == 0) return TOK_OF;
         if (strcmp(word, "or") == 0) return TOK_OR;
         if (strcmp(word, "oscillating") == 0) return TOK_OSCILLATING;
+        break;
+    case 'p':
+        if (strcmp(word, "prev") == 0) return TOK_PREV;
         break;
     case 'r':
         if (strcmp(word, "return") == 0) return TOK_RETURN;
@@ -137,6 +141,8 @@ const char* tok_base_string(TokType t) {
         case TOK_WHERE:      return "where ";
         case TOK_WHY:        return "why ";
         case TOK_HOW:        return "how ";
+        case TOK_PREV:       return "prev ";
+        case TOK_AT:         return "at ";
         case TOK_CONVERGED:  return "converged ";
         case TOK_STABLE:     return "stable ";
         case TOK_IMPROVING:  return "improving ";

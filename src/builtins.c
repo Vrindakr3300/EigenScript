@@ -7,6 +7,17 @@
 #include "eigenscript.h"
 #include "vm.h"
 #include "builtins_internal.h"
+#include "trace.h"
+
+/* Wrap a nondeterministic builtin return so the value is recorded onto
+ * the trace tape. The expression is evaluated once. Phase 2 uses this
+ * for random*, monotonic_*, env_get, random_hex. */
+#define TRACE_NONDET_RET(name, expr) do { \
+    Value *_tr_v = (expr); \
+    if (__builtin_expect(g_trace_enabled, 0)) trace_nondet_value((name), _tr_v); \
+    return _tr_v; \
+} while (0)
+
 #include <pthread.h>
 #include <termios.h>
 
@@ -408,7 +419,7 @@ Value* builtin_monotonic_ns(Value *arg) {
     (void)arg;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return make_num((double)ts.tv_sec * 1e9 + (double)ts.tv_nsec);
+    TRACE_NONDET_RET("monotonic_ns", make_num((double)ts.tv_sec * 1e9 + (double)ts.tv_nsec));
 }
 
 /* monotonic_ms of null — milliseconds from CLOCK_MONOTONIC */
@@ -416,7 +427,7 @@ Value* builtin_monotonic_ms(Value *arg) {
     (void)arg;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return make_num((double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6);
+    TRACE_NONDET_RET("monotonic_ms", make_num((double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6));
 }
 
 Value* builtin_len(Value *arg) {
@@ -1604,22 +1615,22 @@ static void ensure_random_seeded(void) {
 Value* builtin_random(Value *arg) {
     (void)arg;
     ensure_random_seeded();
-    return make_num(drand48());
+    TRACE_NONDET_RET("random", make_num(drand48()));
 }
 
 /* random_int of [lo, hi] → integer in [lo, hi] inclusive */
 Value* builtin_random_int(Value *arg) {
     if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2)
-        return make_num(0);
+        TRACE_NONDET_RET("random_int", make_num(0));
     Value *lo = arg->data.list.items[0];
     Value *hi = arg->data.list.items[1];
     if (!lo || lo->type != VAL_NUM || !hi || hi->type != VAL_NUM)
-        return make_num(0);
+        TRACE_NONDET_RET("random_int", make_num(0));
     ensure_random_seeded();
     int lo_i = (int)lo->data.num;
     int hi_i = (int)hi->data.num;
-    if (hi_i < lo_i) return make_num(lo_i);
-    return make_num(lo_i + (lrand48() % (hi_i - lo_i + 1)));
+    if (hi_i < lo_i) TRACE_NONDET_RET("random_int", make_num(lo_i));
+    TRACE_NONDET_RET("random_int", make_num(lo_i + (lrand48() % (hi_i - lo_i + 1))));
 }
 
 /* seed_random of n → seeds the RNG, returns 1 */
@@ -2313,51 +2324,51 @@ Value* builtin_file_exists(Value *arg) {
 }
 
 Value* builtin_env_get(Value *arg) {
-    if (!arg || arg->type != VAL_STR) return make_str("");
+    if (!arg || arg->type != VAL_STR) TRACE_NONDET_RET("env_get", make_str(""));
     const char *val = getenv(arg->data.str);
-    return make_str(val ? val : "");
+    TRACE_NONDET_RET("env_get", make_str(val ? val : ""));
 }
 
 /* ==== BUILTIN: read_text ==== */
 /* read_text of "path" → file contents as string, or "" on failure. */
 /* read_bytes of path — read binary file, return list of byte values (0-255) */
 Value* builtin_read_bytes(Value *arg) {
-    if (!arg || arg->type != VAL_STR) return make_null();
+    if (!arg || arg->type != VAL_STR) TRACE_NONDET_RET("read_bytes", make_null());
     FILE *f = fopen(arg->data.str, "rb");
-    if (!f) return make_null();
+    if (!f) TRACE_NONDET_RET("read_bytes", make_null());
     fseek(f, 0, SEEK_END);
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (len < 0 || len > 10 * 1024 * 1024) { /* 10 MB cap */
         fclose(f);
-        return make_null();
+        TRACE_NONDET_RET("read_bytes", make_null());
     }
     unsigned char *buf = xmalloc(len);
-    if (!buf) { fclose(f); return make_null(); }
+    if (!buf) { fclose(f); TRACE_NONDET_RET("read_bytes", make_null()); }
     size_t nread = fread(buf, 1, len, f);
     fclose(f);
     Value *result = make_list((int)nread);
     for (size_t i = 0; i < nread; i++)
         list_append(result, make_num((double)buf[i]));
     free(buf);
-    return result;
+    TRACE_NONDET_RET("read_bytes", result);
 }
 
 /* read_bytes_buf of path — read binary file, return VAL_BUFFER of byte values.
  * Zero per-element allocation; O(1) indexed access. */
 Value* builtin_read_bytes_buf(Value *arg) {
-    if (!arg || arg->type != VAL_STR) return make_null();
+    if (!arg || arg->type != VAL_STR) TRACE_NONDET_RET("read_bytes_buf", make_null());
     FILE *f = fopen(arg->data.str, "rb");
-    if (!f) return make_null();
+    if (!f) TRACE_NONDET_RET("read_bytes_buf", make_null());
     fseek(f, 0, SEEK_END);
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (len < 0 || len > 10 * 1024 * 1024) { /* 10 MB cap */
         fclose(f);
-        return make_null();
+        TRACE_NONDET_RET("read_bytes_buf", make_null());
     }
     unsigned char *buf = xmalloc(len);
-    if (!buf) { fclose(f); return make_null(); }
+    if (!buf) { fclose(f); TRACE_NONDET_RET("read_bytes_buf", make_null()); }
     size_t nread = fread(buf, 1, len, f);
     fclose(f);
     Value *v = xcalloc(1, sizeof(Value));
@@ -2368,28 +2379,28 @@ Value* builtin_read_bytes_buf(Value *arg) {
     for (size_t i = 0; i < nread; i++)
         v->data.buffer.data[i] = (double)buf[i];
     free(buf);
-    return v;
+    TRACE_NONDET_RET("read_bytes_buf", v);
 }
 
 Value* builtin_read_text(Value *arg) {
-    if (!arg || arg->type != VAL_STR) return make_str("");
+    if (!arg || arg->type != VAL_STR) TRACE_NONDET_RET("read_text", make_str(""));
     FILE *f = fopen(arg->data.str, "r");
-    if (!f) return make_str("");
+    if (!f) TRACE_NONDET_RET("read_text", make_str(""));
     fseek(f, 0, SEEK_END);
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (len < 0 || len > 10 * 1024 * 1024) { /* 10 MB cap */
         fclose(f);
-        return make_str("");
+        TRACE_NONDET_RET("read_text", make_str(""));
     }
     char *buf = xmalloc(len + 1);
-    if (!buf) { fclose(f); return make_str(""); }
+    if (!buf) { fclose(f); TRACE_NONDET_RET("read_text", make_str("")); }
     size_t read = fread(buf, 1, len, f);
     fclose(f);
     buf[read] = '\0';
     Value *result = make_str(buf);
     free(buf);
-    return result;
+    TRACE_NONDET_RET("read_text", result);
 }
 
 /* ==== BUILTIN: write_text ==== */
@@ -2694,19 +2705,19 @@ Value* builtin_token_name(Value *arg) {
  * Capability builtin: provides randomness so .eigs libraries can generate tokens. */
 Value* builtin_random_hex(Value *arg) {
     int n = (arg && arg->type == VAL_NUM) ? (int)arg->data.num : 0;
-    if (n <= 0 || n > 256) return make_str("");
+    if (n <= 0 || n > 256) TRACE_NONDET_RET("random_hex", make_str(""));
     int bytes_needed = (n + 1) / 2;
     unsigned char raw[128];
     FILE *urand = fopen("/dev/urandom", "rb");
-    if (!urand) return make_str("");
+    if (!urand) TRACE_NONDET_RET("random_hex", make_str(""));
     size_t got = fread(raw, 1, bytes_needed, urand);
     fclose(urand);
-    if ((int)got < bytes_needed) return make_str("");
+    if ((int)got < bytes_needed) TRACE_NONDET_RET("random_hex", make_str(""));
     char hex[257];
     for (int i = 0; i < bytes_needed && i * 2 < n; i++)
         snprintf(hex + i * 2, 3, "%02x", raw[i]);
     hex[n] = '\0';
-    return make_str(hex);
+    TRACE_NONDET_RET("random_hex", make_str(hex));
 }
 
 /* ==== BUILTIN: secure_equals ==== */

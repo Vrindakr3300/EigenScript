@@ -211,6 +211,8 @@ static void collect_refs(ASTNode *node, LintContext *ctx) {
             break;
         case AST_INTERROGATE:
             collect_refs(node->data.interrogate.expr, ctx);
+            if (node->data.interrogate.at_expr)
+                collect_refs(node->data.interrogate.at_expr, ctx);
             break;
         case AST_IMPORT:
             /* import names become available */

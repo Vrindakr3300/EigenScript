@@ -1510,8 +1510,8 @@ define eigen_eval(node, env) as:
             if node[2][0] == "ident":
                 obs is _get_observer of node[2][1]
                 ent is obs[1]
-                prev is obs[3]
-                initial is prev
+                prior is obs[3]
+                initial is prior
                 if initial <= 0:
                     initial is 1.0
                 if ent > 0:

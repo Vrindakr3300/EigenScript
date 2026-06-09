@@ -63,6 +63,7 @@ typedef enum {
     TOK_RETURN, TOK_AND, TOK_OR, TOK_NOT,
     TOK_FOR, TOK_IN, TOK_NULL,
     TOK_WHAT, TOK_WHO, TOK_WHEN, TOK_WHERE, TOK_WHY, TOK_HOW,
+    TOK_PREV, TOK_AT,
     TOK_CONVERGED, TOK_STABLE, TOK_IMPROVING, TOK_OSCILLATING, TOK_DIVERGING, TOK_EQUILIBRIUM,
     TOK_TRY, TOK_CATCH, TOK_BREAK, TOK_CONTINUE, TOK_IMPORT,
     TOK_MATCH, TOK_CASE,
@@ -134,7 +135,7 @@ struct ASTNode {
         struct { ASTNode *expr; char *var; ASTNode *iter; ASTNode *filter; } listcomp;
         struct { char *var; ASTNode *iter; ASTNode **body; int body_count; } forloop;
         struct { ASTNode **stmts; int count; } program;
-        struct { int kind; ASTNode *expr; } interrogate;
+        struct { int kind; ASTNode *expr; ASTNode *at_expr; } interrogate;
         struct { int kind; } predicate;
         struct { ASTNode **try_body; int try_count; char *err_name; ASTNode **catch_body; int catch_count; } trycatch;
         struct { ASTNode **keys; ASTNode **vals; int count; } dict;

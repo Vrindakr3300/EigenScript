@@ -7,6 +7,14 @@
 
 #include "eigenscript.h"
 #include "vm.h"
+#include "trace.h"
+
+#define TRACE_NONDET_RET(name, expr) do { \
+    Value *_tr_v = (expr); \
+    if (__builtin_expect(g_trace_enabled, 0)) trace_nondet_value((name), _tr_v); \
+    return _tr_v; \
+} while (0)
+
 
 /* Forward decls for helpers shared with the arena/observer machinery. */
 Value* make_num_permanent(double n);
@@ -506,7 +514,7 @@ Value* call_eigs_fn(Value *fn, Value *arg) {
 /* ==== BUILTIN: random_normal ==== */
 /* random_normal of [rows, cols, scale] → 2D, or random_normal of [len, scale] → 1D */
 Value* builtin_random_normal(Value *arg) {
-    if (!arg || arg->type != VAL_LIST) return make_null();
+    if (!arg || arg->type != VAL_LIST) TRACE_NONDET_RET("random_normal", make_null());
     int argc = arg->data.list.count;
     if (argc == 3) {
         /* 2D: [rows, cols, scale] */
@@ -525,7 +533,7 @@ Value* builtin_random_normal(Value *arg) {
             }
             list_append(outer, row);
         }
-        return outer;
+        TRACE_NONDET_RET("random_normal", outer);
     }
     if (argc == 2) {
         /* 1D: [len, scale] */
@@ -538,9 +546,9 @@ Value* builtin_random_normal(Value *arg) {
             double z = sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
             list_append(out, make_num(z * scale));
         }
-        return out;
+        TRACE_NONDET_RET("random_normal", out);
     }
-    return make_null();
+    TRACE_NONDET_RET("random_normal", make_null());
 }
 
 /* ==== BUILTIN: shape ==== */

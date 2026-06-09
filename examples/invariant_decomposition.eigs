@@ -139,10 +139,10 @@ define decompose_signal(obs, history, coh_thresh) as:
     if n < 2:
         return [[0.0, 0.0], [obs[0], obs[1]], 0.0]
     coh is coherence_score of [history, 3]
-    # linear extrapolation predicted = last + (last - prev)
+    # linear extrapolation predicted = last + (last - prior)
     last is history[n - 1]
-    prev is history[n - 2]
-    vel is vsub of [last, prev]
+    prior is history[n - 2]
+    vel is vsub of [last, prior]
     pred is vadd of [last, vel]
     if coh > coh_thresh:
         coherent is pred

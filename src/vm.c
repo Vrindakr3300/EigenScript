@@ -8,6 +8,7 @@
 #include "eigenscript.h"
 #include "vm.h"
 #include "jit.h"
+#include "trace.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1108,6 +1109,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_LOCAL_IDX_DOT_GET] = &&lbl_LOCAL_IDX_DOT_GET,
         [OP_LOCAL_IDX_DOT_SET] = &&lbl_LOCAL_IDX_DOT_SET,
         [OP_INTERROGATE_NAMED] = &&lbl_INTERROGATE_NAMED,
+        [OP_INTERROGATE_NAMED_AT] = &&lbl_INTERROGATE_NAMED_AT,
     };
     #define CHECK_ERROR() do { \
         if (__builtin_expect(g_has_error, 0)) { \
@@ -1526,6 +1528,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(SET_LOCAL): {
         uint16_t slot = read_u16(ip); ip += 2;
+        if (__builtin_expect(g_trace_enabled, 0)) {
+            const char *nm = (slot < (uint16_t)chunk->local_count && chunk->local_names)
+                ? chunk->local_names[slot] : NULL;
+            trace_assign(nm, g_vm.stack[g_vm.sp - 1]);
+        }
         Env *e = frame->fn_env;
         if ((int)slot < e->count) {
             EigsSlot tos = g_vm.stack[g_vm.sp - 1];
@@ -1593,6 +1600,9 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(SET_NAME): {
         uint16_t idx = read_u16(ip); ip += 2;
+        if (__builtin_expect(g_trace_enabled, 0)) {
+            trace_assign(chunk->const_interns[idx], g_vm.stack[g_vm.sp - 1]);
+        }
         EnvIC *ic = &chunk->env_ic[idx];
         Env *start = frame->env;
         EigsSlot s = g_vm.stack[g_vm.sp - 1];
@@ -1639,6 +1649,9 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
     CASE(SET_NAME_LOCAL): {
         uint16_t idx = read_u16(ip); ip += 2;
+        if (__builtin_expect(g_trace_enabled, 0)) {
+            trace_assign(chunk->const_interns[idx], g_vm.stack[g_vm.sp - 1]);
+        }
         EnvIC *ic = &chunk->env_ic[idx];
         Env *start = frame->env;
         EigsSlot s = g_vm.stack[g_vm.sp - 1];
@@ -1675,6 +1688,9 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
          * unobserved+for+interrogated accumulator otherwise wrote to the
          * per-iteration loop env and the outer binding never moved). */
         uint16_t idx = read_u16(ip); ip += 2;
+        if (__builtin_expect(g_trace_enabled, 0)) {
+            trace_assign(chunk->const_interns[idx], g_vm.stack[g_vm.sp - 1]);
+        }
         EnvIC *ic = &chunk->env_ic[idx];
         Env *target = frame->fn_env;
         EigsSlot s = g_vm.stack[g_vm.sp - 1];
@@ -2786,8 +2802,36 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         case 2: /* when — return assignment count */
             result = make_num(env_get_assign_count(frame->env, name, h));
             break;
+        case 6: { /* prev — value just before the most recent assignment */
+            EigsSlot prev_slot;
+            if (trace_query_prev(name, &prev_slot)) {
+                val_decref(result);
+                result = slot_to_value(prev_slot);
+                slot_decref(prev_slot);
+            }
+            break;
+        }
         }
         val_decref(v);
+        vm_push(result);
+        DISPATCH();
+    }
+
+    CASE(INTERROGATE_NAMED_AT): {
+        uint16_t kind = read_u16(ip); ip += 2;
+        uint16_t name_idx = read_u16(ip); ip += 2;
+        Value *line_v = vm_pop();
+        int line = 0;
+        if (line_v && line_v->type == VAL_NUM) line = (int)line_v->data.num;
+        val_decref(line_v);
+        Value *result = make_null();
+        const char *name = chunk->const_interns[name_idx];
+        EigsSlot at_slot;
+        if (trace_query_at(kind, name, line, &at_slot)) {
+            val_decref(result);
+            result = slot_to_value(at_slot);
+            slot_decref(at_slot);
+        }
         vm_push(result);
         DISPATCH();
     }
@@ -2963,6 +3007,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         uint16_t line = read_u16(ip); ip += 2;
         current_line = line;
         g_vm.current_line = line;
+        if (__builtin_expect(g_trace_enabled, 0)) trace_line(line);
         DISPATCH();
     }
 
