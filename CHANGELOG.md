@@ -4,6 +4,73 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Fixed (memory safety)
+- **Per-call leak from compensating incref on builtin returns.** The
+  `CASE(CALL) VAL_BUILTIN`, `jit_helper_call`, and `OP_DISPATCH` paths
+  unconditionally `val_incref`'d the result of every builtin call to keep
+  borrowed pointers (e.g. `coalesce`/`append` returning `arg->items[k]`)
+  alive across the subsequent `val_decref(arg)`. The same `+1` also fired
+  for builtins that return a *fresh* allocation (`range`, `make_str`,
+  `keys`, …), so every such call leaked one `Value` plus its contents.
+  `for i in range of 1M` silently retained ~80 MB. Replaced with a
+  direct-borrow scan that only incref's when `result` is one of `arg`'s
+  top-level items; nested borrows like `get_at` keep their local incref.
+  `OP_DISPATCH` additionally had `val_decref(arg)` *before* the incref,
+  which was a UAF for direct borrows — reordered to match `CASE(CALL)`.
+  Regression: `tests/test_leak_guard.sh` (ASan).
+- **Use-after-free on consuming builtins via the direct-borrow scan.**
+  The leak fix's borrow scan reads `arg->type` *after* the builtin call,
+  but `free_val` is a consuming builtin that decrefs `arg` internally —
+  on a refcount-1 argument that left the scan reading freed memory. The
+  full-suite ASan/UBSan CI job (which a targeted leak guard couldn't have
+  caught — the corruption is invisible without a sanitizer watching)
+  surfaced it. Gated the scan and the trailing `val_decref(arg)` on
+  `!consumes_arg` at all three call sites (`CASE(CALL)`, `jit_helper_call`,
+  `OP_DISPATCH`).
+
+### Added (infrastructure)
+- **Cross-platform / cross-compiler CI matrix.** `.github/workflows/ci.yml`
+  now runs `build-and-test` across ubuntu-latest+gcc, ubuntu-latest+clang,
+  and macos-latest+clang (fail-fast off so one platform's failure doesn't
+  hide the others), plus a dedicated `sanitizers` job that builds the
+  whole runtime with `-fsanitize=address,undefined` and runs the full
+  suite under it. `build.sh` honors `$CC` so the matrix can pick the
+  compiler. New `make asan` target for local memory-bug hunting.
+- **`tests/test_leak_guard.sh`** — ASan regression guard for the builtin
+  ref-protocol leak. Builds a minimal ASan eigenscript, runs `range` /
+  `make_str` / `keys` / `append` loops, fails if `make_list`/`make_str`/
+  `make_dict` appear in any leak frame or if `append`'s borrowed return
+  surfaces a UAF. Skips cleanly when ASan is unavailable. Wired into
+  `run_all_tests.sh` (step `[69]`).
+
+### Fixed (portability)
+- **Non-x86 builds (notably macOS arm64).** `eigs_jit_get_layout` used
+  inline `__asm__("mov %%fs:0, %0" ...)` to read the x86-64 thread
+  pointer for TLS-relative JIT encoding. JIT codegen is already gated
+  `#if defined(__x86_64__)` in `jit.c`, so the layout probe only matters
+  there; on other arches the function body now collapses to a no-op
+  rather than failing to assemble.
+- **macOS test portability.** `test_file_io.eigs` RT1 stops reading
+  `/etc/hostname` (Linux-only path) — it now stages a tmp file with
+  `write_text` first, then reads it back. `test_coverage_gaps.eigs` CG12
+  accepts `/private/tmp` as well as `/tmp` for the `chdir`+`getcwd`
+  check, since macOS routes `/tmp` through a symlink.
+
+### Documentation
+- **README / ROADMAP refresh.** Updated stale binary size (`~328K` →
+  `~420K`) and test count (`831/832` → `1257`) in README. Bumped
+  ROADMAP's "Current version" from `0.11.0` to `0.11.4`; moved
+  in-place numeric mutation, dict field inline caching, dispatch
+  builtin re-entry elimination, and the DMG 0.5+ MHz target out of
+  "Next" into "Completed"; reframed 0.12 around the copy-and-patch
+  JIT + NaN-boxing prerequisites.
+
+### Removed (code hygiene)
+- **Dead statics in `src/compiler.c`.** `block_has_closure`, `emit_u16`,
+  `begin_scope`, `end_scope`, and `root_compiler` were defined but
+  never called, generating `-Wunused-function` warnings on every
+  build. Removed.
+
 ### Security
 - **Bounded parser recursion depth (stack-exhaustion guard).** The
   recursive-descent parser had no bound on expression nesting, so deeply
