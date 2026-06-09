@@ -221,6 +221,21 @@ int trace_query_at(int kind, const char *interned_name, int line, EigsSlot *out)
     return 0;
 }
 
+Value *trace_state_at(int line) {
+    Value *out = make_dict(g_prev_count > 0 ? g_prev_count : 8);
+    if (!out || !g_prev_tab) return out;
+    for (int i = 0; i < g_prev_cap; i++) {
+        PrevEntry *e = &g_prev_tab[i];
+        if (!e->name || e->hist_count == 0) continue;
+        int idx = find_hist_idx_at_or_before(e, line);
+        if (idx < 0) continue;
+        Value *v = slot_to_value(e->history[idx].value);
+        dict_set(out, e->name, v);
+        val_decref(v);
+    }
+    return out;
+}
+
 static FILE *g_trace_fp = NULL;
 static int   g_trace_initialized = 0;
 

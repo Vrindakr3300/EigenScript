@@ -2714,6 +2714,16 @@ Value* builtin_random_hex(Value *arg) {
     TRACE_NONDET_RET("random_hex", make_str(hex));
 }
 
+/* ==== BUILTIN: state_at ==== */
+/* state_at(line) → dict of every tracked binding's value at <line>, or
+ * null if the line argument isn't a number. Phase 4 backward-state query;
+ * the dict snapshot it returns is independent of subsequent program state. */
+Value* builtin_state_at(Value *arg) {
+    if (!arg || arg->type != VAL_NUM) return make_null();
+    Value *d = trace_state_at((int)arg->data.num);
+    return d ? d : make_null();
+}
+
 /* ==== BUILTIN: secure_equals ==== */
 /* secure_equals of [a, b] → 1 if the two strings are equal, else 0.
  * Constant-time in the *contents*: it always scans the full length and folds
@@ -3886,6 +3896,7 @@ void register_builtins(Env *env) {
     env_set_local(env, "chr", make_builtin(builtin_chr));
     env_set_local(env, "ord", make_builtin(builtin_ord));
     env_set_local(env, "random_hex", make_builtin(builtin_random_hex));
+    env_set_local(env, "state_at", make_builtin(builtin_state_at));
     env_set_local(env, "secure_equals", make_builtin(builtin_secure_equals));
     env_set_local(env, "try_parse", make_builtin(builtin_try_parse));
     env_set_local(env, "eval", make_builtin(builtin_eval));

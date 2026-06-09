@@ -79,6 +79,19 @@ int trace_query_prev(const char *interned_name, EigsSlot *out);
  */
 int trace_query_at(int kind, const char *interned_name, int line, EigsSlot *out);
 
+/* Phase 4 — `state_at(line)` whole-program backward query.
+ *
+ * Walks every name tracked by the prev-table and returns the value each
+ * one held at or before `line`. Names that hadn't been assigned by then
+ * are omitted. Result is a fresh VAL_DICT owned by the caller; returns
+ * NULL only on allocation failure.
+ *
+ * Cost is O(N · H) where N = distinct names and H = avg history depth —
+ * each name does a backward linear scan through its own history. Periodic
+ * snapshot caching (the original Phase 4 spec) is deferred until a real
+ * debugger workflow shows this scan is the bottleneck. */
+struct Value *trace_state_at(int line);
+
 /* Phase 3 — replay.
  *
  * When EIGS_REPLAY=<path> is set at startup, the named tape is opened
