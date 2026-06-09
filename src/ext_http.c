@@ -5,10 +5,23 @@
  */
 
 #include "ext_http_internal.h"
+#include "trace.h"
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+
+/* Phase 2.75 — HTTP nondet capture.
+ *
+ * Both incoming request state (request_body, session_id, request_headers)
+ * and outgoing response data (http_post) are nondeterministic from the
+ * script's perspective. Wrap returns so each value lands on the trace
+ * tape as an `N` record for Phase 3 replay determinism. */
+#define TRACE_NONDET_RET(name, expr) do { \
+    Value *_tr_v = (expr); \
+    if (__builtin_expect(g_trace_enabled, 0)) trace_nondet_value((name), _tr_v); \
+    return _tr_v; \
+} while (0)
 
 /* ================================================================
  * HTTP GLOBALS
@@ -203,15 +216,15 @@ Value* builtin_http_serve(Value *arg) {
 Value* builtin_http_request_body(Value *arg) {
     (void)arg;
     if (tls_request_body)
-        return make_str(tls_request_body);
-    return make_str("{}");
+        TRACE_NONDET_RET("http_request_body", make_str(tls_request_body));
+    TRACE_NONDET_RET("http_request_body", make_str("{}"));
 }
 
 Value* builtin_http_session_id(Value *arg) {
     (void)arg;
     if (tls_session_id)
-        return make_str(tls_session_id);
-    return make_str("anonymous");
+        TRACE_NONDET_RET("http_session_id", make_str(tls_session_id));
+    TRACE_NONDET_RET("http_session_id", make_str("anonymous"));
 }
 
 
@@ -223,19 +236,20 @@ static int http_url_is_allowed(const char *url) {
 Value* builtin_http_post(Value *arg) {
     /* http_post of [url, headers_json, body_string] -> response body string
      * Uses fork/execvp to invoke curl — no shell involved, no injection risk. */
-    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 3) return make_str("");
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 3)
+        TRACE_NONDET_RET("http_post", make_str(""));
     const char *url = "", *headers_json = "", *body = "";
     if (arg->data.list.items[0]->type == VAL_STR) url = arg->data.list.items[0]->data.str;
     if (arg->data.list.items[1]->type == VAL_STR) headers_json = arg->data.list.items[1]->data.str;
     if (arg->data.list.items[2]->type == VAL_STR) body = arg->data.list.items[2]->data.str;
-    if (!http_url_is_allowed(url)) return make_str("");
+    if (!http_url_is_allowed(url)) TRACE_NONDET_RET("http_post", make_str(""));
 
     /* Write body to temp file */
     char req_path[] = "/tmp/eigen_http_XXXXXX";
     int req_fd = mkstemp(req_path);
-    if (req_fd < 0) return make_str("");
+    if (req_fd < 0) TRACE_NONDET_RET("http_post", make_str(""));
     FILE *reqf = fdopen(req_fd, "w");
-    if (!reqf) { close(req_fd); unlink(req_path); return make_str(""); }
+    if (!reqf) { close(req_fd); unlink(req_path); TRACE_NONDET_RET("http_post", make_str("")); }
     fprintf(reqf, "%s", body);
     fclose(reqf);
 
@@ -279,10 +293,10 @@ Value* builtin_http_post(Value *arg) {
 
     /* Fork and exec curl, capture stdout via pipe */
     int pipefd[2];
-    if (pipe(pipefd) < 0) { unlink(req_path); return make_str(""); }
+    if (pipe(pipefd) < 0) { unlink(req_path); TRACE_NONDET_RET("http_post", make_str("")); }
 
     pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); unlink(req_path); return make_str(""); }
+    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); unlink(req_path); TRACE_NONDET_RET("http_post", make_str("")); }
 
     if (pid == 0) {
         /* Child: redirect stdout to pipe, close stderr */
@@ -311,14 +325,14 @@ Value* builtin_http_post(Value *arg) {
     waitpid(pid, &status, 0);
     unlink(req_path);
 
-    return make_str(buf);
+    TRACE_NONDET_RET("http_post", make_str(buf));
 }
 
 Value* builtin_http_request_headers(Value *arg) {
     (void)arg;
     if (tls_request_headers)
-        return make_str(tls_request_headers);
-    return make_str("");
+        TRACE_NONDET_RET("http_request_headers", make_str(tls_request_headers));
+    TRACE_NONDET_RET("http_request_headers", make_str(""));
 }
 
 /* ================================================================
