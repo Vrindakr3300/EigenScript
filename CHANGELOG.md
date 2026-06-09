@@ -4,6 +4,8 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+## [0.11.5] — 2026-06-09
+
 ### Fixed (memory safety)
 - **Per-call leak from compensating incref on builtin returns.** The
   `CASE(CALL) VAL_BUILTIN`, `jit_helper_call`, and `OP_DISPATCH` paths
