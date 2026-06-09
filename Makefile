@@ -17,7 +17,7 @@ LSP_SOURCES := $(SRC_DIR)/eigenlsp.c $(SRC_DIR)/eigenscript.c $(SRC_DIR)/lexer.c
                $(SRC_DIR)/hash.c $(SRC_DIR)/arena.c $(SRC_DIR)/strbuf.c $(SRC_DIR)/ext_store.c
 LSP_BINARY  := $(SRC_DIR)/eigenlsp
 
-.PHONY: all build full http gfx test install install-gfx clean coverage coverage-clean fuzz fuzz-run lsp jit-smoke pgo
+.PHONY: all build full http gfx test install install-gfx clean coverage coverage-clean fuzz fuzz-run lsp jit-smoke asan pgo
 
 all: build
 
@@ -97,6 +97,21 @@ lsp:
 jit-smoke:
 	$(CC) -Wall -Wextra -O2 -o /tmp/jit_smoke $(SRC_DIR)/jit.c $(SRC_DIR)/jit_smoke.c -lm
 	/tmp/jit_smoke
+
+# AddressSanitizer + UndefinedBehaviorSanitizer build. Catches
+# use-after-free, buffer overflow, and undefined behavior that the
+# normal -O2 build silently tolerates. ~2x slower; for testing only.
+# Run the suite against it with leak detection off (there is an
+# intentional don't-free-at-exit baseline):
+#   make asan && cd tests && ASAN_OPTIONS=detect_leaks=0 bash run_all_tests.sh
+asan:
+	$(CC) -fsanitize=address,undefined -g -O1 -o $(BINARY) $(SOURCES) \
+		-DEIGENSCRIPT_EXT_HTTP=0 \
+		-DEIGENSCRIPT_EXT_MODEL=0 \
+		-DEIGENSCRIPT_EXT_DB=0 \
+		-DEIGENSCRIPT_VERSION='"$(VERSION)"' \
+		-lm -lpthread
+	@echo "EigenScript $(VERSION) (asan+ubsan) built. Binary: $(BINARY)"
 
 # Profile-guided optimization. Builds an instrumented binary, runs the
 # DMG cpu_instrs workload to collect branch/edge counters, then rebuilds

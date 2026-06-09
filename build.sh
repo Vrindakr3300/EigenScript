@@ -6,11 +6,14 @@ set -e
 cd "$(dirname "$0")/src"
 
 VERSION=$(cat ../VERSION)
+# Compiler is overridable (e.g. CC=clang ./build.sh) so CI can exercise
+# more than one toolchain; defaults to gcc.
+CC="${CC:-gcc}"
 SOURCES="eigenscript.c lexer.c parser.c builtins.c builtins_tensor.c hash.c arena.c strbuf.c ext_store.c fmt.c lint.c chunk.c compiler.c vm.c jit.c main.c"
 
 if [ "$1" = "full" ]; then
     # Full build: all extensions. Requires libpq-dev.
-    gcc -Wall -Wextra -O2 -fstack-protector-strong -o eigenscript $SOURCES ext_http.c ext_db.c \
+    $CC -Wall -Wextra -O2 -fstack-protector-strong -o eigenscript $SOURCES ext_http.c ext_db.c \
         model_io.c model_infer.c model_train.c \
         -I/usr/include/postgresql \
         -DEIGENSCRIPT_EXT_HTTP=1 \
@@ -21,7 +24,7 @@ if [ "$1" = "full" ]; then
     echo "EigenScript $VERSION (full) built. Binary: $(du -sh eigenscript | cut -f1)"
 else
     # Minimal build: language + stdlib only.
-    gcc -Wall -Wextra -O2 -fstack-protector-strong -o eigenscript $SOURCES \
+    $CC -Wall -Wextra -O2 -fstack-protector-strong -o eigenscript $SOURCES \
         -DEIGENSCRIPT_EXT_HTTP=0 \
         -DEIGENSCRIPT_EXT_MODEL=0 \
         -DEIGENSCRIPT_EXT_DB=0 \

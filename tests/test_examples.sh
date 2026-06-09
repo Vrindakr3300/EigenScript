@@ -10,6 +10,25 @@ if [ ! -x "$EIGENSCRIPT" ]; then
     EIGENSCRIPT=$(which eigenscript 2>/dev/null)
 fi
 
+# Portable timeout: GNU coreutils ships `timeout`, macOS/BSD ship it as
+# `gtimeout` (or not at all). Fall back to running without a time limit so
+# the suite stays green on platforms lacking either.
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT="gtimeout"
+else
+    TIMEOUT=""
+fi
+run_timeout() {  # run_timeout <seconds> <cmd...>
+    local secs="$1"; shift
+    if [ -n "$TIMEOUT" ]; then
+        "$TIMEOUT" "$secs" "$@"
+    else
+        "$@"
+    fi
+}
+
 PASS=0
 FAIL=0
 SKIP=0
@@ -36,7 +55,7 @@ run_example() {
     done
 
     local output
-    output=$(timeout "$timeout_sec" $EIGENSCRIPT "$file" 2>/dev/null)
+    output=$(run_timeout "$timeout_sec" $EIGENSCRIPT "$file" 2>/dev/null)
     local rc=$?
 
     if [ $rc -ne 0 ]; then

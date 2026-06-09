@@ -1874,7 +1874,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
 
             if (!result) {
                 result = make_null();
-            } else if (result != arg) {
+            } else if (!consumes_arg && result != arg) {
                 /* Direct-borrow heuristic: if result is one of arg's
                  * top-level items (e.g., coalesce/append/dict_set return
                  * arg->data.list.items[0]), incref it so it survives the
@@ -1882,7 +1882,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                  * (range, make_*) do not match this scan, so no spurious
                  * +1 ref is added. Nested borrows (get_at: items[0][idx])
                  * must still incref locally — only direct children are
-                 * scanned here. */
+                 * scanned here.
+                 *
+                 * Guarded by !consumes_arg: a consuming builtin like
+                 * free_val may have already freed arg, so reading arg
+                 * here would be a use-after-free. */
                 if (arg && arg->type == VAL_LIST) {
                     int n = arg->data.list.count;
                     Value **items = arg->data.list.items;
