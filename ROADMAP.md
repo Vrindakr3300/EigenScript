@@ -28,16 +28,19 @@ the repo):
 DMG benchmark: ~1.094 MHz on cpu_instrs at 0.11.4 (target 4.19 MHz);
 re-measure with the ROM workload before starting the next item.
 
-- [ ] **JIT Stage 5 — inline the hot fast paths.** Coverage is done
-      (Stage 4v/4w/4x: whole loops compile to single thunks, zero
-      bailouts) but timings are flat: helper-call ABI costs what
-      dispatch did. Emit the buffer-INDEX_SET and GET_NAME/SET_NAME
-      EnvIC fast paths as native templates with helper fallback on
-      guard failure. Full implementation spec — emitter architecture,
-      register conventions, ordered sub-stages, measurement protocol,
-      validation gates — in `docs/JIT_STAGE5_INLINE_IC.md`.
-- [ ] NaN-boxing — encode numbers directly in 64-bit slots; prerequisite
-      for efficient JIT. Eliminates make_num + num refcount traffic.
+- [x] **JIT Stage 5 — inline the hot fast paths.** Buffer-INDEX_SET
+      and GET_NAME/SET name EnvIC fast paths now emit as native
+      templates with helper fallback on guard failure, plus a
+      (env, binding_version, slot) write cache for the per-iteration
+      `__loop_iterations__` update. bench_dmg_shape 239→218 ms,
+      bench_idxset 29.7→24.6 ms; isolation probes 2.8–3.4×. Spec in
+      `docs/JIT_STAGE5_INLINE_IC.md` (status updated in place).
+- [ ] NaN-boxing for container storage — stack and env slots are
+      already EigsSlot/NaN-boxed; list items and dict values are still
+      `Value**`, so every list/dict number write round-trips through
+      make_num + refcounts (2.1M make_num calls in the DMG profile).
+      Encode immediates directly in list/dict storage. Big surface
+      (every `data.list.items` / `data.dict.vals` touch site).
 - [ ] Extend GET_LOCAL/SET_LOCAL to all local variables (closure-safe)
 - [ ] Reduce env_free churn from LOOP_ENV_FRESH
 
