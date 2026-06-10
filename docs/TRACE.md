@@ -73,7 +73,11 @@ contract:
   *sequence* of nondet calls is the contract.
 - **Lenient names.** If the builtin name doesn't match the record's
   name, a warning is logged to stderr but the recorded value is used
-  anyway — names are for human-readable debugging.
+  anyway — names are for human-readable debugging. Set
+  `EIGS_REPLAY_STRICT=1` to make a mismatch fatal instead: the
+  process reports the divergence and exits with status 3. Use it in
+  harnesses where tape/program drift should fail loudly rather than
+  produce a subtly wrong replay.
 - **Graceful exhaustion.** When the tape runs out, replay switches off
   and remaining calls hit the real source.
 - **Unparseable records** fall back to the builtin's live source.
@@ -96,6 +100,12 @@ in-run time travel.
 
 - History tracks top-level (global) bindings — the same assignments
   that produce `A` records when tracing is on.
+- When the compiled program contains a `where`/`why`/`how ... at`
+  query, each history entry also stamps an observer snapshot
+  (entropy, dH) at assign time, so the observer-derived
+  interrogatives answer historically with exactly what a live query
+  at that moment would have returned. The capture is compile-gated:
+  no such query in the program, no per-assign cost.
 - `state_at of line` walks every tracked name's history backward and
   returns a dict of each binding's value at or before `line`.
 - Backward queries (`at`, `state_at`) are pruned by a periodic

@@ -58,6 +58,19 @@ check of ["deep when", (when is x at 49) == 301]
 sd is state_at of 46
 check of ["deep state_at early", sd["x"] == 111]
 
+# ---- observer history: where/why/how at (ox assigned 62, 63, 66) ----
+ox is 100.0
+ox is 80.0
+w_live is (where is ox)
+y_live is (why is ox)
+ox is 55.0
+
+check of ["where at", (where is ox at 63) == w_live]
+check of ["why at", (why is ox at 63) == y_live]
+check of ["where at latest", (where is ox at 66) == (where is ox)]
+check of ["why at miss", (why is ox at 61) == null]
+check of ["how at", (how is ox at 63) == (how is ox)]
+
 if fail_count == 0:
     print of "All tests passed"
 else:

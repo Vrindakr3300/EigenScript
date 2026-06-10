@@ -4,6 +4,25 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Added — temporal interrogatives complete the matrix
+
+- **`where`/`why`/`how ... at <line>`** — the observer-derived
+  interrogatives now answer historically. Each assignment's history
+  entry stamps an observer snapshot (entropy, dH, last_entropy) taken
+  with the same ensure-fresh semantics a live query uses, so
+  `why is x at 42` returns exactly what `why is x` would have at that
+  moment. Capture is compile-gated (`g_trace_obs_hist`): the compiler
+  flips it when it sees such a query, so programs that never ask pay
+  nothing and the lazy-entropy optimization is undisturbed. Snapshots
+  live in a parallel array keyed off the history index (`obs_start`
+  handles capture enabling mid-run via eval/REPL). Regression:
+  test_temporal.eigs [70] grows to 23 checks, comparing historical
+  answers against live values captured at the time.
+- **`EIGS_REPLAY_STRICT=1`** — replay name mismatches become fatal
+  (diagnostic + exit 3) instead of warn-and-use-anyway, for harnesses
+  where tape/program drift should fail loudly. Default stays lenient.
+  Regression: test_replay.sh grows to 6 checks (lenient + strict).
+
 ## [0.11.8] — 2026-06-10
 
 A reversibility-hardening + memory-correctness release: `state_at`

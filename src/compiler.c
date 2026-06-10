@@ -4,6 +4,7 @@
 
 #include "eigenscript.h"
 #include "vm.h"
+#include "trace.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1640,6 +1641,8 @@ static void compile_node(Compiler *c, ASTNode *node) {
         if (at_expr && expr && expr->type == AST_IDENT) {
             /* `<kw> is x at <expr>` — operand value is not needed; only
              * the name (compile-time known). Push line, emit AT op. */
+            if (kind >= 3 && kind <= 5)
+                g_trace_obs_hist = 1;   /* enable observer-state capture */
             compile_node(c, at_expr);
             int name_idx = add_string_constant(c, expr->data.ident.name);
             emit_op_u16_u16(c, OP_INTERROGATE_NAMED_AT,

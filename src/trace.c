@@ -39,6 +39,7 @@
 
 int g_trace_enabled = 0;
 int g_replay_enabled = 0;
+int g_trace_obs_hist = 0;
 
 /* ----- Phase 3.0a: prev-value table.
  *
@@ -60,6 +61,20 @@ typedef struct {
     int      line;
     EigsSlot value;
 } HistoryEntry;
+
+/* Observer-state snapshot per assignment, captured only while
+ * g_trace_obs_hist is set. Parallel to the history array: history[i]
+ * pairs with obs[i - obs_start] when i >= obs_start (obs_start is the
+ * history index of the first captured assign — the flag can flip on
+ * mid-run when eval/REPL compiles a historical observer query).
+ * valid == 0 marks assigns whose slot had no observer state (untracked
+ * immediates, e.g. writes inside `unobserved` blocks). */
+typedef struct {
+    double  entropy;
+    double  dH;
+    double  last_entropy;
+    uint8_t valid;
+} ObsHistEntry;
 
 /* Phase 4 snapshot cache: a periodic line-floor index over the history.
  * Segment k summarizes history[k<<HIST_SEG_SHIFT .. (k+1)<<HIST_SEG_SHIFT)
@@ -83,6 +98,9 @@ typedef struct {
     int            hist_cap;
     int           *seg_min;     /* per-segment minimum line stamp */
     int            seg_cap;
+    ObsHistEntry  *obs;         /* observer snapshots; see ObsHistEntry */
+    int            obs_start;
+    int            obs_cap;
 } PrevEntry;
 
 static PrevEntry *g_prev_tab = NULL;
@@ -186,6 +204,38 @@ static void prev_record_assign(const char *name, EigsSlot value) {
                 e->seg_min[seg] = g_current_line;
         }
     }
+
+    /* Observer-state capture for `where/why/how ... at <line>`. The
+     * OBSERVE op ran before this hook and left a tracked Value with
+     * carried-over (dirty) observer state on the stack, so forcing
+     * freshness here computes exactly what a live interrogative at
+     * this point would see. */
+    if (__builtin_expect(g_trace_obs_hist, 0)) {
+        if (!e->obs) e->obs_start = idx;
+        int oi = idx - e->obs_start;
+        if (oi >= 0) {
+            if (oi >= e->obs_cap) {
+                int nc = e->obs_cap ? e->obs_cap * 2 : 8;
+                while (nc <= oi) nc *= 2;
+                ObsHistEntry *no = realloc(e->obs, (size_t)nc * sizeof(ObsHistEntry));
+                if (no) { e->obs = no; e->obs_cap = nc; }
+            }
+            if (oi < e->obs_cap) {
+                ObsHistEntry *o = &e->obs[oi];
+                Value *v = (slot_is_tracked(value) || slot_is_heap(value))
+                         ? slot_as_ptr(value) : NULL;
+                if (v) {
+                    observer_ensure_fresh(v);
+                    o->entropy      = v->entropy;
+                    o->dH           = v->dH;
+                    o->last_entropy = v->last_entropy;
+                    o->valid        = 1;
+                } else {
+                    o->valid = 0;
+                }
+            }
+        }
+    }
 }
 
 int trace_query_prev(const char *interned_name, EigsSlot *out) {
@@ -257,6 +307,21 @@ int trace_query_at(int kind, const char *interned_name, int line, EigsSlot *out)
     int idx = find_hist_idx_at_or_before(e, line);
     if (idx < 0) return 0;
 
+    if (kind >= 3 && kind <= 5) {
+        /* where/why/how — read the observer snapshot captured at that
+         * assign. Mirrors the live INTERROGATE formulas. */
+        if (!e->obs || idx < e->obs_start ||
+            idx - e->obs_start >= e->obs_cap) return 0;
+        ObsHistEntry *o = &e->obs[idx - e->obs_start];
+        if (!o->valid) return 0;
+        double r = (kind == 3) ? o->entropy
+                 : (kind == 4) ? o->dH
+                 : (o->last_entropy > 0 ? 1.0 - o->entropy / o->last_entropy
+                                        : 1.0);
+        *out = slot_from_num(r);
+        return 1;
+    }
+
     if (kind == 0) {
         /* `what is x at L` — value at most recent assign ≤ L. */
         *out = e->history[idx].value;
@@ -273,7 +338,6 @@ int trace_query_at(int kind, const char *interned_name, int line, EigsSlot *out)
         return 1;
     }
 
-    /* where/why/how require observer history we don't capture yet. */
     return 0;
 }
 
@@ -341,6 +405,7 @@ void trace_init(void) {
 static FILE *g_replay_fp = NULL;
 static char *g_replay_line = NULL;     /* growable read buffer */
 static size_t g_replay_cap = 0;
+static int   g_replay_strict = 0;      /* EIGS_REPLAY_STRICT=1: mismatch is fatal */
 
 static void trace_replay_init(void) {
     const char *path = getenv("EIGS_REPLAY");
@@ -351,6 +416,8 @@ static void trace_replay_init(void) {
                 path, strerror(errno));
         return;
     }
+    const char *strict = getenv("EIGS_REPLAY_STRICT");
+    g_replay_strict = (strict && strict[0] && strcmp(strict, "0") != 0);
     g_replay_enabled = 1;
 }
 
@@ -607,6 +674,16 @@ int trace_replay_take(const char *fn, Value **out) {
         const char *rec_val  = eq + 1;
 
         if (fn && strcmp(rec_name, fn) != 0) {
+            if (g_replay_strict) {
+                fprintf(stderr, "trace: replay name mismatch — tape has '%s', "
+                        "program called '%s' (EIGS_REPLAY_STRICT — aborting)\n",
+                        rec_name, fn);
+                /* _exit, not exit: an abort must not run atexit teardown
+                 * (half-executed program state) and keeps the status
+                 * deterministic under sanitizers, whose leak checker
+                 * would otherwise override the code at forced exits. */
+                _exit(3);
+            }
             fprintf(stderr, "trace: replay name mismatch — expected '%s', got '%s' (using anyway)\n",
                     fn, rec_name);
         }
@@ -635,6 +712,7 @@ void trace_shutdown(void) {
                 slot_decref(e->history[j].value);
             free(e->history);
             free(e->seg_min);
+            free(e->obs);
         }
         free(g_prev_tab);
         g_prev_tab = NULL;

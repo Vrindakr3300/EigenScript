@@ -1003,7 +1003,7 @@ fi
 echo ""
 
 # [42a] Replay tape (record/replay determinism for list/dict/buffer)
-echo "[42a/47] Replay Tape (4 checks)"
+echo "[42a/47] Replay Tape (6 checks)"
 RP_OUTPUT=$(bash "$TESTS_DIR/test_replay.sh" 2>&1)
 RP_PASS=$(echo "$RP_OUTPUT" | grep -c "PASS:" || true)
 RP_FAIL=$(echo "$RP_OUTPUT" | grep -c "FAIL:" || true)
@@ -1624,15 +1624,15 @@ echo ""
 
 # [70] Temporal interrogatives (prev of, at, state_at) + the line-floor
 # index in trace.c (deep loop histories must skip segments correctly).
-echo "[70] Temporal Interrogatives (18 checks)"
+echo "[70] Temporal Interrogatives (23 checks)"
 TT_OUTPUT=$(./eigenscript ../tests/test_temporal.eigs 2>&1)
 if echo "$TT_OUTPUT" | grep -q "All tests passed"; then
-    TOTAL=$((TOTAL + 18))
-    PASS=$((PASS + 18))
-    echo "  PASS: all 18 temporal checks"
+    TOTAL=$((TOTAL + 23))
+    PASS=$((PASS + 23))
+    echo "  PASS: all 23 temporal checks"
 else
-    TOTAL=$((TOTAL + 18))
-    FAIL=$((FAIL + 18))
+    TOTAL=$((TOTAL + 23))
+    FAIL=$((FAIL + 23))
     echo "  FAIL: temporal interrogative tests"
     echo "$TT_OUTPUT" | grep -iE "FAIL|error" | head -5
 fi

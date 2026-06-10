@@ -166,7 +166,7 @@ Query a binding's assignment history. Always on for top-level bindings;
 | Name | Syntax | Returns |
 |------|--------|---------|
 | `prev` | `prev of x` | Value of `x` just before its most recent assignment |
-| `at` | `what is x at L` | Last value bound at or before line `L` (also `who`/`when`/`prev`) |
+| `at` | `what is x at L` | State at or before line `L` — works with all six interrogatives and `prev` |
 | `state_at` | `state_at of line` | Dict of every tracked binding's value at or before `line` |
 
 ## Observer
