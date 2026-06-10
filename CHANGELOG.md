@@ -4,6 +4,46 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Performance — JIT Stage 5: inline fast paths (5a/5b/5c)
+
+The Stage 4 coverage chain left hot loops compiling to single thunks
+whose every GET_NAME / SET_NAME / INDEX_SET was an out-of-line helper
+call costing roughly what computed-goto dispatch did. Stage 5 emits
+the few-instruction fast paths inline and calls the helper only on
+guard failure:
+
+- **5a — buffer INDEX_SET**: inline guards (immediate-num index/value,
+  heap target, `VAL_BUFFER` type, integral index, bounds) + the
+  bounds-checked store, stack commit, and target decref. Any guard
+  failure jumps to the existing helper call, which owns all other
+  target types and the error paths.
+- **5b — GET_NAME / SET name family EnvIC**: the IC entry address is
+  baked per call site (the constant pool is final by JIT time); the
+  inline path does the starting-env identity + binding-version guards,
+  walk-depth 0/1 target resolution, and the slot load+incref (GET) or
+  `env_store_slot`-equivalent swap with assign-counts bump (SET).
+  Traced assigns (`g_trace_hist`), arena-pointer stores, and IC misses
+  route to the helper, which also repopulates the IC. A new `%r15`
+  frame-pointer cache (scanner flag `needs_frame_cache`) feeds the
+  inline paths; it is pushed twice to preserve the body's
+  %rsp ≡ 8 (mod 16) call-alignment invariant.
+- **5c — `__loop_iterations__` write cache**: the per-iteration
+  `env_set_local` in LOOP_STALL_CHECK (name hash + table walk +
+  make_num/decref round-trip, every iteration of every `loop while`)
+  now goes through a per-thread (env, binding_version, slot) cache and
+  overwrites the immediate-num slot in place, with the same
+  assign-counts bump. Semantics unchanged — mid-loop reads see the
+  same values — so this also speeds the interpreter.
+
+Numbers (5-run medians): bench_dmg_shape 239→218 ms (−9%),
+bench_idxset 29.7→24.6 ms (−17%). Targeted probes isolate the inline
+wins: a 2M-iteration module-scope `acc is acc + g` loop runs
+191→56 ms (3.4×), a 2M-write unobserved buffer loop 215→77 ms (2.8×).
+EIGS_JIT_STOPS stays at zero bailouts on both benchmarks.
+
+Also fixes tests/test_leak_guard.sh, whose standalone ASan build was
+missing trace.c and silently skipping since the trace tape landed.
+
 ### Performance — JIT coverage: SET name family (Stage 4x)
 
 `SET_NAME`, `SET_NAME_LOCAL`, and `SET_FN_NAME_LOCAL` now compile into
