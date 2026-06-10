@@ -86,14 +86,19 @@ void jit_helper_local_dot_set(struct EigsChunk *chunk, int slot, int name_idx) {
 void jit_helper_dot_get(struct EigsChunk *chunk, int name_idx) {
     (void)chunk; (void)name_idx;
 }
+void jit_helper_dot_set(struct EigsChunk *chunk, int name_idx) {
+    (void)chunk; (void)name_idx;
+}
 void jit_helper_local_idx_dot_get(struct EigsChunk *chunk, int slot,
                                   int list_idx, int name_idx) {
     (void)chunk; (void)slot; (void)list_idx; (void)name_idx;
 }
 
-/* Stages 4r / 4s / 4t: OP_CALL / OP_RETURN / OP_RETURN_NULL helpers,
- * same unreachable-stub story. */
-int jit_helper_call(int argc) { (void)argc; return 1; }
+/* Stages 4r / 4s / 4t / 5f: OP_CALL / OP_RETURN / OP_RETURN_NULL
+ * helpers, same unreachable-stub story. */
+int jit_helper_call(struct EigsChunk *chunk, int argc, int resume_off) {
+    (void)chunk; (void)argc; (void)resume_off; return 1;
+}
 void jit_helper_return(void) { }
 void jit_helper_return_null(void) { }
 

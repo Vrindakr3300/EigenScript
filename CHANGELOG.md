@@ -4,6 +4,38 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Performance — JIT Stage 5f/5g: native calls + per-loop OSR slots
+
+bench_dmg_shape 212 → ~156 ms (−27%); the JIT now beats the
+interpreter by ~33% on this workload where they were previously near
+parity. Two structural fixes and one coverage op:
+
+- **5g — per-loop OSR slots.** Diagnosis: a chunk had ONE OSR slot,
+  owned forever by whichever loop crossed the back-edge threshold
+  first. bench_dmg_shape's 65k-iteration setup loop pinned it, so the
+  500k-iteration main loop ran fully interpreted through every prior
+  stage. Chunks now carry `jit_osr[4]` — one slot per hot loop header,
+  scanned by the JUMP_BACK handler; failed offsets keep their slot so
+  they can't retry-storm.
+- **5f — native VAL_FN calls inside thunks.** `jit_helper_call` now
+  pushes the callee frame and invokes the callee's own thunk directly
+  when one exists, so a fully-native callee (RETURN sentinel) returns
+  straight into the caller's thunk — the DMG shape `cyc is handler of
+  ctx` no longer forces an interpreted tail every iteration.
+  Return-code triage: 0 = completed; 1 = not eligible (uncompiled
+  callee / non-callable / frame or native-depth cap — interpreter
+  re-executes the CALL untouched); 2 = deep bail — the callee's thunk
+  exited mid-prefix (guard bail, nested deep bail, or pending error),
+  every frame ip is left consistent, and a new `-2` advance sentinel
+  tells vm_run's three thunk sites to resync to the current frame and
+  interpret on. Native call depth is capped (64) because each nested
+  native call recurses the C stack, unlike the interpreter's flat
+  frame array; errors inside a native callee force a prompt deep bail
+  so CHECK_ERROR unwinds without running arbitrary native caller code.
+- **OP_DOT_SET compiles into thunks** (helper running CASE(DOT_SET)
+  verbatim) — it was the last unsupported op in the DMG main loop
+  (`ctx.cycles is …` on a GET_NAME'd dict).
+
 ### Performance — JIT Stage 5e: tracked-num operands in arith/compare
 
 Fixes the "observed counter permanently bails native code" class found

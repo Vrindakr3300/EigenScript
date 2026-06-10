@@ -217,11 +217,23 @@ typedef struct EigsChunk {
      * jit_osr_code: callable JitChunkFn when jit_osr_state == 2.
      * jit_osr_advance: bytes to add to frame->ip (which is at
      *   entry_offset at handoff time) after the thunk returns. */
-    uint8_t  jit_osr_state;
-    int      jit_osr_entry_offset;
-    void    *jit_osr_code;
-    int      jit_osr_advance;
-    uint8_t  jit_osr_stop_op;
+    /* Stage 5g: one OSR slot per hot loop header, JIT_OSR_SLOTS max.
+     * A single slot per chunk let whichever loop crossed the back-edge
+     * threshold FIRST own native execution forever — bench_dmg_shape's
+     * 65k-iteration setup loop pinned the slot and the 500k-iteration
+     * main loop ran interpreted for good. The JUMP_BACK handler scans
+     * for a slot matching the current loop header and allocates a free
+     * one (compiling lazily) when the back-edge gate trips. Failed
+     * offsets stay recorded (state 1) so they don't retry-storm.
+     * state: 0 = free, 1 = failed/unsupported, 2 = compiled. */
+    struct {
+        uint8_t  state;
+        uint8_t  stop_op;
+        int      entry_offset;
+        int      advance;
+        void    *code;
+    } jit_osr[4];
+#define JIT_OSR_SLOTS 4
 
     /* Diagnostic: incremented on every frame entry (vm_run + both CALL
      * paths). Dumped at shutdown when EIGS_JIT_HOT=1 so we can correlate
