@@ -1002,6 +1002,22 @@ else
 fi
 echo ""
 
+# [42a] Replay tape (record/replay determinism for list/dict/buffer)
+echo "[42a/47] Replay Tape (4 checks)"
+RP_OUTPUT=$(bash "$TESTS_DIR/test_replay.sh" 2>&1)
+RP_PASS=$(echo "$RP_OUTPUT" | grep -c "PASS:" || true)
+RP_FAIL=$(echo "$RP_OUTPUT" | grep -c "FAIL:" || true)
+TOTAL=$((TOTAL + RP_PASS + RP_FAIL))
+PASS=$((PASS + RP_PASS))
+FAIL=$((FAIL + RP_FAIL))
+if [ "$RP_FAIL" -gt 0 ]; then
+    echo "  FAIL: $RP_FAIL replay check(s) failed"
+    echo "$RP_OUTPUT" | grep "FAIL:" | head -5
+else
+    echo "  PASS: all $RP_PASS replay checks"
+fi
+echo ""
+
 # [42b] Softmax numerical guard (always runs — uses core tensor builtins)
 echo "[42b/47] Softmax Guard (7 checks)"
 SG_OUTPUT=$(./eigenscript ../tests/test_softmax_guard.eigs 2>&1)

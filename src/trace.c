@@ -374,36 +374,160 @@ static int unescape_string(const char **p, char *out, int out_cap) {
     return n;
 }
 
-/* Parse one value from the tape encoding. Supports the primitive shapes
- * (num, null, true/false, "string"). Lists/dicts/buffers/heap markers are
- * not yet replayable — return NULL so the caller falls back to the real
- * source. */
-static Value *parse_value(const char *s) {
-    while (*s == ' ') s++;
-    if (!*s) return NULL;
-    if (strcmp(s, "null") == 0) return make_null();
-    if (strcmp(s, "true") == 0) return make_num(1.0);
-    if (strcmp(s, "false") == 0) return make_num(0.0);
-    if (*s == '"') {
-        const char *p = s + 1;
-        /* Worst case the decoded string is the same length as the
-         * encoded body (escapes only shrink). */
-        size_t cap = strlen(p) + 1;
+/* Parse one value from the tape encoding. Cursor-style: advances `*p`
+ * past the parsed value. Returns a Value with +1 refcount on success.
+ *
+ * Recognized shapes:
+ *   null | true | false              immediates
+ *   <num>                            strtod-parseable
+ *   "<str>"                          escapes per unescape_string
+ *   [v, v, …]                        list
+ *   b[num, num, …]                   buffer (the leading 'b' disambiguates
+ *                                    from a list of bare numbers)
+ *   {"k": v, …}                      dict
+ *
+ * Markers like <fn>, <heap>, <list:N>, …<truncated…> are NOT replayable;
+ * the caller falls back to live source in that case. */
+static void skip_ws(const char **p) { while (**p == ' ') (*p)++; }
+
+static int at_token_boundary(char c) {
+    return c == '\0' || c == ' ' || c == ',' || c == ']' || c == '}' || c == ':';
+}
+
+static Value *parse_value_p(const char **p) {
+    skip_ws(p);
+    char c = **p;
+    if (c == '\0') return NULL;
+
+    if (strncmp(*p, "null", 4) == 0 && at_token_boundary((*p)[4])) {
+        *p += 4; return make_null();
+    }
+    if (strncmp(*p, "true", 4) == 0 && at_token_boundary((*p)[4])) {
+        *p += 4; return make_num(1.0);
+    }
+    if (strncmp(*p, "false", 5) == 0 && at_token_boundary((*p)[5])) {
+        *p += 5; return make_num(0.0);
+    }
+
+    if (c == '"') {
+        const char *q = *p + 1;
+        size_t cap = strlen(q) + 1;
         char *buf = malloc(cap);
         if (!buf) return NULL;
-        int n = unescape_string(&p, buf, (int)cap);
+        int n = unescape_string(&q, buf, (int)cap);
         if (n < 0) { free(buf); return NULL; }
         Value *v = make_str(buf);
         free(buf);
+        *p = q;
         return v;
     }
-    /* Numeric: strtod must consume the whole token. */
+
+    if (c == 'b' && (*p)[1] == '[') {
+        *p += 2;
+        skip_ws(p);
+        double *data = NULL;
+        int count = 0, cap = 0;
+        if (**p != ']') {
+            for (;;) {
+                skip_ws(p);
+                char *end = NULL;
+                double d = strtod(*p, &end);
+                if (end == *p) { free(data); return NULL; }
+                if (count >= cap) {
+                    int nc = cap ? cap * 2 : 8;
+                    double *nd = realloc(data, (size_t)nc * sizeof(double));
+                    if (!nd) { free(data); return NULL; }
+                    data = nd; cap = nc;
+                }
+                data[count++] = d;
+                *p = end;
+                skip_ws(p);
+                if (**p == ',') { (*p)++; continue; }
+                if (**p == ']') break;
+                free(data); return NULL;
+            }
+        }
+        (*p)++;
+        Value *v = xcalloc(1, sizeof(Value));
+        v->type = VAL_BUFFER;
+        v->refcount = 1;
+        v->data.buffer.count = count;
+        v->data.buffer.data = xcalloc(count > 0 ? (size_t)count : 1, sizeof(double));
+        if (count > 0) memcpy(v->data.buffer.data, data, (size_t)count * sizeof(double));
+        free(data);
+        return v;
+    }
+
+    if (c == '[') {
+        (*p)++;
+        skip_ws(p);
+        Value *list = make_list(8);
+        if (**p == ']') { (*p)++; return list; }
+        for (;;) {
+            Value *elem = parse_value_p(p);
+            if (!elem) { val_decref(list); return NULL; }
+            list_append(list, elem);
+            val_decref(elem);
+            skip_ws(p);
+            if (**p == ',') { (*p)++; continue; }
+            if (**p == ']') break;
+            val_decref(list); return NULL;
+        }
+        (*p)++;
+        return list;
+    }
+
+    if (c == '{') {
+        (*p)++;
+        skip_ws(p);
+        Value *dict = make_dict(8);
+        if (**p == '}') { (*p)++; return dict; }
+        for (;;) {
+            skip_ws(p);
+            if (**p != '"') { val_decref(dict); return NULL; }
+            const char *q = *p + 1;
+            size_t kcap = strlen(q) + 1;
+            char *kbuf = malloc(kcap);
+            if (!kbuf) { val_decref(dict); return NULL; }
+            int n = unescape_string(&q, kbuf, (int)kcap);
+            if (n < 0) { free(kbuf); val_decref(dict); return NULL; }
+            *p = q;
+            skip_ws(p);
+            if (**p != ':') { free(kbuf); val_decref(dict); return NULL; }
+            (*p)++;
+            Value *val = parse_value_p(p);
+            if (!val) { free(kbuf); val_decref(dict); return NULL; }
+            dict_set(dict, kbuf, val);
+            val_decref(val);
+            free(kbuf);
+            skip_ws(p);
+            if (**p == ',') { (*p)++; continue; }
+            if (**p == '}') break;
+            val_decref(dict); return NULL;
+        }
+        (*p)++;
+        return dict;
+    }
+
+    /* <fn>, <heap>, <list:N>, <dict:N>, <buffer:N>, …<truncated…> —
+     * not replayable. Caller falls back to live source. */
+    if (c == '<' || (unsigned char)c == 0xE2) return NULL;
+
     char *end = NULL;
-    double d = strtod(s, &end);
-    if (end == s) return NULL;
-    while (*end == ' ') end++;
-    if (*end != '\0') return NULL;
+    double d = strtod(*p, &end);
+    if (end == *p) return NULL;
+    *p = end;
     return make_num(d);
+}
+
+static Value *parse_value(const char *s) {
+    const char *p = s;
+    skip_ws(&p);
+    Value *v = parse_value_p(&p);
+    if (!v) return NULL;
+    skip_ws(&p);
+    if (*p != '\0') { val_decref(v); return NULL; }
+    return v;
 }
 
 int trace_replay_take(const char *fn, Value **out) {
@@ -609,6 +733,10 @@ static void write_value_ptr_full(Value *v, int *budget) {
             break;
         }
         case VAL_BUFFER: {
+            /* Leading 'b' disambiguates from VAL_LIST: both serialize the
+             * bracketed numeric body, but only buffers are restored as
+             * VAL_BUFFER on replay. */
+            wf_putc('b', budget);
             wf_putc('[', budget);
             int n = v->data.buffer.count;
             for (int i = 0; i < n && *budget > 0; i++) {
