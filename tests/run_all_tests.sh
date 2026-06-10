@@ -1003,7 +1003,7 @@ fi
 echo ""
 
 # [42a] Replay tape (record/replay determinism for list/dict/buffer)
-echo "[42a/47] Replay Tape (4 checks)"
+echo "[42a/47] Replay Tape (6 checks)"
 RP_OUTPUT=$(bash "$TESTS_DIR/test_replay.sh" 2>&1)
 RP_PASS=$(echo "$RP_OUTPUT" | grep -c "PASS:" || true)
 RP_FAIL=$(echo "$RP_OUTPUT" | grep -c "FAIL:" || true)
@@ -1624,17 +1624,35 @@ echo ""
 
 # [70] Temporal interrogatives (prev of, at, state_at) + the line-floor
 # index in trace.c (deep loop histories must skip segments correctly).
-echo "[70] Temporal Interrogatives (18 checks)"
+echo "[70] Temporal Interrogatives (23 checks)"
 TT_OUTPUT=$(./eigenscript ../tests/test_temporal.eigs 2>&1)
 if echo "$TT_OUTPUT" | grep -q "All tests passed"; then
-    TOTAL=$((TOTAL + 18))
-    PASS=$((PASS + 18))
-    echo "  PASS: all 18 temporal checks"
+    TOTAL=$((TOTAL + 23))
+    PASS=$((PASS + 23))
+    echo "  PASS: all 23 temporal checks"
 else
-    TOTAL=$((TOTAL + 18))
-    FAIL=$((FAIL + 18))
+    TOTAL=$((TOTAL + 23))
+    FAIL=$((FAIL + 23))
     echo "  FAIL: temporal interrogative tests"
     echo "$TT_OUTPUT" | grep -iE "FAIL|error" | head -5
+fi
+echo ""
+
+# [71] Module-chunk teardown with promoted slots. Top-level `unobserved`
+# blocks promote non-escaping names to module-chunk local slots without a
+# local_names array; freeing the script chunk used to segfault at exit
+# (after correct output — so this check must verify the exit code, which
+# most suite checks don't).
+echo "[71] Module Promotion Teardown (1 check)"
+MP_OUTPUT=$(./eigenscript ../tests/test_module_promotion_exit.eigs 2>&1)
+MP_RC=$?
+TOTAL=$((TOTAL + 1))
+if [ "$MP_RC" = "0" ] && [ "$MP_OUTPUT" = "ok" ]; then
+    PASS=$((PASS + 1))
+    echo "  PASS: promoted-slot module chunk frees cleanly (rc=0)"
+else
+    FAIL=$((FAIL + 1))
+    echo "  FAIL: module promotion teardown (rc=$MP_RC out='$MP_OUTPUT')"
 fi
 echo ""
 

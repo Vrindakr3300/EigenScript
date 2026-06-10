@@ -416,11 +416,15 @@ print of (what is x at 2)    # 2
 print of (prev of x at 3)    # value before the assign at/before line 3
 print of (when is x at 2)    # assignment count up to line 2
 print of (who is x at 2)     # "x"
+print of (where is x at 2)   # entropy as of the line-2 assign
+print of (why is x at 2)     # dH as of the line-2 assign
 ```
 
-`what`, `who`, `when`, and `prev` support `at`; `where`/`why`/`how`
-(entropy-derived) do not. Queries before the first assignment to the
-name return `null`.
+All seven temporal forms support `at`. The observer-derived three
+(`where`/`why`/`how`) answer from per-assign observer snapshots that
+are captured only when the compiled program actually contains such a
+query — programs that never ask pay nothing. Queries before the first
+assignment to the name return `null`.
 
 **`state_at of line`** — the whole-program version: returns a dict
 mapping every tracked binding to the value it held at or before `line`

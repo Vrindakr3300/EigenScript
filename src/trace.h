@@ -27,6 +27,30 @@ typedef union { double d; uint64_t u; } EigsSlot;
  * costs one load + one branch. */
 extern int g_trace_enabled;
 
+/* 1 when assignment history must be recorded: set by the compiler when
+ * it sees `prev of`, any `at <expr>` qualifier, or a reference to the
+ * `state_at` builtin — and by trace_init when EIGS_TRACE opens a tape.
+ * The per-assign history append (prev-table, line stamps, the tape's A
+ * records) gates on this, so programs that never ask temporal questions
+ * pay nothing per assign. Profiling the DMG-shaped dispatch workload
+ * showed the always-on variant cost ~17.8M trace_line + 2.5M
+ * trace_assign calls per 500k interpreted steps (~1/3 of runtime). */
+extern int g_trace_hist;
+
+/* Source line currently being executed. Written directly by OP_LINE
+ * (an unconditional global store — cheaper than a call), read by
+ * trace_assign to stamp history entries and by the tape writer. */
+extern int g_trace_current_line;
+
+/* 1 when the compiler has seen a `where`/`why`/`how ... at <line>`
+ * interrogative anywhere in the program. Gates observer-state capture
+ * in the assignment history: stamping entropy/dH per assign forces
+ * observer_ensure_fresh (defeating the lazy-entropy optimization), so
+ * programs that never ask historical observer questions pay nothing.
+ * Set during compile, before execution; code compiled later (eval,
+ * load_file, REPL lines) enables capture from that point on. */
+extern int g_trace_obs_hist;
+
 /* Called once from main() during startup. Reads EIGS_TRACE; if set,
  * opens the path for writing and flips g_trace_enabled. Safe to call
  * multiple times — second and later calls no-op. */
@@ -72,10 +96,11 @@ int trace_query_prev(const char *interned_name, EigsSlot *out);
  * *out on hit, 0 on miss.
  *
  * `kind` mirrors the interrogative encoding:
- *   0 (what), 6 (prev) → return historical slot
- *   2 (when)            → return assignment count up to that line (as immediate num)
- *   1 (who)             → return binding name (string)
- *   others              → unsupported, returns 0
+ *   0 (what), 6 (prev)  → return historical slot
+ *   2 (when)             → return assignment count up to that line (as immediate num)
+ *   1 (who)              → return binding name (string)
+ *   3/4/5 (where/why/how)→ observer snapshot captured at that assign
+ *                          (requires g_trace_obs_hist; miss returns 0)
  */
 int trace_query_at(int kind, const char *interned_name, int line, EigsSlot *out);
 
@@ -106,8 +131,11 @@ struct Value *trace_state_at(int line);
  *
  * Name mismatches are logged to stderr but the recorded value is used
  * anyway (Phase 3.0 lenient policy — strict ordering is the contract,
- * names are for human-readable debug). EOF or unparseable records return
- * 0 and the builtin falls back to its normal source. */
+ * names are for human-readable debug). Set EIGS_REPLAY_STRICT=1 to make
+ * a mismatch fatal instead: the process reports the divergence and exits
+ * with status 3, for harnesses that want tape/program drift loud. EOF or
+ * unparseable records return 0 and the builtin falls back to its normal
+ * source. */
 extern int g_replay_enabled;
 int trace_replay_take(const char *fn, struct Value **out);
 

@@ -113,6 +113,33 @@ else
     fail "nested replay" "out='$REP_N' expected='$EXPECTED_N'"
 fi
 
+# ---- Strict mode: name mismatch is fatal (exit 3) ----
+cat > "$TMPDIR/p_strict.eigs" <<'EOF'
+r is random of null
+print of r
+EOF
+
+cat > "$TMPDIR/strict.tape" <<'EOF'
+N monotonic_ns=12345
+EOF
+
+# Lenient (default): warns on stderr, uses the recorded value anyway.
+LEN_OUT=$(EIGS_REPLAY="$TMPDIR/strict.tape" "$EIGS" "$TMPDIR/p_strict.eigs" 2>/dev/null)
+if [ "$LEN_OUT" = "12345" ]; then
+    ok "lenient replay: mismatched name still serves recorded value"
+else
+    fail "lenient replay" "out='$LEN_OUT' expected='12345'"
+fi
+
+# Strict: same tape aborts with exit 3 and a diagnostic.
+STRICT_ERR=$(EIGS_REPLAY="$TMPDIR/strict.tape" EIGS_REPLAY_STRICT=1 "$EIGS" "$TMPDIR/p_strict.eigs" 2>&1 >/dev/null)
+STRICT_RC=$?
+if [ "$STRICT_RC" = "3" ] && echo "$STRICT_ERR" | grep -q "replay name mismatch"; then
+    ok "strict replay: name mismatch aborts with exit 3"
+else
+    fail "strict replay" "rc=$STRICT_RC err='$STRICT_ERR'"
+fi
+
 echo
 echo "REPLAY: $PASS passed, $FAIL failed"
 [ "$FAIL" = "0" ] && exit 0 || exit 1
