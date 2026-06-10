@@ -429,6 +429,25 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             *has_bail_op = 1;
             /* Result could be any slot type (whatever the binding holds).
              * Subsequent OP_POP cannot use the immediate peephole. */
+        } else if (op == OP_SET_NAME || op == OP_SET_NAME_LOCAL ||
+                   op == OP_SET_FN_NAME_LOCAL) {
+            /* Stage 4x: 3-byte ops [op][name_idx:16]. Helpers run the
+             * interpreter case verbatim (trace hook, EnvIC, resolve/
+             * create). Stack untouched — the value stays on TOS — and
+             * no error paths. Same chunk-pointer guards as GET_NAME;
+             * has_bail_op so %r14=chunk is loaded in the prologue.
+             * last_imm defaults to 0 after these, which is correct:
+             * a preceding OBSERVE_ASSIGN may have promoted the TOS to
+             * a tracked pointer. */
+            if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
+            uint16_t sidx = (uint16_t)(chunk->code[i + 1] |
+                                       ((uint16_t)chunk->code[i + 2] << 8));
+            if (!chunk->env_ic || !chunk->const_interns ||
+                sidx >= chunk->const_count) {
+                *stop_op = op; *stop_offset = i; break;
+            }
+            i += 3; ops++; non_line_ops++;
+            *has_bail_op = 1;
         } else if (op == OP_LOCAL_IDX_GET) {
             /* 5-byte op: [op][slot:16][idx:16]. Helper handles VAL_BUFFER/
              * VAL_LIST/VAL_STR dispatch; on error it pushes null and
@@ -1659,6 +1678,25 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             w = emit_mov_imm32_esi(w, (uint32_t)idx);
             w = emit_push_rcx(w);
             w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_get_name);
+            w = emit_call_rax(w);
+            w = emit_pop_rcx(w);
+            w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
+            i += 3;
+        } else if (op == OP_SET_NAME || op == OP_SET_NAME_LOCAL ||
+                   op == OP_SET_FN_NAME_LOCAL) {
+            /* Stage 4x: SET name family via helper — GET_NAME call
+             * shape (chunk in %rdi via %r14, name_idx in %esi, sp
+             * synced/reloaded around the aligned call). */
+            uint16_t sidx = (uint16_t)(chunk->code[i + 1] |
+                                       ((uint16_t)chunk->code[i + 2] << 8));
+            void *helper = (op == OP_SET_NAME)       ? (void *)&jit_helper_set_name
+                         : (op == OP_SET_NAME_LOCAL) ? (void *)&jit_helper_set_name_local
+                                                     : (void *)&jit_helper_set_fn_name_local;
+            w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+            w = emit_mov_r14_rdi(w);
+            w = emit_mov_imm32_esi(w, (uint32_t)sidx);
+            w = emit_push_rcx(w);
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)helper);
             w = emit_call_rax(w);
             w = emit_pop_rcx(w);
             w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
