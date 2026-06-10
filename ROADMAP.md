@@ -72,6 +72,7 @@ DMG benchmark: **target met** — ~5 MHz on cpu_instrs at 0.11.8
       set-associative (the DMG "pc"/"cycles" pair collided in the
       direct map and evicted each other every step). dmg 156→118 ms;
       interpreter (EIGS_JIT_OFF) 230→213 ms.
+
 Post-Stage-5h profile (gprof call counts, bench_dmg_shape, per 500k
 steps): make_num collapsed 2.1M → 16k and free_value 765k → 16k (the
 DOT_SET/dict fixes); what remains is per-call env churn — env_new,
