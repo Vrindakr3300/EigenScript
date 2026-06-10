@@ -887,6 +887,48 @@ static inline int vm_index_is_int(double d, int *out) {
  * The JIT-emitted call site syncs %ecx → g_vm.sp before the call
  * (helper reads sp), then reloads %ecx ← g_vm.sp after (helper
  * mutates sp net -1). */
+/* Stage 5c: cached writer for the per-iteration __loop_iterations__
+ * update. env_set_local resolves the 19-char name (hash + table walk)
+ * and round-trips through make_num/val_decref on EVERY iteration of
+ * EVERY `loop while` — measured as the dominant cost of observed loops
+ * once the loop body itself compiles to native code. Cache the resolved
+ * slot per (env, binding_version); on a hit with an immediate-num slot
+ * (always, after the first write) the store is a bare double overwrite
+ * plus the same assign_counts bump env_set_local_hashed performs.
+ * binding_version moves on new-binding adds (which can realloc values[])
+ * and env recycles — exactly the events that could invalidate the index.
+ * Semantics are unchanged: mid-loop reads of __loop_iterations__ see the
+ * same value as before. */
+typedef struct {
+    Env     *env;
+    uint32_t version;
+    int      slot;
+} LoopIterCache;
+static __thread LoopIterCache g_loop_iter_cache;
+
+static void loop_iter_store(Env *env, double n) {
+    LoopIterCache *c = &g_loop_iter_cache;
+    if (c->env == env && c->version == env->binding_version &&
+        slot_is_num(env->values[c->slot])) {
+        env->values[c->slot].d = n;
+        if (env->assign_counts && g_unobserved_depth == 0)
+            env->assign_counts[c->slot]++;
+        return;
+    }
+    Value *iter_val = make_num(n);
+    env_set_local(env, "__loop_iterations__", iter_val);
+    val_decref(iter_val);
+    int slot_idx, depth;
+    Env *target = env_resolve_chain(env, "__loop_iterations__",
+                                    env_hash_name("__loop_iterations__"),
+                                    &slot_idx, &depth);
+    if (target == env && depth == 0) {
+        c->env = env;
+        c->version = env->binding_version;
+        c->slot = slot_idx;
+    }
+}
+
 /* Stage 4w: out-of-line helper for OP_LOOP_STALL_CHECK. Mirrors the
  * interpreter case minus the jump: returns 1 when the loop should exit
  * (observer stalled 100 iterations, or the absolute iteration cap) so
@@ -914,11 +956,7 @@ int jit_helper_loop_stall_check(void) {
         should_exit = 1;
     }
     CallFrame *frame = &g_vm.frames[g_vm.frame_count - 1];
-    {
-        Value *iter_val = make_num(g_loop_iterations);
-        env_set_local(frame->env, "__loop_iterations__", iter_val);
-        val_decref(iter_val);
-    }
+    loop_iter_store(frame->env, (double)g_loop_iterations);
     if (should_exit) {
         Value *exit_val = make_str(g_loop_exit_reason);
         env_set_local(frame->env, "__loop_exit__", exit_val);
@@ -3158,11 +3196,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             should_exit = 1;
         }
         /* Always expose iteration count */
-        {
-            Value *iter_val = make_num(g_loop_iterations);
-            env_set_local(frame->env, "__loop_iterations__", iter_val);
-            val_decref(iter_val);
-        }
+        loop_iter_store(frame->env, (double)g_loop_iterations);
         if (should_exit) {
             Value *exit_val = make_str(g_loop_exit_reason);
             env_set_local(frame->env, "__loop_exit__", exit_val);

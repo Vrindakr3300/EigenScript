@@ -1,6 +1,11 @@
 # JIT Stage 5 — inline the hot fast paths (implementation spec)
 
-Status: planned. Prerequisite (done): Stages 4v/4w/4x give whole-loop
+Status: **implemented** (5a, 5b, and the 5c env-write fix — see
+CHANGELOG "JIT Stage 5: inline fast paths"). 5c was implemented as a
+semantics-preserving (env, binding_version, slot) write cache rather
+than the set-on-exit-only variant: tests read `__loop_iterations__`
+and the cache captures the same win without changing mid-loop
+visibility. Prerequisite (done): Stages 4v/4w/4x give whole-loop
 thunk coverage with zero bailouts on the benchmark workloads.
 
 ## Why

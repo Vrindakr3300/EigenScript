@@ -10,6 +10,13 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+/* Stage 5b: the inline SET-name fast path guards on the trace flag so
+ * traced assignments always route to the helper (which runs the trace
+ * hook). Plain global in trace.c — its address is baked as a movabs
+ * immediate at compile time. Declared here instead of pulling in
+ * trace.h (which drags Value/Env decls the smoke build stubs out). */
+extern int g_trace_hist;
+
 struct EigsJitCache {
     uint8_t *base;
     size_t   capacity;
@@ -391,11 +398,15 @@ static void ensure_layout(void) {
 static int jit_supported_prefix(const struct EigsChunk *chunk,
                                 int entry_offset,
                                 int *needs_env_cache, int *has_bail_op,
+                                int *needs_frame_cache, int *extra_size,
                                 uint8_t *stop_op, int *stop_offset) {
     int i = entry_offset, ops = 0, non_line_ops = 0;
     int last_good = entry_offset;
     *needs_env_cache = 0;
     *has_bail_op = 0;
+    *needs_frame_cache = 0;  /* Stage 5b: %r15 = &frames[fc-1] in prologue */
+    *extra_size = 0;         /* Stage 5: native bytes beyond the per-byte
+                              * budget (only 1-byte INDEX_SET needs this) */
     *stop_op = OP_COUNT;   /* sentinel: ran off the end with no break */
     *stop_offset = 0;
     while (i < chunk->code_len) {
@@ -427,6 +438,9 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             }
             i += 3; ops++; non_line_ops++;
             *has_bail_op = 1;
+            /* Stage 5b: inline EnvIC fast path reads frame->env via the
+             * %r15 frame cache; helper fallback still needs %r14=chunk. */
+            *needs_frame_cache = 1;
             /* Result could be any slot type (whatever the binding holds).
              * Subsequent OP_POP cannot use the immediate peephole. */
         } else if (op == OP_SET_NAME || op == OP_SET_NAME_LOCAL ||
@@ -448,6 +462,7 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             }
             i += 3; ops++; non_line_ops++;
             *has_bail_op = 1;
+            *needs_frame_cache = 1;   /* Stage 5b inline IC fast path */
         } else if (op == OP_LOCAL_IDX_GET) {
             /* 5-byte op: [op][slot:16][idx:16]. Helper handles VAL_BUFFER/
              * VAL_LIST/VAL_STR dispatch; on error it pushes null and
@@ -580,9 +595,15 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
             /* Stage 4v: 1-byte op. Helper pops 3 (val, idx, target) and
              * pushes val back (net sp -2); full opcode semantics live in
              * the helper, so no bail path. Same error/CHECK_ERROR story
-             * as INDEX_GET. Pushed value type is opaque. */
+             * as INDEX_GET. Pushed value type is opaque.
+             *
+             * Stage 5a: the emitter now inlines the buffer-write fast
+             * path (guards + store + decref) ahead of the helper call.
+             * ~260 native bytes for a 1-byte opcode blows the per-byte
+             * size budget — account the overflow explicitly. */
             i += 1; ops++; non_line_ops++;
             *has_bail_op = 1;
+            *extra_size += 192;
         } else if (op == OP_LOOP_STALL_CHECK) {
             /* Stage 4w: 3-byte op [op][exit_offset:16]. Helper returns
              * 1 when the loop must exit (stall / iteration cap); the
@@ -683,20 +704,28 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
 /* Upper bound on emitted bytes:
  *   prologue 23 (always) + 35 (env-cache when needs_env_cache) +
  *                          17 (advance tracker init when has_bail_op) +
+ *                          45 (frame cache when needs_frame_cache) +
  *   epilogue 10 (always) +  7 (advance writeback when has_bail_op) +
  *   192 bytes/op worst case + 7 bytes/op advance update when
- *   has_bail_op. The caller advances frame->ip by chunk->jit_advance,
- *   which is initialized at compile time to the full prefix but may be
- *   overwritten by the thunk on bail.
+ *   has_bail_op + extra_size accumulated by the scanner for ops whose
+ *   inline fast path overruns the per-byte budget (Stage 5a INDEX_SET:
+ *   ~310 native bytes for a 1-byte opcode). The caller advances
+ *   frame->ip by chunk->jit_advance, which is initialized at compile
+ *   time to the full prefix but may be overwritten by the thunk on bail.
  *
  * The 192-byte budget covers OP_MOD (load + 2 type checks + zero-check
  * + xmm setup + push/movabs/call/pop + extract + overflow check + store
- * ≈ 150 bytes). Smaller ops use a fraction of the slack. */
+ * ≈ 150 bytes) and the Stage 5b inline-IC SET_NAME (~320 bytes against
+ * a 3-byte opcode's 576 budget). Smaller ops use a fraction of the
+ * slack. */
 static size_t jit_estimate_size(int prefix, int needs_env_cache,
-                                int has_bail_op) {
+                                int has_bail_op, int needs_frame_cache,
+                                int extra_size) {
     return 25 + (needs_env_cache ? 35 : 0) + (has_bail_op ? 17 : 0) +
+           (needs_frame_cache ? 45 : 0) +
            10 + (has_bail_op ? 11 : 0) +
-           (size_t)prefix * (192 + (has_bail_op ? 6 : 0));
+           (size_t)prefix * (192 + (has_bail_op ? 6 : 0)) +
+           (size_t)extra_size;
 }
 
 /* ---- x86-64 encoding helpers ---- */
@@ -1336,6 +1365,219 @@ static uint8_t *emit_conditional_decref_rsi(uint8_t *w, int *bail) {
     *jg_patch = (uint8_t)jg_rel;
     return w;
 }
+
+/* ---- Stage 5: inline fast-path encodings ---- */
+
+/* push %r15 (2 bytes), pop %r15 (2 bytes). Frame-pointer cache. */
+static uint8_t *emit_push_r15(uint8_t *w)  { *w++=0x41; *w++=0x57; return w; }
+static uint8_t *emit_pop_r15(uint8_t *w)   { *w++=0x41; *w++=0x5F; return w; }
+
+/* lea disp32(%rbx, %rax, 1), %r15  — &g_vm.frames[fc-1] (8 bytes). */
+static uint8_t *emit_lea_rbx_rax_to_r15(uint8_t *w, int32_t disp) {
+    *w++ = 0x4C; *w++ = 0x8D; *w++ = 0xBC; *w++ = 0x03;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov disp32(%r15), %r12  (7 bytes) — derive fn_env from cached frame. */
+static uint8_t *emit_mov_disp32_r15_to_r12(uint8_t *w, int32_t disp) {
+    *w++ = 0x4D; *w++ = 0x8B; *w++ = 0xA7;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov disp32(%r15), %rdx  (7 bytes) — load frame->env / frame->fn_env. */
+static uint8_t *emit_mov_disp32_r15_to_rdx(uint8_t *w, int32_t disp) {
+    *w++ = 0x49; *w++ = 0x8B; *w++ = 0x97;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov disp32(%rbx, %rcx, 8), %rdi  (8 bytes) — stack slot → %rdi. */
+static uint8_t *emit_load_stack_to_rdi(uint8_t *w, int32_t disp) {
+    *w++ = 0x48; *w++ = 0x8B; *w++ = 0xBC; *w++ = 0xCB;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov disp32(%rbx, %rcx, 8), %r8  (8 bytes) — stack slot → %r8. */
+static uint8_t *emit_load_stack_to_r8(uint8_t *w, int32_t disp) {
+    *w++ = 0x4C; *w++ = 0x8B; *w++ = 0x84; *w++ = 0xCB;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* sub $imm8, %ecx  (3 bytes) — drop multiple stack slots at once. */
+static uint8_t *emit_sub_imm8_ecx(uint8_t *w, uint8_t imm) {
+    *w++ = 0x83; *w++ = 0xE9; *w++ = imm; return w;
+}
+
+/* cmpl $imm32, disp32(%rdi)  (10 bytes) — Value type check. */
+static uint8_t *emit_cmpl_imm32_disp32_rdi(uint8_t *w, int32_t disp,
+                                           uint32_t imm) {
+    *w++ = 0x81; *w++ = 0xBF;
+    w = emit_u32(w, (uint32_t)disp);
+    return emit_u32(w, imm);
+}
+
+/* cvttsd2si %xmm0, %r8d  (5 bytes) — 32-bit truncation, matches the
+ * interpreter's `(int)d` index cast. */
+static uint8_t *emit_cvttsd2si_xmm0_r8d(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x44; *w++ = 0x0F; *w++ = 0x2C; *w++ = 0xC0; return w;
+}
+/* cvtsi2sd %r8d, %xmm1  (5 bytes) — 32-bit source, for the integrality
+ * round-trip test ((double)(int)d == d). */
+static uint8_t *emit_cvtsi2sd_r8d_xmm1(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x41; *w++ = 0x0F; *w++ = 0x2A; *w++ = 0xC8; return w;
+}
+/* cvttsd2si %xmm0, %edx  (4 bytes) — 32-bit, mirrors `(int)val_s.d`. */
+static uint8_t *emit_cvttsd2si_xmm0_edx(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x0F; *w++ = 0x2C; *w++ = 0xD0; return w;
+}
+/* cvtsi2sd %edx, %xmm0  (4 bytes) — 32-bit source. */
+static uint8_t *emit_cvtsi2sd_edx_xmm0(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x0F; *w++ = 0x2A; *w++ = 0xC2; return w;
+}
+/* jp rel32  (6 bytes): 0F 8A — jump if PF=1 (unordered ucomisd). */
+static uint8_t *emit_jp_rel32(uint8_t *w, uint8_t **patch) {
+    *w++ = 0x0F; *w++ = 0x8A; *patch = w;
+    *w++ = 0; *w++ = 0; *w++ = 0; *w++ = 0;
+    return w;
+}
+/* cmp disp32(%rdi), %r8d  (7 bytes) — bounds check r8d vs count;
+ * unsigned jae catches both i >= count and i < 0. */
+static uint8_t *emit_cmp_disp32_rdi_r8d(uint8_t *w, int32_t disp) {
+    *w++ = 0x44; *w++ = 0x3B; *w++ = 0x87;
+    return emit_u32(w, (uint32_t)disp);
+}
+/* mov disp32(%rdi), %rsi  (7 bytes) — buffer data pointer. */
+static uint8_t *emit_mov_disp32_rdi_to_rsi(uint8_t *w, int32_t disp) {
+    *w++ = 0x48; *w++ = 0x8B; *w++ = 0xB7;
+    return emit_u32(w, (uint32_t)disp);
+}
+/* movsd %xmm0, (%rsi, %r8, 8)  (6 bytes) — buffer element store. */
+static uint8_t *emit_movsd_xmm0_to_rsi_r8_8(uint8_t *w) {
+    *w++ = 0xF2; *w++ = 0x42; *w++ = 0x0F; *w++ = 0x11;
+    *w++ = 0x04; *w++ = 0xC6; return w;
+}
+
+/* cmp %rdx, disp32(%rax)  (7 bytes) — IC starting_env identity check. */
+static uint8_t *emit_cmp_rdx_disp32_rax(uint8_t *w, int32_t disp) {
+    *w++ = 0x48; *w++ = 0x39; *w++ = 0x90;
+    return emit_u32(w, (uint32_t)disp);
+}
+/* mov disp32(%rdx), %esi  (6 bytes) — env->binding_version load. */
+static uint8_t *emit_mov_disp32_rdx_to_esi(uint8_t *w, int32_t disp) {
+    *w++ = 0x8B; *w++ = 0xB2;
+    return emit_u32(w, (uint32_t)disp);
+}
+/* cmp %esi, disp32(%rax)  (6 bytes) — IC version compare. */
+static uint8_t *emit_cmp_esi_disp32_rax(uint8_t *w, int32_t disp) {
+    *w++ = 0x39; *w++ = 0xB0;
+    return emit_u32(w, (uint32_t)disp);
+}
+/* cmpb $imm8, disp32(%rax)  (8 bytes) — IC walk_depth check. */
+static uint8_t *emit_cmpb_imm8_disp32_rax(uint8_t *w, int32_t disp,
+                                          uint8_t imm) {
+    *w++ = 0x80; *w++ = 0xB8;
+    w = emit_u32(w, (uint32_t)disp);
+    *w++ = imm; return w;
+}
+/* mov disp32(%rdx), %rdx  (7 bytes) — env->parent chase. */
+static uint8_t *emit_mov_disp32_rdx_to_rdx(uint8_t *w, int32_t disp) {
+    *w++ = 0x48; *w++ = 0x8B; *w++ = 0x92;
+    return emit_u32(w, (uint32_t)disp);
+}
+/* test %rdx, %rdx  (3 bytes) — NULL-parent check. */
+static uint8_t *emit_test_rdx_rdx(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x85; *w++ = 0xD2; return w;
+}
+/* mov disp32(%rax), %esi  (6 bytes) — IC slot_idx load (GET). */
+static uint8_t *emit_mov_disp32_rax_to_esi(uint8_t *w, int32_t disp) {
+    *w++ = 0x8B; *w++ = 0xB0;
+    return emit_u32(w, (uint32_t)disp);
+}
+/* mov (%rdx, %rsi, 8), %rax  (4 bytes) — values[slot_idx] load. */
+static uint8_t *emit_mov_rdx_rsi8_to_rax(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x8B; *w++ = 0x04; *w++ = 0xF2; return w;
+}
+/* mov disp32(%rax), %r9d  (7 bytes) — IC slot_idx load (SET). */
+static uint8_t *emit_mov_disp32_rax_to_r9d(uint8_t *w, int32_t disp) {
+    *w++ = 0x44; *w++ = 0x8B; *w++ = 0x88;
+    return emit_u32(w, (uint32_t)disp);
+}
+/* mov disp32(%rdx), %r10  (7 bytes) — env->values base (SET). */
+static uint8_t *emit_mov_disp32_rdx_to_r10(uint8_t *w, int32_t disp) {
+    *w++ = 0x4C; *w++ = 0x8B; *w++ = 0x92;
+    return emit_u32(w, (uint32_t)disp);
+}
+/* mov (%r10, %r9, 8), %rsi  (4 bytes) — old slot load. */
+static uint8_t *emit_mov_r10_r9_8_to_rsi(uint8_t *w) {
+    *w++ = 0x4B; *w++ = 0x8B; *w++ = 0x34; *w++ = 0xCA; return w;
+}
+/* mov %r8, (%r10, %r9, 8)  (4 bytes) — new slot store. */
+static uint8_t *emit_mov_r8_to_r10_r9_8(uint8_t *w) {
+    *w++ = 0x4F; *w++ = 0x89; *w++ = 0x04; *w++ = 0xCA; return w;
+}
+/* mov %r8, %rsi  (3 bytes) */
+static uint8_t *emit_mov_r8_rsi(uint8_t *w) {
+    *w++ = 0x4C; *w++ = 0x89; *w++ = 0xC6; return w;
+}
+/* mov %rdi, %rsi  (3 bytes) */
+static uint8_t *emit_mov_rdi_rsi(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x89; *w++ = 0xFE; return w;
+}
+/* mov %r8, %rdi  (3 bytes) */
+static uint8_t *emit_mov_r8_rdi(uint8_t *w) {
+    *w++ = 0x4C; *w++ = 0x89; *w++ = 0xC7; return w;
+}
+/* mov disp32(%rdx), %rdi  (7 bytes) — env->assign_counts load. */
+static uint8_t *emit_mov_disp32_rdx_to_rdi(uint8_t *w, int32_t disp) {
+    *w++ = 0x48; *w++ = 0x8B; *w++ = 0xBA;
+    return emit_u32(w, (uint32_t)disp);
+}
+/* test %rdi, %rdi  (3 bytes) */
+static uint8_t *emit_test_rdi_rdi(uint8_t *w) {
+    *w++ = 0x48; *w++ = 0x85; *w++ = 0xFF; return w;
+}
+/* cmpl $0, %fs:disp32  (9 bytes) — g_unobserved_depth == 0 test. */
+static uint8_t *emit_cmpl_0_fs_disp32(uint8_t *w, int32_t disp) {
+    *w++ = 0x64; *w++ = 0x83; *w++ = 0x3C; *w++ = 0x25;
+    w = emit_u32(w, (uint32_t)disp);
+    *w++ = 0x00; return w;
+}
+/* incl (%rdi, %r9, 4)  (4 bytes) — assign_counts[slot_idx]++. */
+static uint8_t *emit_incl_rdi_r9_4(uint8_t *w) {
+    *w++ = 0x42; *w++ = 0xFF; *w++ = 0x04; *w++ = 0x8F; return w;
+}
+/* cmpl $0, (%rax)  (3 bytes) — g_trace_hist test via baked address. */
+static uint8_t *emit_cmpl_0_mem_rax(uint8_t *w) {
+    *w++ = 0x83; *w++ = 0x38; *w++ = 0x00; return w;
+}
+/* je rel8 (2 bytes) */
+static uint8_t *emit_je_rel8(uint8_t *w, uint8_t **patch) {
+    *w++ = 0x74; *patch = w; *w++ = 0x00; return w;
+}
+
+/* Inline decref of the Value* in %rdi: skip when arena-owned,
+ * `lock subl` otherwise, call free_value when the count reaches zero.
+ * Tail of emit_conditional_decref_rsi without the slot tag check —
+ * caller already proved %rdi is a heap Value*. */
+static uint8_t *emit_decref_value_rdi(uint8_t *w, int *bail) {
+    w = emit_testb_1_disp32_rdi(w, (int32_t)offsetof(Value, arena));
+    uint8_t *jnz_patch;
+    w = emit_jnz_rel8(w, &jnz_patch);
+    uint8_t *jnz_after = w;
+    w = emit_lock_subl_1_disp32_rdi(w, (int32_t)offsetof(Value, refcount));
+    uint8_t *jg_patch;
+    w = emit_jg_rel8(w, &jg_patch);
+    uint8_t *jg_after = w;
+    w = emit_push_rcx(w);
+    w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&free_value);
+    w = emit_call_rax(w);
+    w = emit_pop_rcx(w);
+    int jnz_rel = (int)(w - jnz_after);
+    int jg_rel = (int)(w - jg_after);
+    if (jnz_rel > 127 || jg_rel > 127) { *bail = 1; return w; }
+    *jnz_patch = (uint8_t)jnz_rel;
+    *jg_patch = (uint8_t)jg_rel;
+    return w;
+}
 #endif
 
 /* Tiered-JIT hotness thresholds. A chunk qualifies for native code when
@@ -1433,10 +1675,13 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
 
     int needs_env_cache = 0;
     int has_bail_op = 0;
+    int needs_frame_cache = 0;
+    int extra_size = 0;
     uint8_t stop_op = OP_COUNT;
     int stop_offset = 0;
     int prefix = jit_supported_prefix(chunk, entry_offset,
                                       &needs_env_cache, &has_bail_op,
+                                      &needs_frame_cache, &extra_size,
                                       &stop_op, &stop_offset);
     *out_stop_op = stop_op;
     /* Every scanned chunk contributes one stop_op tally, whether it
@@ -1492,7 +1737,8 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
     }
 
     size_t size = jit_estimate_size(prefix - entry_offset, needs_env_cache,
-                                    has_bail_op);
+                                    has_bail_op, needs_frame_cache,
+                                    extra_size);
     uint8_t *code = jit_cache_alloc(g_jit_cache, size);
     if (!code) {
         *out_state = 1;
@@ -1571,6 +1817,17 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
         w = emit_push_r13(w);
         w = emit_push_r14(w);
     }
+    if (needs_frame_cache) {
+        /* Stage 5b: %r15 = &g_vm.frames[frame_count-1], live for the
+         * whole thunk (frame identity is stable: no supported op pushes
+         * a frame — jit_helper_call's builtin path restores frame_count
+         * before returning, and RETURN terminates the scan). Pushed
+         * TWICE so the saved-register area stays a multiple of 16 and
+         * the body keeps the %rsp ≡ 8 (mod 16) invariant that every
+         * `push %rcx` call-alignment site depends on. */
+        w = emit_push_r15(w);
+        w = emit_push_r15(w);
+    }
     w = emit_load_fs_zero_rbx(w);                               /* mov %fs:0, %rbx */
     w = emit_lea_rbx_disp32_rbx(w, (int32_t)g_layout.g_vm_tpoff);
     w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);         /* mov sp, %ecx */
@@ -1579,7 +1836,18 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
         w = emit_xor_r13d_r13d(w);
     }
 
-    if (needs_env_cache) {
+    if (needs_frame_cache) {
+        /* %r15 = &g_vm.frames[frame_count - 1]; when the env cache is
+         * also requested, derive %r12 from it instead of recomputing. */
+        w = emit_mov_disp32_rbx_to_eax(w, g_layout.off_frame_count);
+        w = emit_dec_eax(w);
+        w = emit_imul_imm32_rax(w, g_layout.sizeof_callframe);
+        w = emit_lea_rbx_rax_to_r15(w, g_layout.off_frames);
+        if (needs_env_cache) {
+            w = emit_mov_disp32_r15_to_r12(w, g_layout.off_callframe_fn_env);
+            w = emit_mov_disp32_r12_to_r12(w, g_layout.off_env_values);
+        }
+    } else if (needs_env_cache) {
         /* %r12 = &g_vm.frames[frame_count - 1]
          *      = &g_vm + off_frames + (fc-1)*sizeof_callframe
          * Then chase frame->fn_env then env->values into %r12. */
@@ -1663,16 +1931,64 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             w = emit_inc_ecx(w);
             i += 3;
         } else if (op == OP_GET_NAME) {
-            /* Stage 4k: out-of-line call to jit_helper_get_name(chunk, idx).
-             * The helper does the EnvIC walk and slot push via vm_push_slot
-             * — both touch g_vm.sp directly, so we sync our %ecx cache to
-             * g_vm.sp before the call and reload after. Stack alignment:
-             * body is at 8-mod-16; `push %rcx` carries us to 0-mod-16 (the
-             * pushed value is junk, since we reload %ecx from g_vm.sp on
-             * return). chunk pointer comes from %r14 (always set when
-             * has_bail_op, which OP_GET_NAME forces). */
+            /* Stage 5b: inline EnvIC fast path; helper only on IC miss.
+             *
+             * Mirrors jit_helper_get_name's hit branch:
+             *   start = frame->env                      (%r15 frame cache)
+             *   ic->starting_env == start
+             *   && ic->starting_ver == start->binding_version
+             *   target = walk_depth ? start->parent : start  (NULL-checked)
+             *   && target->binding_version == ic->target_ver
+             *   s = target->values[ic->slot_idx]; slot_incref(s); push
+             *
+             * The IC entry address is baked as an immediate: env_ic is
+             * only realloc'd by chunk_add_constant, i.e. during compile —
+             * by JIT time the pool is final (same lifetime argument as
+             * the baked %r14 chunk pointer). Any guard failure jumps to
+             * the Stage 4k helper sequence below, which also repopulates
+             * the IC so the next iteration takes the inline path. */
             uint16_t idx = (uint16_t)(chunk->code[i + 1] |
                                       ((uint16_t)chunk->code[i + 2] << 8));
+            EnvIC *ic = &chunk->env_ic[idx];
+            uint8_t *slow_p[4];
+            int slow_n = 0;
+            w = emit_mov_disp32_r15_to_rdx(w, (int32_t)offsetof(CallFrame, env));
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)ic);
+            w = emit_cmp_rdx_disp32_rax(w, (int32_t)offsetof(EnvIC, starting_env));
+            w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            w = emit_mov_disp32_rdx_to_esi(w, (int32_t)offsetof(Env, binding_version));
+            w = emit_cmp_esi_disp32_rax(w, (int32_t)offsetof(EnvIC, starting_ver));
+            w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            /* target = walk_depth ? start->parent : start */
+            w = emit_cmpb_imm8_disp32_rax(w, (int32_t)offsetof(EnvIC, walk_depth), 0);
+            uint8_t *depth0_p;
+            w = emit_je_rel8(w, &depth0_p);
+            uint8_t *depth0_after = w;
+            w = emit_mov_disp32_rdx_to_rdx(w, (int32_t)offsetof(Env, parent));
+            w = emit_test_rdx_rdx(w);
+            w = emit_je_rel32(w, &slow_p[slow_n]); slow_n++;
+            *depth0_p = (uint8_t)(w - depth0_after);
+            w = emit_mov_disp32_rdx_to_esi(w, (int32_t)offsetof(Env, binding_version));
+            w = emit_cmp_esi_disp32_rax(w, (int32_t)offsetof(EnvIC, target_ver));
+            w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            /* Hit: load slot, incref, push. */
+            w = emit_mov_disp32_rax_to_esi(w, (int32_t)offsetof(EnvIC, slot_idx));
+            w = emit_mov_disp32_rdx_to_rdx(w, (int32_t)offsetof(Env, values));
+            w = emit_mov_rdx_rsi8_to_rax(w);
+            int bail = 0;
+            w = emit_conditional_incref_rax(w, &bail);
+            if (bail) {
+                JIT_BAIL_AND_RETURN();
+            }
+            w = emit_store_rax_at_stack(w, g_layout.off_stack);
+            w = emit_inc_ecx(w);
+            uint8_t *done_p;
+            w = emit_jmp_rel32(w, &done_p);
+            /* Miss: the Stage 4k out-of-line call to
+             * jit_helper_get_name(chunk, idx). Sync %ecx → g_vm.sp before
+             * (helper pushes via vm_push_slot), aligned call, reload after.
+             * chunk pointer from %r14 (has_bail_op forces the load). */
+            for (int k = 0; k < slow_n; k++) patch_rel32(slow_p[k], w);
             w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
             w = emit_mov_r14_rdi(w);
             w = emit_mov_imm32_esi(w, (uint32_t)idx);
@@ -1681,17 +1997,127 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             w = emit_call_rax(w);
             w = emit_pop_rcx(w);
             w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
+            patch_rel32(done_p, w);
             i += 3;
         } else if (op == OP_SET_NAME || op == OP_SET_NAME_LOCAL ||
                    op == OP_SET_FN_NAME_LOCAL) {
-            /* Stage 4x: SET name family via helper — GET_NAME call
-             * shape (chunk in %rdi via %r14, name_idx in %esi, sp
-             * synced/reloaded around the aligned call). */
+            /* Stage 5b: inline EnvIC SET fast path; helper on any guard
+             * failure. Replicates the helpers' IC-hit branch:
+             *
+             *   g_trace_hist == 0                       (trace → helper,
+             *                                            hook runs there)
+             *   start = frame->env (fn_env for the FN_LOCAL variant)
+             *   ic->starting_env == start
+             *   && ic->starting_ver == start->binding_version
+             *   SET_NAME:   target = walk_depth ? start->parent : start
+             *               (NULL-checked), target->bv == ic->target_ver
+             *   *_LOCAL:    walk_depth == 0, ic->target_ver == start->bv
+             *   env_store_slot(target, ic->slot_idx, s):
+             *     - s arena-pointer → helper (promotion stays out of line)
+             *     - slot_incref(s); old = values[idx]; values[idx] = s;
+             *       slot_decref(old)  [decref last so free_value can't
+             *       observe a half-done store; equivalent order]
+             *   assign_counts bump when non-NULL && g_unobserved_depth==0
+             *
+             * Value stays on TOS — sp untouched, matching the helpers.
+             * All guards fire before any mutation, so the helper rerun
+             * is always safe. */
             uint16_t sidx = (uint16_t)(chunk->code[i + 1] |
                                        ((uint16_t)chunk->code[i + 2] << 8));
             void *helper = (op == OP_SET_NAME)       ? (void *)&jit_helper_set_name
                          : (op == OP_SET_NAME_LOCAL) ? (void *)&jit_helper_set_name_local
                                                      : (void *)&jit_helper_set_fn_name_local;
+            int frame_env_off = (op == OP_SET_FN_NAME_LOCAL)
+                ? (int)offsetof(CallFrame, fn_env)
+                : (int)offsetof(CallFrame, env);
+            EnvIC *ic = &chunk->env_ic[sidx];
+            uint8_t *slow_p[6];
+            int slow_n = 0;
+            /* Trace gate: address baked, flag is process-global. */
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&g_trace_hist);
+            w = emit_cmpl_0_mem_rax(w);
+            w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            /* IC identity + starting version. */
+            w = emit_mov_disp32_r15_to_rdx(w, frame_env_off);
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)ic);
+            w = emit_cmp_rdx_disp32_rax(w, (int32_t)offsetof(EnvIC, starting_env));
+            w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            w = emit_mov_disp32_rdx_to_esi(w, (int32_t)offsetof(Env, binding_version));
+            w = emit_cmp_esi_disp32_rax(w, (int32_t)offsetof(EnvIC, starting_ver));
+            w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            if (op == OP_SET_NAME) {
+                /* target = walk_depth ? start->parent : start */
+                w = emit_cmpb_imm8_disp32_rax(w, (int32_t)offsetof(EnvIC, walk_depth), 0);
+                uint8_t *depth0_p;
+                w = emit_je_rel8(w, &depth0_p);
+                uint8_t *depth0_after = w;
+                w = emit_mov_disp32_rdx_to_rdx(w, (int32_t)offsetof(Env, parent));
+                w = emit_test_rdx_rdx(w);
+                w = emit_je_rel32(w, &slow_p[slow_n]); slow_n++;
+                *depth0_p = (uint8_t)(w - depth0_after);
+                w = emit_mov_disp32_rdx_to_esi(w, (int32_t)offsetof(Env, binding_version));
+            } else {
+                /* LOCAL variants pin walk_depth == 0; target == start and
+                 * %esi still holds start->binding_version. */
+                w = emit_cmpb_imm8_disp32_rax(w, (int32_t)offsetof(EnvIC, walk_depth), 0);
+                w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            }
+            w = emit_cmp_esi_disp32_rax(w, (int32_t)offsetof(EnvIC, target_ver));
+            w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            /* Hit. %rdx = target env, %rax = ic. */
+            w = emit_mov_disp32_rax_to_r9d(w, (int32_t)offsetof(EnvIC, slot_idx));
+            w = emit_load_stack_to_r8(w, g_layout.off_stack - 8);   /* s */
+            /* slot_incref(s) with the arena-promotion case guarded out:
+             * immediates skip, arena pointers go to the helper BEFORE any
+             * mutation, plain pointers get the lock-incref. */
+            w = emit_mov_r8_rsi(w);
+            w = emit_shr_48_rsi(w);
+            w = emit_cmp_imm32_esi(w, 0xFFFB);
+            uint8_t *imm_p;
+            w = emit_jb_rel8(w, &imm_p);
+            uint8_t *imm_after = w;
+            w = emit_mov_r8_rdi(w);
+            w = emit_shl_16_rdi(w);
+            w = emit_shr_16_rdi(w);
+            w = emit_testb_1_disp32_rdi(w, (int32_t)offsetof(Value, arena));
+            w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            w = emit_lock_addl_1_disp32_rdi(w, (int32_t)offsetof(Value, refcount));
+            {
+                int imm_rel = (int)(w - imm_after);
+                if (imm_rel > 127) {
+                    JIT_BAIL_AND_RETURN();
+                }
+                *imm_p = (uint8_t)imm_rel;
+            }
+            /* Swap the slot: old → %rsi, s → values[slot_idx]. */
+            w = emit_mov_disp32_rdx_to_r10(w, (int32_t)offsetof(Env, values));
+            w = emit_mov_r10_r9_8_to_rsi(w);
+            w = emit_mov_r8_to_r10_r9_8(w);
+            /* assign_counts bump — before the decref so %rdx/%r9 are
+             * still live (free_value clobbers caller-saved registers). */
+            w = emit_mov_disp32_rdx_to_rdi(w, (int32_t)offsetof(Env, assign_counts));
+            w = emit_test_rdi_rdi(w);
+            uint8_t *nb1_p;
+            w = emit_je_rel8(w, &nb1_p);
+            uint8_t *nb1_after = w;
+            w = emit_cmpl_0_fs_disp32(w, (int32_t)g_layout.g_unobserved_depth_tpoff);
+            uint8_t *nb2_p;
+            w = emit_jnz_rel8(w, &nb2_p);
+            uint8_t *nb2_after = w;
+            w = emit_incl_rdi_r9_4(w);
+            *nb1_p = (uint8_t)(w - nb1_after);
+            *nb2_p = (uint8_t)(w - nb2_after);
+            /* Old-slot decref (immediate no-op / arena skip / free at 0). */
+            int set_bail = 0;
+            w = emit_conditional_decref_rsi(w, &set_bail);
+            if (set_bail) {
+                JIT_BAIL_AND_RETURN();
+            }
+            uint8_t *done_p;
+            w = emit_jmp_rel32(w, &done_p);
+            /* Miss: Stage 4x helper call — chunk in %rdi via %r14,
+             * name_idx in %esi, sp synced/reloaded around the call. */
+            for (int k = 0; k < slow_n; k++) patch_rel32(slow_p[k], w);
             w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
             w = emit_mov_r14_rdi(w);
             w = emit_mov_imm32_esi(w, (uint32_t)sidx);
@@ -1700,6 +2126,7 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             w = emit_call_rax(w);
             w = emit_pop_rcx(w);
             w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
+            patch_rel32(done_p, w);
             i += 3;
         } else if (op == OP_LOCAL_IDX_GET) {
             /* Stage 4l: out-of-line call to jit_helper_local_idx_get(slot, idx).
@@ -2297,15 +2724,85 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
             i += 1;
         } else if (op == OP_INDEX_SET) {
-            /* Stage 4v: INDEX_SET via helper call — same ABI as
-             * INDEX_GET (sync sp, aligned call, reload sp; no return
-             * value to test). */
+            /* Stage 5a: inline buffer-write fast path; helper on any
+             * guard failure. Mirrors CASE(INDEX_SET)'s buffer arm:
+             *
+             *   val = stack[sp-1], idx = stack[sp-2], tgt = stack[sp-3]
+             *   guards: idx imm-num, tgt heap ptr, tgt->type == VAL_BUFFER,
+             *           idx integral ((double)(int)d == d, NaN via PF),
+             *           0 <= i < count (one unsigned compare),
+             *           val imm-num
+             *   commit: data[i] = (double)(int)val; stack[sp-3] = val;
+             *           sp -= 2; slot_decref(tgt)   [idx/val imm: no-op]
+             *
+             * Guards all precede mutation, so the slow path re-executes
+             * the op via jit_helper_index_set (full semantics including
+             * runtime_error). Register plan: %rdx idx slot → scratch,
+             * %rdi tgt Value*, %r8d index int, %rax val slot, %rsi
+             * tag-check scratch then buffer base. */
+            uint8_t *slow_p[8];
+            int slow_n = 0;
+            /* idx slot → %rdx; must be an immediate num. */
+            w = emit_load_stack_to_rdx(w, g_layout.off_stack - 16);
+            w = emit_immediate_num_check_rdx(w, &slow_p[slow_n]); slow_n++;
+            /* tgt slot → %rdi; tag must be TAG_HEAP (0xFFFB). */
+            w = emit_load_stack_to_rdi(w, g_layout.off_stack - 24);
+            w = emit_mov_rdi_rsi(w);
+            w = emit_shr_48_rsi(w);
+            w = emit_cmp_imm32_esi(w, 0xFFFB);
+            w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            /* Mask payload → Value*, then type check. */
+            w = emit_shl_16_rdi(w);
+            w = emit_shr_16_rdi(w);
+            w = emit_cmpl_imm32_disp32_rdi(w, (int32_t)offsetof(Value, type),
+                                           (uint32_t)VAL_BUFFER);
+            w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            /* Integrality: %r8d = (int)idx; (double)%r8d == idx?
+             * cvttsd2si saturates NaN/huge to INT_MIN, which either
+             * compares unordered (PF, NaN) or unequal — both → helper,
+             * which raises the "index must be an integer" error. An
+             * exact INT_MIN index passes here and fails bounds below. */
+            w = emit_movq_rdx_xmm0(w);
+            w = emit_cvttsd2si_xmm0_r8d(w);
+            w = emit_cvtsi2sd_r8d_xmm1(w);
+            w = emit_ucomisd_xmm0_xmm1(w);
+            w = emit_jp_rel32(w, &slow_p[slow_n]); slow_n++;
+            w = emit_jne_rel32(w, &slow_p[slow_n]); slow_n++;
+            /* Bounds: one unsigned compare covers i < 0 and i >= count. */
+            w = emit_cmp_disp32_rdi_r8d(w, (int32_t)offsetof(Value, data.buffer.count));
+            w = emit_jae_rel32(w, &slow_p[slow_n]); slow_n++;
+            /* val slot → %rax; must be an immediate num. */
+            w = emit_load_stack_to_rax(w, g_layout.off_stack - 8);
+            w = emit_immediate_num_check_rax(w, &slow_p[slow_n]); slow_n++;
+            /* Commit: data[i] = (double)(int)val. */
+            w = emit_movq_rax_xmm0(w);
+            w = emit_cvttsd2si_xmm0_edx(w);
+            w = emit_cvtsi2sd_edx_xmm0(w);
+            w = emit_mov_disp32_rdi_to_rsi(w, (int32_t)offsetof(Value, data.buffer.data));
+            w = emit_movsd_xmm0_to_rsi_r8_8(w);
+            /* Stack: val replaces tgt's slot, sp -= 2 (val stays TOS). */
+            w = emit_store_rax_at_disp_stack(w, g_layout.off_stack - 24);
+            w = emit_sub_imm8_ecx(w, 2);
+            /* slot_decref(tgt): idx and val are immediates (no-ops);
+             * tgt is a proven heap pointer — arena-checked dec with
+             * free_value at zero, matching the interpreter. */
+            int ixs_bail = 0;
+            w = emit_decref_value_rdi(w, &ixs_bail);
+            if (ixs_bail) {
+                JIT_BAIL_AND_RETURN();
+            }
+            uint8_t *done_p;
+            w = emit_jmp_rel32(w, &done_p);
+            /* Slow path: Stage 4v helper call — same ABI as INDEX_GET
+             * (sync sp, aligned call, reload sp; no return value). */
+            for (int k = 0; k < slow_n; k++) patch_rel32(slow_p[k], w);
             w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
             w = emit_push_rcx(w);
             w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_index_set);
             w = emit_call_rax(w);
             w = emit_pop_rcx(w);
             w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
+            patch_rel32(done_p, w);
             i += 1;
         } else if (op == OP_LOOP_STALL_CHECK) {
             /* Stage 4w: LOOP_STALL_CHECK via helper — ITER_NEXT call
@@ -2510,6 +3007,10 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
         w = emit_mov_r13d_to_disp32_r14(w, (int32_t)advance_field_offset);
     }
     w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+    if (needs_frame_cache) {
+        w = emit_pop_r15(w);
+        w = emit_pop_r15(w);
+    }
     if (has_bail_op) {
         w = emit_pop_r14(w);
         w = emit_pop_r13(w);

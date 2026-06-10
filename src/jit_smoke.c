@@ -23,6 +23,10 @@ void eigs_jit_get_layout(EigsJitLayout *out) { (void)out; }
 typedef struct Value Value;
 void free_value(Value *v) { (void)v; }
 
+/* Stage 5b references &g_trace_hist as an immediate in the SET-name
+ * inline trace gate. Lives in trace.c in the real binary. */
+int g_trace_hist = 0;
+
 /* Diagnostic histogram in jit_module_shutdown references op_name from
  * chunk.c. The smoke binary never triggers the histogram path because
  * EIGS_JIT_STOPS is not set, but the linker still needs a definition. */
