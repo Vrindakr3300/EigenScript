@@ -2,7 +2,19 @@
 
 All notable changes to EigenScript are documented here.
 
-## [Unreleased]
+## [0.12.0] — 2026-06-10
+
+A JIT performance release. Stage 5 (a–i) lands the inline fast-path
+matrix — INDEX_SET, EnvIC name get/set, dict-dot via 2-way inline
+cache, tracked-num arith/compare operands, native VAL_FN calls inside
+thunks, per-loop OSR slots, DOT_SET in-place writes, and per-chunk
+call-env recycling. Stage 4v/4w/4x close the bailout coverage chain so
+INDEX_SET, LOOP_STALL_CHECK, and SET-name opcodes all compile into
+thunks. Compile-gating the temporal history removes the always-on
+reversibility tax from non-temporal programs. Cumulative on
+bench_dmg_shape: 239 → ~116 ms (2.06×); the JIT now beats
+`EIGS_JIT_OFF` by ~45% on it, and cpu_instrs runs at ~5 MHz (target
+was 4.19).
 
 ### Performance — Stage 5i: per-chunk call-env recycling
 
