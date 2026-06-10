@@ -75,12 +75,13 @@ void jit_try_compile_chunk(struct EigsChunk *chunk);
 
 /* On-stack-replacement variant. Compiles a thunk that begins execution
  * at `entry_offset` (typically a hot loop header) rather than chunk
- * byte 0. Writes results into chunk->jit_osr_* (separate from the
- * from-zero slot so both can coexist). Idempotent: subsequent calls
- * with the same chunk return immediately if jit_osr_state != 0, even
- * if entry_offset differs (we only support one OSR thunk per chunk).
- * Phase 2a: declared but stubbed — the body lands in Phase 2b. */
-void jit_try_compile_chunk_osr(struct EigsChunk *chunk, int entry_offset);
+ * byte 0, into chunk->jit_osr[slot] (Stage 5g: one slot per hot loop
+ * header, JIT_OSR_SLOTS max — vm.c's JUMP_BACK handler picks the
+ * slot). Idempotent per slot: returns immediately if the slot's state
+ * is already set. Failed offsets stay recorded in the slot so the
+ * caller's scan doesn't retry them. */
+void jit_try_compile_chunk_osr(struct EigsChunk *chunk, int entry_offset,
+                               int slot);
 
 /* Lifetime hooks for the per-thread JIT cache. jit_module_shutdown is
  * optional (process exit reclaims pages anyway) but useful in tests. */
@@ -158,6 +159,11 @@ void jit_helper_local_idx_dot_get(struct EigsChunk *chunk, int slot,
  * const_interns / const_hashes. */
 void jit_helper_dot_get(struct EigsChunk *chunk, int name_idx);
 
+/* Stage 5g: out-of-line helper for OP_DOT_SET. Pops value + target,
+ * pushes value back (net sp -1). Needs chunk for const_interns /
+ * const_hashes. */
+void jit_helper_dot_set(struct EigsChunk *chunk, int name_idx);
+
 /* Stage 4q-d: out-of-line helper for OP_LOCAL_DOT_SET. Mirrors
  * CASE(LOCAL_DOT_SET): writes local[slot].name = TOS without popping
  * (next OP_POP clears the stack). Helper reads g_vm.stack[sp-1] so
@@ -193,12 +199,17 @@ void jit_helper_set_name(struct EigsChunk *chunk, int idx);
 void jit_helper_set_name_local(struct EigsChunk *chunk, int idx);
 void jit_helper_set_fn_name_local(struct EigsChunk *chunk, int idx);
 
-/* Stage 4r: out-of-line helper for OP_CALL — builtin-only fast path.
- * Returns 0 if a VAL_BUILTIN was called (args+fn consumed, result
- * pushed) and 1 if the fn slot was anything else (helper made no
- * changes; caller bails so the interpreter re-executes OP_CALL).
- * Reads/writes g_vm.sp directly. */
-int jit_helper_call(int argc);
+/* Stage 4r/5f: out-of-line helper for OP_CALL. Returns:
+ *   0 — call completed (builtin ran, or a compiled VAL_FN callee ran
+ *       natively to its RETURN); caller thunk continues.
+ *   1 — not eligible; stack untouched; caller thunk bails with %r13d
+ *       at the CALL's offset so the interpreter re-executes it.
+ *   2 — deep bail: callee frame(s) live with consistent ips, caller
+ *       frame's ip set to resume_off. Caller thunk must exit with the
+ *       -2 advance sentinel so vm_run resyncs to the current frame.
+ * `chunk` is the CALLER's chunk (for the resume_off → ip fixup);
+ * resume_off is the absolute bytecode offset of the op after the CALL. */
+int jit_helper_call(struct EigsChunk *chunk, int argc, int resume_off);
 
 /* Stage 4s: out-of-line helper for OP_RETURN. Mirrors the non-top-level
  * branch of CASE(RETURN): pops result, drains frame slice, frees env if

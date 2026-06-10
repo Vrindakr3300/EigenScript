@@ -269,9 +269,11 @@ void jit_module_shutdown(void) {
                 ((c)->jit_state == 2 \
                     ? ((c)->jit_advance == -1 ? (c)->code_len : (c)->jit_advance) \
                     : 0)
+            /* Stage 5g: the dump reports OSR slot 0 only (multi-slot
+             * detail is visible via EIGS_JIT_DEBUG compile lines). */
             #define JIT_OSR_EFFECTIVE_ADV(c) \
-                ((c)->jit_osr_state == 2 \
-                    ? ((c)->jit_osr_advance == -1 ? (c)->code_len : (c)->jit_osr_advance) \
+                ((c)->jit_osr[0].state == 2 \
+                    ? ((c)->jit_osr[0].advance == -1 ? (c)->code_len : (c)->jit_osr[0].advance) \
                     : 0)
             for (int a = 0; a < top; a++) {
                 struct EigsChunk *c = g_chunks[order[a]];
@@ -280,14 +282,14 @@ void jit_module_shutdown(void) {
                     c->jit_state == 2 ? "yes" :
                     c->jit_state == 1 ? "no " : "?  ";
                 const char *ostate =
-                    c->jit_osr_state == 2 ? "yes" :
-                    c->jit_osr_state == 1 ? "no " : "?  ";
+                    c->jit_osr[0].state == 2 ? "yes" :
+                    c->jit_osr[0].state == 1 ? "no " : "?  ";
                 double pct = total_exec
                     ? (100.0 * (double)c->exec_count / (double)total_exec)
                     : 0.0;
                 int adv  = JIT_EFFECTIVE_ADV(c);
                 int oadv = JIT_OSR_EFFECTIVE_ADV(c);
-                int oent = (c->jit_osr_state != 0) ? c->jit_osr_entry_offset : 0;
+                int oent = (c->jit_osr[0].state != 0) ? c->jit_osr[0].entry_offset : 0;
                 int len = c->code_len;
                 double nat = len ? (100.0 * (double)adv / (double)len) : 0.0;
                 const char *stop_name = (c->jit_stop_op == OP_COUNT)
@@ -500,6 +502,20 @@ static int jit_supported_prefix(const struct EigsChunk *chunk,
         } else if (op == OP_DOT_GET) {
             /* Stage 4q-f: 3-byte op [op][name_idx:16]. Pop target, push
              * target.name — sp neutral. Helper needs chunk pointer. */
+            if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
+            uint16_t name_idx = (uint16_t)(chunk->code[i + 1] |
+                                           ((uint16_t)chunk->code[i + 2] << 8));
+            if (!chunk->const_interns || name_idx >= chunk->const_count) {
+                *stop_op = op; *stop_offset = i; break;
+            }
+            i += 3; ops++; non_line_ops++;
+            *has_bail_op = 1;
+        } else if (op == OP_DOT_SET) {
+            /* Stage 5g: 3-byte op [op][name_idx:16]. Pop value + target,
+             * push value back (net sp -1) — helper runs CASE(DOT_SET)
+             * verbatim. Was the last unsupported op in the DMG main
+             * loop. Pushed value type is opaque (vm_push bridge), so
+             * the OP_POP peephole chain breaks (default last_imm = 0). */
             if (i + 3 > chunk->code_len) { *stop_op = op; *stop_offset = i; break; }
             uint16_t name_idx = (uint16_t)(chunk->code[i + 1] |
                                            ((uint16_t)chunk->code[i + 2] << 8));
@@ -1745,6 +1761,10 @@ static uint8_t *emit_or_rdx_r8(uint8_t *w) {
 static uint8_t *emit_mov_r8_rdx(uint8_t *w) {
     *w++ = 0x4C; *w++ = 0x89; *w++ = 0xC2; return w;
 }
+/* cmp $imm8, %eax  (3 bytes) — OP_CALL return-code triage. */
+static uint8_t *emit_cmp_imm8_eax(uint8_t *w, uint8_t imm) {
+    *w++ = 0x83; *w++ = 0xF8; *w++ = imm; return w;
+}
 /* mov %rax, disp32(%rdi)  (7 bytes) — SET_LOCAL in-place data.num. */
 static uint8_t *emit_mov_rax_to_disp32_rdi(uint8_t *w, int32_t disp) {
     *w++ = 0x48; *w++ = 0x89; *w++ = 0x87;
@@ -2565,6 +2585,23 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             w = emit_pop_rcx(w);
             w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
             i += 3;
+        } else if (op == OP_DOT_SET) {
+            /* Stage 5g: out-of-line call to
+             *   jit_helper_dot_set(chunk, name_idx).
+             * Helper pops 2, pushes 1 (net sp -1) — sync %ecx → g_vm.sp
+             * before, reload after; chunk via %r14. Same wire-up as
+             * OP_DOT_GET. */
+            uint16_t name_idx = (uint16_t)(chunk->code[i + 1] |
+                                           ((uint16_t)chunk->code[i + 2] << 8));
+            w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
+            w = emit_mov_r14_rdi(w);
+            w = emit_mov_imm32_esi(w, (uint32_t)name_idx);
+            w = emit_push_rcx(w);
+            w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_dot_set);
+            w = emit_call_rax(w);
+            w = emit_pop_rcx(w);
+            w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
+            i += 3;
         } else if (op == OP_LOCAL_DOT_SET) {
             /* Stage 5d: inline the dict_set_cached_immediate path of
              * CASE(LOCAL_DOT_SET) — cache hit where the existing field
@@ -3353,28 +3390,37 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             patch_rel32(skip_patch, w);
             i += 3;
         } else if (op == OP_CALL) {
-            /* Stage 4r: OP_CALL with builtin-only fast path via helper.
+            /* Stage 4r/5f: OP_CALL via helper. The helper now also runs
+             * compiled VAL_FN callees natively (frame push + callee
+             * thunk invocation inside the helper) — return-code triage:
              *
              *   mov $op_start - entry_offset, %r13d   ; pre-set bail advance
              *   mov %ecx -> g_vm.sp                    ; sync sp cache
-             *   mov $argc, %edi                        ; arg to helper
+             *   mov %r14, %rdi                         ; caller chunk
+             *   mov $argc, %esi
+             *   mov $op_start+3, %edx                  ; absolute resume offset
              *   push %rcx                              ; align 8 -> 0 mod 16
              *   movabs &jit_helper_call, %rax
-             *   call %rax                              ; eax = 0 (continue) / 1 (bail)
-             *   pop %rcx                               ; (junk, will be reloaded)
-             *   mov g_vm.sp -> %ecx                    ; reload (helper may have pushed)
-             *   test %eax, %eax
-             *   jne -> epilogue                        ; bail; r13d already at op_start
+             *   call %rax
+             *   pop %rcx                               ; (junk, reloaded)
+             *   mov g_vm.sp -> %ecx                    ; reload
+             *   test %eax, %eax ; je .continue         ; 0 → call done
+             *   cmp $2, %eax    ; jne -> epilogue      ; 1 → re-execute CALL
+             *   mov $-2, %r13d  ; jmp -> epilogue      ; 2 → deep bail:
+             *                                          ;     frames already
+             *                                          ;     consistent
+             *  .continue:
              *
-             * On success (eax==0) the loop-tail post-op writeback at
-             * the bottom of this body overwrites %r13d with i (=
-             * op_start + 3), so the resume-after-thunk path lands past
-             * this CALL. On bail, the existing pre-set %r13d carries
-             * the interpreter back to OP_CALL itself.
+             * On eax==0 the loop-tail post-op writeback overwrites
+             * %r13d with op_start+3 so a later exit resumes past the
+             * CALL. On eax==1 the pre-set %r13d carries the interpreter
+             * back to OP_CALL itself (helper touched nothing). On
+             * eax==2 the -2 sentinel makes vm_run resync frame/ip/chunk
+             * from g_vm (jit_helper_call fixed every ip already).
              *
              * r13 is callee-saved in SysV, so the pre-set survives the
              * helper call. */
-            if (bail_count + 1 > (int)(sizeof bail_patches /
+            if (bail_count + 2 > (int)(sizeof bail_patches /
                                        sizeof bail_patches[0])) {
                 JIT_BAIL_AND_RETURN();
             }
@@ -3382,16 +3428,26 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
                                        ((uint16_t)chunk->code[i + 2] << 8));
             w = emit_mov_imm32_r13d(w, (uint32_t)(op_start - entry_offset));
             w = emit_mov_ecx_to_disp32_rbx(w, g_layout.off_sp);
-            w = emit_mov_imm32_edi(w, (uint32_t)argc);
+            w = emit_mov_r14_rdi(w);
+            w = emit_mov_imm32_esi(w, (uint32_t)argc);
+            w = emit_mov_imm32_edx(w, (uint32_t)(op_start + 3));
             w = emit_push_rcx(w);
             w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&jit_helper_call);
             w = emit_call_rax(w);
             w = emit_pop_rcx(w);
             w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
             w = emit_test_rax_rax(w);
-            uint8_t *p_bail;
-            w = emit_jne_rel32(w, &p_bail);
-            bail_patches[bail_count++] = p_bail;
+            uint8_t *cont_p;
+            w = emit_je_rel32(w, &cont_p);
+            w = emit_cmp_imm8_eax(w, 2);
+            uint8_t *plain_p;
+            w = emit_jne_rel32(w, &plain_p);
+            bail_patches[bail_count++] = plain_p;
+            w = emit_mov_imm32_r13d(w, (uint32_t)-2);
+            uint8_t *deep_p;
+            w = emit_jmp_rel32(w, &deep_p);
+            bail_patches[bail_count++] = deep_p;
+            patch_rel32(cont_p, w);
             i += 3;
         } else if (op == OP_RETURN) {
             /* Stage 4s: OP_RETURN via helper.
@@ -3630,23 +3686,31 @@ void jit_try_compile_chunk(struct EigsChunk *chunk) {
  * here — the caller's gate is what's load-bearing. We do honor a
  * dedicated EIGS_JIT_OSR_OFF for bisection, plus the global JIT_OFF.
  * Writes results into chunk->jit_osr_*. */
-void jit_try_compile_chunk_osr(struct EigsChunk *chunk, int entry_offset) {
+void jit_try_compile_chunk_osr(struct EigsChunk *chunk, int entry_offset,
+                               int slot) {
     if (!chunk) return;
-    if (chunk->jit_osr_state != 0) return;
+    if (slot < 0 || slot >= JIT_OSR_SLOTS) return;
+    if (chunk->jit_osr[slot].state != 0) return;
+    /* Record the offset whatever the outcome — a state-1 slot must
+     * remember WHICH loop header failed so vm_run's scan doesn't burn
+     * another slot (or retry-storm) on the same offset. */
+    chunk->jit_osr[slot].entry_offset = entry_offset;
     if (entry_offset < 0 || entry_offset >= chunk->code_len) {
-        chunk->jit_osr_state = 1;
-        chunk->jit_osr_code = NULL;
+        chunk->jit_osr[slot].state = 1;
+        chunk->jit_osr[slot].code = NULL;
         return;
     }
     if (getenv("EIGS_JIT_OFF") || getenv("EIGS_JIT_OSR_OFF")) {
-        chunk->jit_osr_state = 1;
-        chunk->jit_osr_code = NULL;
+        chunk->jit_osr[slot].state = 1;
+        chunk->jit_osr[slot].code = NULL;
         return;
     }
     jit_register_chunk(chunk);
-    chunk->jit_osr_entry_offset = entry_offset;
     jit_compile_to_thunk(chunk, entry_offset,
-                         (int)offsetof(struct EigsChunk, jit_osr_advance),
-                         &chunk->jit_osr_state, &chunk->jit_osr_code,
-                         &chunk->jit_osr_advance, &chunk->jit_osr_stop_op);
+                         (int)(offsetof(struct EigsChunk, jit_osr[0].advance) +
+                               (size_t)slot * sizeof(chunk->jit_osr[0])),
+                         &chunk->jit_osr[slot].state,
+                         &chunk->jit_osr[slot].code,
+                         &chunk->jit_osr[slot].advance,
+                         &chunk->jit_osr[slot].stop_op);
 }

@@ -55,13 +55,16 @@ DMG benchmark: **target met** — ~5 MHz on cpu_instrs at 0.11.8
       branch (required: the swap path would free a Value
       g_last_observer can still point at). Poisoned-counter loop
       −26% (141→105 ms); bench_idxset −10% (24.6→22.2 ms).
-- [ ] **VAL_FN calls inside thunks.** The remaining bench_dmg_shape
-      cap: `handler of ctx` makes OP_CALL bail (helper handles
-      builtins only), and the interpreter then runs the REST of the
-      loop iteration before the back-edge re-enters the OSR thunk —
-      so every iteration is part native, part interpreted. Needs
-      native frame push/handoff for VAL_FN/VAL_CLOSURE targets, or a
-      thunk-resume point after the call.
+- [x] **JIT Stage 5f/5g — native VAL_FN calls + per-loop OSR slots.**
+      Two structural fixes: (5g) chunks now carry one OSR slot per hot
+      loop header (`jit_osr[4]`) — the old single slot was pinned by
+      bench_dmg_shape's setup loop, leaving the main loop interpreted
+      through every prior stage; (5f) `jit_helper_call` pushes the
+      callee frame and invokes a compiled callee's thunk directly,
+      with a `-2` deep-bail sentinel for mid-callee guard failures.
+      Plus OP_DOT_SET coverage (last unsupported op in the DMG loop).
+      bench_dmg_shape 212→156 ms (−27%); JIT now ~33% faster than
+      EIGS_JIT_OFF on it (previously near parity).
 - [ ] NaN-boxing for container storage — stack and env slots are
       already EigsSlot/NaN-boxed; list items and dict values are still
       `Value**`, so every list/dict number write round-trips through

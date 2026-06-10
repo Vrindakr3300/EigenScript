@@ -672,6 +672,31 @@ void jit_helper_local_idx_dot_get(EigsChunk *chunk, int slot,
  * interpreter). The JIT site must sync %ecx → g_vm.sp before the call
  * and reload after; sp is unchanged on return but reload keeps the
  * cache honest in case the helper internals ever change. */
+/* Stage 5g: out-of-line helper for OP_DOT_SET. Mirrors CASE(DOT_SET):
+ * pops value and target, dict-sets the field, pushes the value back
+ * (net sp -1). Non-dict targets raise via runtime_error and the
+ * dispatch loop's CHECK_ERROR picks it up after the thunk returns.
+ * This was the last unsupported op in bench_dmg_shape's main loop
+ * (`ctx.cycles is ...` / `ctx.pc is ...` on a GET_NAME'd dict). */
+void jit_helper_dot_set(EigsChunk *chunk, int name_idx) {
+    const char *key = chunk->const_interns[name_idx];
+    uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
+    if (h == 0) {
+        h = env_hash_name(key);
+        if (chunk->const_hashes) chunk->const_hashes[name_idx] = h;
+    }
+    Value *val = vm_pop(); Value *target = vm_pop();
+    if (target->type == VAL_DICT)
+        dict_set_cached(target, key, h, val);
+    else if (target->type != VAL_NULL)
+        runtime_error(g_vm.current_line, "cannot set field '%s' on %s",
+            key, val_type_name(target->type));
+    val_decref(target);
+    val_incref(val);
+    vm_push(val);
+    val_decref(val);
+}
+
 void jit_helper_dot_get(EigsChunk *chunk, int name_idx) {
     const char *key = chunk->const_interns[name_idx];
     uint32_t h = chunk->const_hashes ? chunk->const_hashes[name_idx] : 0;
@@ -1147,25 +1172,142 @@ void jit_helper_index_get(void) {
     vm_push(result);
 }
 
-/* JIT Stage 4r: out-of-line helper for OP_CALL — builtin-only fast path.
+/* JIT Stage 4r/5f: out-of-line helper for OP_CALL.
  *
- * Mirrors the VAL_BUILTIN branch of CASE(CALL) (vm.c around line 1587).
+ * Mirrors the VAL_BUILTIN branch of CASE(CALL), plus (Stage 5f) a
+ * native fast path for bytecode VAL_FN callees that already have a
+ * compiled thunk: push the frame here and invoke the callee's thunk
+ * directly, so a fully-native callee (RETURN sentinel) lets the
+ * CALLER's thunk continue without ever touching the dispatch loop.
  * Returns:
- *   0 — builtin called, args+fn consumed from g_vm.stack, result pushed.
- *       g_has_error may be set if the builtin failed; the caller's
- *       subsequent dispatch handles it (CHECK_ERROR / try-catch). State
- *       on the stack is still consistent (vm_push(result) ran with
- *       result = make_null() on failure).
- *   1 — fn at g_vm.stack[sp-1-argc] is not a builtin, or sp underflow.
- *       Helper has NOT touched the stack; caller should bail to the
- *       interpreter so it re-executes OP_CALL with full semantics.
+ *   0 — call completed (builtin ran, or VAL_FN callee ran natively to
+ *       its RETURN): args+fn consumed, result pushed, frame state
+ *       exactly as after an interpreted call. Caller thunk continues.
+ *   1 — not eligible (non-callable / uncompiled callee / frame or
+ *       native-depth limit / sp underflow). Helper has NOT touched the
+ *       stack; caller thunk bails with %r13d at the CALL's own offset
+ *       so the interpreter re-executes OP_CALL with full semantics.
+ *   2 — deep bail: the callee's thunk exited early (guard bail, or a
+ *       nested deep bail, or a pending error). The callee's frame is
+ *       still live with a consistent ip, and the CALLER frame's ip has
+ *       been set to resume_off (the op after the CALL). The caller
+ *       thunk must exit with the -2 advance sentinel so vm_run resyncs
+ *       to whatever frame is now current and resumes interpreting.
  *
  * Helper reads and writes g_vm.sp directly; the JIT emitter syncs
  * %ecx → g_vm.sp before the call and reloads after. */
-int jit_helper_call(int argc) {
+
+/* Stage 5f: each nested native call recurses the C stack (helper +
+ * thunk frames), unlike the interpreter's flat frame array. Cap the
+ * native depth; deeper recursion runs interpreted via return code 1. */
+#define JIT_NATIVE_CALL_DEPTH_MAX 64
+static __thread int g_native_call_depth = 0;
+
+int jit_helper_call(EigsChunk *caller_chunk, int argc, int resume_off) {
     if (g_vm.sp < argc + 1) return 1;
     Value *fn_val = STK_AS_VAL(g_vm.sp - 1 - argc);
-    if (fn_val->type != VAL_BUILTIN) return 1;
+    if (fn_val->type != VAL_BUILTIN) {
+        /* Stage 5f: bytecode-fn fast path. Only when the callee already
+         * has a from-zero thunk — otherwise the interpreter's
+         * CASE(CALL) runs (and does the exec_count accounting + lazy
+         * compile that eventually unlocks this path). */
+        if (fn_val->type != VAL_FN || fn_val->data.fn.body_count != -1)
+            return 1;
+        EigsChunk *fn_chunk = (EigsChunk *)fn_val->data.fn.body;
+        if (fn_chunk->jit_state != 2 || !fn_chunk->jit_code) return 1;
+        if (g_vm.frame_count >= VM_FRAMES_MAX) return 1;
+        if (g_native_call_depth >= JIT_NATIVE_CALL_DEPTH_MAX) return 1;
+
+        int caller_idx = g_vm.frame_count - 1;
+
+        /* Frame push — CASE(CALL)'s VAL_FN path verbatim. */
+        Env *call_env = env_new(fn_val->data.fn.closure);
+        int param_count = fn_val->data.fn.param_count;
+        uint32_t *phashes = fn_val->data.fn.param_hashes;
+        if (param_count > 1 && argc > 0) {
+            int bound = param_count < argc ? param_count : argc;
+            for (int i = 0; i < bound; i++) {
+                uint32_t ph = phashes ? phashes[i]
+                                      : env_hash_name(fn_val->data.fn.params[i]);
+                env_bind_fresh_param_slot(call_env,
+                    fn_val->data.fn.params[i], ph,
+                    g_vm.stack[g_vm.sp - argc + i]);
+            }
+        } else if (param_count == 1) {
+            uint32_t ph = phashes ? phashes[0]
+                                  : env_hash_name(fn_val->data.fn.params[0]);
+            if (argc == 1) {
+                vm_bind_fresh_param(call_env, 0,
+                    fn_val->data.fn.params[0], ph,
+                    g_vm.stack[g_vm.sp - 1]);
+            } else {
+                Value *arg_list = make_list(argc);
+                for (int i = 0; i < argc; i++)
+                    list_append(arg_list, STK_AS_VAL(g_vm.sp - argc + i));
+                vm_bind_fresh_param(call_env, 0,
+                    fn_val->data.fn.params[0], ph,
+                    slot_from_heap(arg_list));
+                val_decref(arg_list);
+            }
+        }
+        if (fn_chunk->local_count > param_count)
+            env_reserve_slots(call_env, fn_chunk->local_count);
+        for (int i = 0; i < argc; i++)
+            slot_decref(g_vm.stack[--g_vm.sp]);
+        slot_decref(g_vm.stack[--g_vm.sp]); /* fn */
+
+        /* The caller frame's ip stays at the thunk's entry offset (the
+         * jit_advance-relative contract); it is fixed to resume_off
+         * only on the deep-bail paths, where the interpreter takes
+         * over mid-thunk. */
+        CallFrame *frame = &g_vm.frames[g_vm.frame_count++];
+        frame->chunk = fn_chunk;
+        chunk_incref(fn_chunk);
+        frame->ip = fn_chunk->code;
+        frame->bp = g_vm.sp;
+        frame->env = call_env;
+        frame->fn_env = call_env;
+        frame->closure_val = fn_val;
+        frame->owns_env = 1;
+        frame->is_try = 0;
+        frame->try_count = 0;
+        frame->saved_stall_count = g_loop_stall_count;
+        frame->saved_loop_iter   = g_loop_iterations;
+        g_loop_stall_count = 0;
+        g_loop_iterations  = 0;
+        fn_chunk->exec_count++;
+
+        g_native_call_depth++;
+        ((JitChunkFn)fn_chunk->jit_code)();
+        g_native_call_depth--;
+
+        int adv = fn_chunk->jit_advance;
+        if (adv == -1) {
+            /* Callee ran to RETURN: its frame is popped (by
+             * jit_helper_return) and the result is on the caller's
+             * stack. Drop the popped frame's chunk ref — the same duty
+             * vm_run's -1 handler performs when it invoked the thunk. */
+            chunk_decref(fn_chunk);
+            if (__builtin_expect(g_has_error, 0)) {
+                /* Error pending from inside the callee: force a
+                 * dispatch now so CHECK_ERROR unwinds promptly instead
+                 * of after an arbitrary amount of native caller code.
+                 * The call itself completed — resume past it. */
+                g_vm.frames[caller_idx].ip = caller_chunk->code + resume_off;
+                return 2;
+            }
+            return 0;
+        }
+        /* Callee bailed mid-prefix (adv >= 0: callee is the top frame;
+         * advance its ip past the natively-run prefix) or deep-bailed
+         * itself (adv == -2: a nested helper already left every deeper
+         * frame's ip consistent). Either way the interpreter takes
+         * over from the current top frame. */
+        if (adv != -2)
+            g_vm.frames[g_vm.frame_count - 1].ip += adv;
+        g_vm.frames[caller_idx].ip = caller_chunk->code + resume_off;
+        return 2;
+    }
 
     Value *arg;
     if (argc == 1) {
@@ -2032,30 +2174,40 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
          * top-level being the motivating case) exec_count stays at 1, so
          * the from-zero JIT gate never fires. Once back_edge_count crosses
          * the OSR threshold we attempt a compile starting at the current
-         * loop header (the post-jump-back ip). If a thunk is ready and its
-         * recorded entry offset matches our current ip, we hand off into
-         * native: sync ip → frame->ip, run, then re-import the advance.
+         * loop header (the post-jump-back ip). If a thunk is ready for
+         * this header, hand off into native: sync ip → frame->ip, run,
+         * then re-import the advance.
          *
-         * Phase 4: the trigger only fires when jit_osr_state == 0. After
-         * the first compile attempt the state pins to 1 (failed) or 2
-         * (success) and the gate is closed forever for this chunk — so
-         * a failed OSR cannot retry-storm on every back-edge, and a
-         * successful OSR cannot be displaced by a colder loop entry.
-         * The threshold default (5000) is set high enough that the
-         * chunk-wide back_edge_count favors the actual hot loop over
-         * any short setup loop preceding it. */
+         * Stage 5g: one slot per loop header (JIT_OSR_SLOTS max), scanned
+         * linearly. The old single slot let whichever loop crossed the
+         * threshold FIRST own native execution forever — bench_dmg_shape's
+         * 65k-iteration setup loop pinned it and the 500k-iteration main
+         * loop ran interpreted for good. Failed offsets keep their slot
+         * (state 1) so they cannot retry-storm; when all slots are taken,
+         * additional loop headers simply stay interpreted. */
         static int s_osr_threshold = 0;
         if (s_osr_threshold == 0) s_osr_threshold = eigs_jit_get_osr_threshold();
-        if (chunk->jit_osr_state == 0 &&
-            chunk->back_edge_count >= (uint32_t)s_osr_threshold) {
-            int target_offset = (int)(ip - chunk->code);
-            jit_try_compile_chunk_osr(chunk, target_offset);
-        }
-        if (chunk->jit_osr_state == 2 && chunk->jit_osr_code &&
-            chunk->jit_osr_entry_offset == (int)(ip - chunk->code)) {
+        {
+            int t_off = (int)(ip - chunk->code);
+            int osr_hit = -1, osr_free = -1;
+            for (int k = 0; k < JIT_OSR_SLOTS; k++) {
+                uint8_t st = chunk->jit_osr[k].state;
+                if (st == 0) { if (osr_free < 0) osr_free = k; continue; }
+                if (chunk->jit_osr[k].entry_offset == t_off) {
+                    osr_hit = (st == 2) ? k : -2;  /* -2: failed here before */
+                    break;
+                }
+            }
+            if (osr_hit == -1 && osr_free >= 0 &&
+                chunk->back_edge_count >= (uint32_t)s_osr_threshold) {
+                jit_try_compile_chunk_osr(chunk, t_off, osr_free);
+                if (chunk->jit_osr[osr_free].state == 2)
+                    osr_hit = osr_free;
+            }
+            if (osr_hit >= 0 && chunk->jit_osr[osr_hit].code) {
             frame->ip = ip;
-            ((JitChunkFn)chunk->jit_osr_code)();
-            if (chunk->jit_osr_advance == -1) {
+            ((JitChunkFn)chunk->jit_osr[osr_hit].code)();
+            if (chunk->jit_osr[osr_hit].advance == -1) {
                 /* Stage 4s: OSR thunk hit OP_RETURN. Same shape as the
                  * OP_CALL hook: result already on caller's stack, frame
                  * popped. Resync, or return to C if below base_frame.
@@ -2075,9 +2227,21 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 current_line = g_vm.current_line;
                 DISPATCH();
             }
-            frame->ip += chunk->jit_osr_advance;
+            if (chunk->jit_osr[osr_hit].advance == -2) {
+                /* Stage 5f deep bail: a native callee below this thunk
+                 * bailed mid-prefix; jit_helper_call already left every
+                 * frame's ip consistent (no decref — the frames are all
+                 * live). Resync to the current top and interpret on. */
+                frame = &g_vm.frames[g_vm.frame_count - 1];
+                ip = frame->ip;
+                chunk = frame->chunk;
+                current_line = g_vm.current_line;
+                DISPATCH();
+            }
+            frame->ip += chunk->jit_osr[osr_hit].advance;
             ip = frame->ip;
             current_line = g_vm.current_line;
+            }
         }
         DISPATCH();
     }
@@ -2334,6 +2498,15 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                         if (slot_is_bool(result_s)) return make_num(slot_as_bool(result_s) ? 1.0 : 0.0);
                         return slot_as_ptr(result_s);
                     }
+                    frame = &g_vm.frames[g_vm.frame_count - 1];
+                    ip = frame->ip;
+                    chunk = frame->chunk;
+                    current_line = g_vm.current_line;
+                    DISPATCH();
+                }
+                if (fn_chunk->jit_advance == -2) {
+                    /* Stage 5f deep bail — see the OSR site. All frame
+                     * ips are consistent; resync to the current top. */
                     frame = &g_vm.frames[g_vm.frame_count - 1];
                     ip = frame->ip;
                     chunk = frame->chunk;
@@ -3457,6 +3630,14 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                         if (slot_is_bool(result_s)) return make_num(slot_as_bool(result_s) ? 1.0 : 0.0);
                         return slot_as_ptr(result_s);
                     }
+                    frame = &g_vm.frames[g_vm.frame_count - 1];
+                    ip = frame->ip;
+                    chunk = frame->chunk;
+                    current_line = g_vm.current_line;
+                    DISPATCH();
+                }
+                if (fn_chunk->jit_advance == -2) {
+                    /* Stage 5f deep bail — see the OSR site. */
                     frame = &g_vm.frames[g_vm.frame_count - 1];
                     ip = frame->ip;
                     chunk = frame->chunk;
