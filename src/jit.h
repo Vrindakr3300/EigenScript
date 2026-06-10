@@ -180,6 +180,9 @@ int jit_helper_iter_next(void);
 void jit_helper_index_get(void);
 void jit_helper_index_set(void);
 int  jit_helper_loop_stall_check(void);
+void jit_helper_set_name(struct EigsChunk *chunk, int idx);
+void jit_helper_set_name_local(struct EigsChunk *chunk, int idx);
+void jit_helper_set_fn_name_local(struct EigsChunk *chunk, int idx);
 
 /* Stage 4r: out-of-line helper for OP_CALL — builtin-only fast path.
  * Returns 0 if a VAL_BUILTIN was called (args+fn consumed, result

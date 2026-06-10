@@ -391,6 +391,125 @@ void jit_helper_get_name(EigsChunk *chunk, int idx) {
     vm_push_slot(s);
 }
 
+/* JIT Stage 4x: out-of-line helpers for the SET name family. These are
+ * the interpreter cases verbatim (trace hook, EnvIC fast path, resolve/
+ * create slow path) against g_vm state. None of them touch the value
+ * stack — the assigned value stays on TOS for the following OP_POP —
+ * and none can raise, so the emitter needs no bail or flag handling.
+ * These were the wall between per-fragment thunks and whole-loop
+ * native coverage: every `x is ...` statement at module scope or on a
+ * captured/interrogated name runs one. */
+void jit_helper_set_name(EigsChunk *chunk, int idx) {
+    if (__builtin_expect(g_trace_hist, 0)) {
+        trace_assign(chunk->const_interns[idx], g_vm.stack[g_vm.sp - 1]);
+    }
+    EnvIC *ic = &chunk->env_ic[idx];
+    CallFrame *frame = &g_vm.frames[g_vm.frame_count - 1];
+    Env *start = frame->env;
+    EigsSlot s = g_vm.stack[g_vm.sp - 1];
+    if (__builtin_expect(ic->starting_env == start &&
+                         ic->starting_ver == start->binding_version, 1)) {
+        Env *target = ic->walk_depth ? start->parent : start;
+        if (__builtin_expect(target && target->binding_version == ic->target_ver, 1)) {
+            env_store_slot(target, ic->slot_idx, s);
+            if (target->assign_counts && g_unobserved_depth == 0)
+                target->assign_counts[ic->slot_idx]++;
+            return;
+        }
+    }
+    const char *name = chunk->const_interns[idx];
+    uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
+    if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
+    int slot_idx, depth;
+    Env *target = env_resolve_chain(start, name, h, &slot_idx, &depth);
+    if (target) {
+        env_store_slot(target, slot_idx, s);
+        if (target->assign_counts && g_unobserved_depth == 0)
+            target->assign_counts[slot_idx]++;
+        if (depth <= 1) {
+            ic->starting_env = start;
+            ic->starting_ver = start->binding_version;
+            ic->target_ver   = target->binding_version;
+            ic->slot_idx     = slot_idx;
+            ic->walk_depth   = (uint8_t)depth;
+        }
+        return;
+    }
+    env_set_local_pre_interned_slot(start, name, h, s);
+    Env *t2 = env_resolve_chain(start, name, h, &slot_idx, &depth);
+    if (t2 == start) {
+        ic->starting_env = start;
+        ic->starting_ver = start->binding_version;
+        ic->target_ver   = start->binding_version;
+        ic->slot_idx     = slot_idx;
+        ic->walk_depth   = 0;
+    }
+}
+
+void jit_helper_set_name_local(EigsChunk *chunk, int idx) {
+    if (__builtin_expect(g_trace_hist, 0)) {
+        trace_assign(chunk->const_interns[idx], g_vm.stack[g_vm.sp - 1]);
+    }
+    EnvIC *ic = &chunk->env_ic[idx];
+    CallFrame *frame = &g_vm.frames[g_vm.frame_count - 1];
+    Env *start = frame->env;
+    EigsSlot s = g_vm.stack[g_vm.sp - 1];
+    if (__builtin_expect(ic->starting_env == start &&
+                         ic->starting_ver == start->binding_version &&
+                         ic->walk_depth == 0 &&
+                         ic->target_ver == start->binding_version, 1)) {
+        env_store_slot(start, ic->slot_idx, s);
+        if (start->assign_counts && g_unobserved_depth == 0)
+            start->assign_counts[ic->slot_idx]++;
+        return;
+    }
+    const char *name = chunk->const_interns[idx];
+    uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
+    if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
+    env_set_local_pre_interned_slot(start, name, h, s);
+    int slot_idx, depth;
+    Env *target = env_resolve_chain(start, name, h, &slot_idx, &depth);
+    if (target == start) {
+        ic->starting_env = start;
+        ic->starting_ver = start->binding_version;
+        ic->target_ver   = start->binding_version;
+        ic->slot_idx     = slot_idx;
+        ic->walk_depth   = 0;
+    }
+}
+
+void jit_helper_set_fn_name_local(EigsChunk *chunk, int idx) {
+    if (__builtin_expect(g_trace_hist, 0)) {
+        trace_assign(chunk->const_interns[idx], g_vm.stack[g_vm.sp - 1]);
+    }
+    EnvIC *ic = &chunk->env_ic[idx];
+    CallFrame *frame = &g_vm.frames[g_vm.frame_count - 1];
+    Env *target = frame->fn_env;
+    EigsSlot s = g_vm.stack[g_vm.sp - 1];
+    if (__builtin_expect(ic->starting_env == target &&
+                         ic->starting_ver == target->binding_version &&
+                         ic->walk_depth == 0 &&
+                         ic->target_ver == target->binding_version, 1)) {
+        env_store_slot(target, ic->slot_idx, s);
+        if (target->assign_counts && g_unobserved_depth == 0)
+            target->assign_counts[ic->slot_idx]++;
+        return;
+    }
+    const char *name = chunk->const_interns[idx];
+    uint32_t h = chunk->const_hashes ? chunk->const_hashes[idx] : 0;
+    if (h == 0) { h = env_hash_name(name); if (chunk->const_hashes) chunk->const_hashes[idx] = h; }
+    env_set_local_pre_interned_slot(target, name, h, s);
+    int slot_idx, depth;
+    Env *resolved = env_resolve_chain(target, name, h, &slot_idx, &depth);
+    if (resolved == target) {
+        ic->starting_env = target;
+        ic->starting_ver = target->binding_version;
+        ic->target_ver   = target->binding_version;
+        ic->slot_idx     = slot_idx;
+        ic->walk_depth   = 0;
+    }
+}
+
 /* JIT Stage 4l: out-of-line helper for OP_LOCAL_IDX_GET.
  *
  * Mirrors CASE(LOCAL_IDX_GET) below — buffer / list / string indexing

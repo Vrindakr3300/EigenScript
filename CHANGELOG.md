@@ -4,6 +4,23 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Performance — JIT coverage: SET name family (Stage 4x)
+
+`SET_NAME`, `SET_NAME_LOCAL`, and `SET_FN_NAME_LOCAL` now compile into
+thunks via out-of-line helpers on the GET_NAME ABI (chunk pointer +
+name index; interpreter semantics verbatim — trace hook, EnvIC fast
+path, resolve/create slow path; no stack effect, no error paths). With
+Stage 4v/4w this closes the coverage chain: the fn-local index-write
+benchmark compiles to a single thunk with zero bailouts, and
+bench_dmg_shape's only remaining bailout is a one-time `DICT` literal.
+
+Honest numbers: flat. Helper-call ABI costs roughly what computed-goto
+dispatch did, so coverage alone doesn't move timings — it removes the
+structural blocker. The next stage (recorded in ROADMAP.md) is
+inlining the EnvIC fast paths into native templates with helper
+fallback on IC miss; whole-loop thunks are the prerequisite this
+stage delivers.
+
 ### Performance — JIT coverage: INDEX_SET + LOOP_STALL_CHECK (Stage 4v/4w)
 
 Driven by the EIGS_JIT_STOPS bailout histogram on the new DMG-shaped

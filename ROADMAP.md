@@ -28,12 +28,14 @@ the repo):
 DMG benchmark: ~1.094 MHz on cpu_instrs at 0.11.4 (target 4.19 MHz);
 re-measure with the ROM workload before starting the next item.
 
-- [ ] Copy-and-patch JIT — widen opcode coverage. The EIGS_JIT_STOPS
-      histogram on bench_dmg_shape drives the chain: INDEX_SET and
-      LOOP_STALL_CHECK are covered (Stage 4v/4w); the next blockers are
-      the name-op family (SET_NAME, SET_NAME_LOCAL, GET_NAME with their
-      inline caches) — that family is the wall between current thunks
-      and whole-loop native coverage, and where the next real win is.
+- [ ] **JIT Stage 5 — inline the hot fast paths.** Coverage is done
+      (Stage 4v/4w/4x: whole loops compile to single thunks, zero
+      bailouts) but timings are flat: helper-call ABI costs what
+      dispatch did. Emit the buffer-INDEX_SET and GET_NAME/SET_NAME
+      EnvIC fast paths as native templates with helper fallback on
+      guard failure. Full implementation spec — emitter architecture,
+      register conventions, ordered sub-stages, measurement protocol,
+      validation gates — in `docs/JIT_STAGE5_INLINE_IC.md`.
 - [ ] NaN-boxing — encode numbers directly in 64-bit slots; prerequisite
       for efficient JIT. Eliminates make_num + num refcount traffic.
 - [ ] Extend GET_LOCAL/SET_LOCAL to all local variables (closure-safe)
