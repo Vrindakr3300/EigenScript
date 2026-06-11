@@ -34,10 +34,10 @@ now beats `EIGS_JIT_OFF` by ~45% on it.
 - [x] Destructuring assignment (`[a, b] is [1, 2]`) — shipped 0.13.0
 - [x] Streaming subprocess I/O (stdin pipe, unbuffered stdout) —
       shipped 0.13.0 (`proc_spawn` / `proc_write` / `proc_read_line` /
-      `proc_read` / `proc_close` / `proc_wait`; slicing `s[1:3]` still
-      open as a separate item)
-- [x] Negative indexing (`a[-1]`) — shipped 0.13.0; slicing `s[1:3]`
-      remains open
+      `proc_read` / `proc_close` / `proc_wait`)
+- [x] Negative indexing (`a[-1]`) — shipped 0.13.0
+- [x] Slicing (`a[start:end]`, lists/strings/buffers, half-open,
+      negatives, strict bounds, independent copy) — shipped 0.13.0
 - [x] Default parameter values — shipped 0.13.0
 
 ### Downstream gaps feeding back

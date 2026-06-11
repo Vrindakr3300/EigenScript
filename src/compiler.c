@@ -162,6 +162,8 @@ static int op_stack_effect(uint8_t op) {
         return 0;
     case OP_DESTRUCTURE_UNPACK:  /* dynamic: -1 + n; caller adjusts directly */
         return 0;
+    case OP_SLICE_GET:  /* pop end, start, target; push slice = -2 */
+        return -2;
     /* Index set: pop value, pop index, pop target, push value = -2 */
     case OP_INDEX_SET:
         return -2;
@@ -1519,6 +1521,16 @@ static void compile_node(Compiler *c, ASTNode *node) {
         compile_node(c, node->data.index.target);
         compile_node(c, node->data.index.index);
         emit(c, OP_INDEX_GET, node->line);
+        break;
+    }
+
+    case AST_SLICE: {
+        compile_node(c, node->data.slice.target);
+        if (node->data.slice.start) compile_node(c, node->data.slice.start);
+        else                        emit(c, OP_NULL, node->line);
+        if (node->data.slice.end)   compile_node(c, node->data.slice.end);
+        else                        emit(c, OP_NULL, node->line);
+        emit(c, OP_SLICE_GET, node->line);
         break;
     }
 

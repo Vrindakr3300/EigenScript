@@ -304,9 +304,7 @@ unary and `of` are right-associative.
 every dynamic index site in `OP_INDEX_GET`/`OP_INDEX_SET` and
 `jit_helper_index_get` in `vm.c`.
 
-**Reserved (not yet implemented): slicing.** The `a[start:end]` syntax
-is reserved; today `a[1:3]` is a parse error. When it lands, the
-committed design is:
+**Slicing — `a[start:end]`, half-open with defaults and negatives.**
 - **Slices** are half-open `a[start:end)`, with defaults `a[start:]`
   (end = len), `a[:end]` (start = 0), `a[:]` (the whole sequence).
 - **Slice bounds are positions between elements**, so the valid range is
@@ -318,6 +316,12 @@ committed design is:
   (Python/JS) clamp. Write `min of [end, len of a]` for explicit clamping.
 - Negatives resolve to absolute positions first (same rule as single
   indexing), then the `0 <= start <= end <= len` check applies.
+- **The slice is an independent copy** — mutating the slice does not
+  alias the source (and vice versa). Applies to lists, strings (which
+  are immutable anyway), and buffers.
+
+**Status:** Enforced — `tests/test_slicing.eigs`; `OP_SLICE_GET` in
+`vm.c` for `VAL_LIST` / `VAL_STR` / `VAL_BUFFER`.
 
 **Dict access — missing key returns `null` (deliberate, not an error).**
 A missing dict key (`d["k"]`) or field (`d.k`) evaluates to `null`, on

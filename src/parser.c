@@ -193,6 +193,11 @@ void free_ast(ASTNode *node) {
             free(node->data.list_pattern_assign.name_hashes);
             free_ast(node->data.list_pattern_assign.expr);
             break;
+        case AST_SLICE:
+            free_ast(node->data.slice.target);
+            free_ast(node->data.slice.start);
+            free_ast(node->data.slice.end);
+            break;
         case AST_LISTCOMP:
             free_ast(node->data.listcomp.expr);
             if (node->data.listcomp.var) free(node->data.listcomp.var);
@@ -371,6 +376,11 @@ ASTNode *clone_ast(ASTNode *node) {
             n->data.list_pattern_assign.expr = clone_ast(node->data.list_pattern_assign.expr);
             break;
         }
+        case AST_SLICE:
+            n->data.slice.target = clone_ast(node->data.slice.target);
+            n->data.slice.start  = clone_ast(node->data.slice.start);
+            n->data.slice.end    = clone_ast(node->data.slice.end);
+            break;
         case AST_LISTCOMP:
             n->data.listcomp.expr = clone_ast(node->data.listcomp.expr);
             n->data.listcomp.var = xstrdup(node->data.listcomp.var ? node->data.listcomp.var : "");
@@ -476,6 +486,44 @@ static ASTNode** parse_block(Parser *p, int *count) {
     return stmts;
 }
 
+/* Consume a single `[ ... ]` postfix and return either AST_INDEX or
+ * AST_SLICE wrapping `target`. Caller has already confirmed the current
+ * token is TOK_LBRACKET. Slice forms: [:], [:end], [start:], [start:end].
+ * The bare [expr] form remains AST_INDEX. */
+static ASTNode* parse_subscript_suffix(Parser *p, ASTNode *target) {
+    int line = p_cur(p)->line;
+    p_advance(p); /* skip '[' */
+
+    ASTNode *start = NULL, *end = NULL;
+    int is_slice = 0;
+
+    if (p_cur(p)->type == TOK_COLON) {
+        is_slice = 1;
+        p_advance(p); /* skip ':' */
+        if (p_cur(p)->type != TOK_RBRACKET) end = parse_expression(p);
+    } else {
+        start = parse_expression(p);
+        if (p_cur(p)->type == TOK_COLON) {
+            is_slice = 1;
+            p_advance(p);
+            if (p_cur(p)->type != TOK_RBRACKET) end = parse_expression(p);
+        }
+    }
+    p_expect(p, TOK_RBRACKET);
+
+    if (is_slice) {
+        ASTNode *n = make_node(AST_SLICE, line);
+        n->data.slice.target = target;
+        n->data.slice.start  = start;
+        n->data.slice.end    = end;
+        return n;
+    }
+    ASTNode *n = make_node(AST_INDEX, line);
+    n->data.index.target = target;
+    n->data.index.index  = start;
+    return n;
+}
+
 static ASTNode* parse_primary(Parser *p) {
     Token *t = p_cur(p);
 
@@ -500,13 +548,7 @@ static ASTNode* parse_primary(Parser *p) {
         n->data.ident.name = xstrdup(t->str_val);
         set_name_hash(n, n->data.ident.name);
         while (p_cur(p)->type == TOK_LBRACKET) {
-            p_advance(p);
-            ASTNode *idx = parse_expression(p);
-            p_expect(p, TOK_RBRACKET);
-            ASTNode *index_node = make_node(AST_INDEX, p_cur(p)->line);
-            index_node->data.index.target = n;
-            index_node->data.index.index = idx;
-            n = index_node;
+            n = parse_subscript_suffix(p, n);
         }
         return n;
     }
@@ -560,13 +602,7 @@ static ASTNode* parse_primary(Parser *p) {
         ASTNode *n = make_node(AST_NUM, p_cur(p)->line);
         n->data.num = t->num_val;
         while (p_cur(p)->type == TOK_LBRACKET) {
-            p_advance(p);
-            ASTNode *idx = parse_expression(p);
-            p_expect(p, TOK_RBRACKET);
-            ASTNode *index_node = make_node(AST_INDEX, p_cur(p)->line);
-            index_node->data.index.target = n;
-            index_node->data.index.index = idx;
-            n = index_node;
+            n = parse_subscript_suffix(p, n);
         }
         return n;
     }
@@ -576,13 +612,7 @@ static ASTNode* parse_primary(Parser *p) {
         ASTNode *n = make_node(AST_STR, p_cur(p)->line);
         n->data.str = xstrdup(t->str_val);
         while (p_cur(p)->type == TOK_LBRACKET) {
-            p_advance(p);
-            ASTNode *idx = parse_expression(p);
-            p_expect(p, TOK_RBRACKET);
-            ASTNode *index_node = make_node(AST_INDEX, p_cur(p)->line);
-            index_node->data.index.target = n;
-            index_node->data.index.index = idx;
-            n = index_node;
+            n = parse_subscript_suffix(p, n);
         }
         return n;
     }
@@ -608,13 +638,7 @@ static ASTNode* parse_primary(Parser *p) {
                 set_name_hash(dot, dot->data.dot.key);
                 n = dot;
             } else {
-                p_advance(p);
-                ASTNode *idx = parse_expression(p);
-                p_expect(p, TOK_RBRACKET);
-                ASTNode *index_node = make_node(AST_INDEX, p_cur(p)->line);
-                index_node->data.index.target = n;
-                index_node->data.index.index = idx;
-                n = index_node;
+                n = parse_subscript_suffix(p, n);
             }
         }
         return n;
@@ -675,13 +699,7 @@ static ASTNode* parse_primary(Parser *p) {
                 set_name_hash(dot, dot->data.dot.key);
                 expr = dot;
             } else {
-                p_advance(p);
-                ASTNode *idx = parse_expression(p);
-                p_expect(p, TOK_RBRACKET);
-                ASTNode *index_node = make_node(AST_INDEX, p_cur(p)->line);
-                index_node->data.index.target = expr;
-                index_node->data.index.index = idx;
-                expr = index_node;
+                expr = parse_subscript_suffix(p, expr);
             }
         }
         return expr;
@@ -740,13 +758,7 @@ static ASTNode* parse_primary(Parser *p) {
         n->data.list.count = count;
 
         while (p_cur(p)->type == TOK_LBRACKET) {
-            p_advance(p);
-            ASTNode *idx = parse_expression(p);
-            p_expect(p, TOK_RBRACKET);
-            ASTNode *index_node = make_node(AST_INDEX, p_cur(p)->line);
-            index_node->data.index.target = n;
-            index_node->data.index.index = idx;
-            n = index_node;
+            n = parse_subscript_suffix(p, n);
         }
         return n;
     }
@@ -793,13 +805,7 @@ static ASTNode* parse_primary(Parser *p) {
                 set_name_hash(dot, dot->data.dot.key);
                 n = dot;
             } else {
-                p_advance(p);
-                ASTNode *idx = parse_expression(p);
-                p_expect(p, TOK_RBRACKET);
-                ASTNode *index_node = make_node(AST_INDEX, p_cur(p)->line);
-                index_node->data.index.target = n;
-                index_node->data.index.index = idx;
-                n = index_node;
+                n = parse_subscript_suffix(p, n);
             }
         }
         return n;

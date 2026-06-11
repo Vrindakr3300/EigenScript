@@ -227,6 +227,7 @@ const char *op_name(uint8_t op) {
         [OP_INTERROGATE_NAMED_AT] = "INTERROGATE_NAMED_AT",
         [OP_DEFAULT_PARAM] = "DEFAULT_PARAM",
         [OP_DESTRUCTURE_UNPACK] = "DESTRUCTURE_UNPACK",
+        [OP_SLICE_GET] = "SLICE_GET",
     };
     if (op < OP_COUNT && names[op]) return names[op];
     return "???";

@@ -137,6 +137,12 @@ typedef enum {
     OP_DESTRUCTURE_UNPACK, /* [n:16] pop list, raise if not VAL_LIST or length != n,
                             * else push elements onto stack in reverse so element 0 is TOS.
                             * Pairs with N assignment ops emitted after by the compiler. */
+    OP_SLICE_GET,       /* pop 3 (end, start, target); push the slice of target from
+                         * start..end (half-open). null in either bound means default
+                         * (0 / len). Target must be VAL_LIST / VAL_STR / VAL_BUFFER.
+                         * Negatives resolve via +len before the 0<=start<=end<=len
+                         * check; out-of-range raises. Same scanner-stop pattern as
+                         * DESTRUCTURE_UNPACK — JIT bails to interpreter. */
 
     OP_COUNT            /* sentinel — number of opcodes */
 } OpCode;

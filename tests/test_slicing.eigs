@@ -1,0 +1,174 @@
+# Slicing (0.13.0).
+checks is 0
+passed is 0
+
+define check(label, got, want) as:
+    checks is checks + 1
+    if got == want:
+        passed is passed + 1
+    else:
+        print of ("MISMATCH " + label + ": got=" + str of got + " want=" + str of want)
+
+# ---- Lists ----
+a is [10, 20, 30, 40, 50]
+
+# 1. Basic [start:end).
+check of ["1a", a[0:2], [10, 20]]
+check of ["1b", a[1:4], [20, 30, 40]]
+check of ["1c", a[2:5], [30, 40, 50]]
+
+# 2. Default start / end.
+check of ["2a", a[:3], [10, 20, 30]]
+check of ["2b", a[2:],  [30, 40, 50]]
+check of ["2c", a[:],   [10, 20, 30, 40, 50]]
+
+# 3. Empty slice at boundary (len, len) — legal.
+check of ["3a", a[5:5], []]
+check of ["3b", a[5:],  []]
+check of ["3c", a[2:2], []]
+
+# 4. Negative resolution.
+check of ["4a", a[-2:],  [40, 50]]
+check of ["4b", a[:-2],  [10, 20, 30]]
+check of ["4c", a[-4:-1], [20, 30, 40]]
+check of ["4d", a[-5:],  [10, 20, 30, 40, 50]]
+
+# 5. RHS evaluated once.
+cnt is 0
+define src() as:
+    cnt is cnt + 1
+    return [1, 2, 3, 4]
+sl is src of null
+sl is sl[1:3]
+check of ["5a", sl, [2, 3]]
+check of ["5b", cnt, 1]
+
+# 6. Slice produces an independent list (no aliasing).
+b is a[1:4]
+b[0] is 999
+check of ["6a", b[0], 999]
+check of ["6b", a[1], 20]
+
+# ---- Strings ----
+s is "hello world"
+
+# 7. String slicing.
+check of ["7a", s[0:5],  "hello"]
+check of ["7b", s[6:11], "world"]
+check of ["7c", s[:5],   "hello"]
+check of ["7d", s[6:],   "world"]
+check of ["7e", s[:],    "hello world"]
+
+# 8. Empty string slice.
+check of ["8a", s[0:0],  ""]
+check of ["8b", s[11:],  ""]
+
+# 9. Negative string slicing.
+check of ["9a", s[-5:],   "world"]
+check of ["9b", s[:-6],   "hello"]
+check of ["9c", s[-5:-1], "worl"]
+
+# ---- Buffers ----
+buf is buffer of 5
+buf[0] is 10
+buf[1] is 20
+buf[2] is 30
+buf[3] is 40
+buf[4] is 50
+sb is buf[1:4]
+check of ["10a", len of sb, 3]
+check of ["10b", sb[0], 20]
+check of ["10c", sb[1], 30]
+check of ["10d", sb[2], 40]
+
+# Buffer slice is independent.
+sb[0] is 999
+check of ["10e", buf[1], 20]
+
+# Buffer slice with defaults.
+sb2 is buf[:2]
+check of ["10f", len of sb2, 2]
+check of ["10g", sb2[0], 10]
+check of ["10h", sb2[1], 20]
+
+# ---- Errors ----
+
+# 11. Out-of-range upper bound raises.
+err is null
+try:
+    bad is a[0:99]
+catch e:
+    err is e
+checks is checks + 1
+if err != null:
+    passed is passed + 1
+else:
+    print of "MISMATCH 11a: expected error for upper bound 99 on length 5"
+
+# 12. Inverted bounds raise (start > end).
+err is null
+try:
+    bad is a[3:1]
+catch e:
+    err is e
+checks is checks + 1
+if err != null:
+    passed is passed + 1
+else:
+    print of "MISMATCH 12a: expected error for start>end"
+
+# 13. Too-negative start raises.
+err is null
+try:
+    bad is a[-99:]
+catch e:
+    err is e
+checks is checks + 1
+if err != null:
+    passed is passed + 1
+else:
+    print of "MISMATCH 13a: expected error for start=-99"
+
+# 14. Non-integer bound raises.
+err is null
+try:
+    bad is a[0:1.5]
+catch e:
+    err is e
+checks is checks + 1
+if err != null:
+    passed is passed + 1
+else:
+    print of "MISMATCH 14a: expected error for non-integer bound"
+
+# 15. Slicing a non-sequence raises.
+err is null
+try:
+    bad is 42[0:1]
+catch e:
+    err is e
+checks is checks + 1
+if err != null:
+    passed is passed + 1
+else:
+    print of "MISMATCH 15a: expected error slicing number"
+
+# 16. List literal still parses (lookahead must not eat list expressions).
+ys is [1, 2, 3]
+check of ["16a", len of ys, 3]
+check of ["16b", ys[0], 1]
+check of ["16c", ys[1:3], [2, 3]]
+
+# 17. Slicing inside a function (locals).
+define mid(xs) as:
+    return xs[1:len of xs - 1]
+check of ["17a", mid of [1, 2, 3, 4, 5], [2, 3, 4]]
+
+# 18. Slice chain composes.
+check of ["18a", a[1:4][0], 20]
+check of ["18b", a[:][0:2], [10, 20]]
+
+if passed == checks:
+    print of "All tests passed"
+else:
+    print of f"FAIL: {passed}/{checks} passed"

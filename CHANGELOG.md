@@ -6,6 +6,36 @@ All notable changes to EigenScript are documented here.
 
 A language-features release.
 
+### Language — slicing
+
+`a[start:end]` is now a real expression form, half-open, with `[:]`,
+`[start:]`, `[:end]`, and `[:]` defaults and negative bounds resolved
+against length first. Applies to lists, strings, and buffers — the
+same three sequence types that accept `a[i]`. The slice is always an
+**independent copy**: mutating `b = a[1:4]; b[0] is 999` leaves `a`
+untouched, matching the same "values, not views" stance used by the
+rest of the language.
+
+Bounds-check is strict, not clamping: `0 <= start <= end <= len`
+(note `<=` on the upper end, since positions sit between elements —
+`a[len:]` is a legal empty slice but `a[len]` raises). Too-positive
+upper bounds, inverted ranges (`a[3:1]`), too-negative starts
+(`a[-99:]`), and non-integer / non-sequence operands all raise, same
+philosophy as single indexing — same surfacing of sloppy arithmetic
+that 0.13.0 already does for `a[2.9999998]`.
+
+Wire-up: new AST node `AST_SLICE { target, start, end }` (NULL bound
+= omitted = default), new opcode `OP_SLICE_GET` (pops 3, pushes 1).
+Parser factors a `parse_subscript_suffix` helper out of the seven
+inline `[...]` postfix sites in `parser.c` so list-vs-slice
+disambiguation happens in one place; statement-level destructuring
+(`[a, b] is rhs`) is unaffected because that lookahead runs only
+when `[` opens a fresh statement. JIT scanner needs no change — its
+default-else stops on any unknown opcode, so a new bytecode just
+falls back to the interpreter for now. Test:
+`tests/test_slicing.eigs` (46 checks across 18 sections, suite slot
+[76]).
+
 ### Language — streaming subprocess I/O
 
 Six new builtins for talking to a child process over time, sibling to

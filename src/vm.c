@@ -1737,6 +1737,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_INTERROGATE_NAMED_AT] = &&lbl_INTERROGATE_NAMED_AT,
         [OP_DEFAULT_PARAM] = &&lbl_DEFAULT_PARAM,
         [OP_DESTRUCTURE_UNPACK] = &&lbl_DESTRUCTURE_UNPACK,
+        [OP_SLICE_GET] = &&lbl_SLICE_GET,
     };
     #define CHECK_ERROR() do { \
         if (__builtin_expect(g_has_error, 0)) { \
@@ -3634,6 +3635,127 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             vm_push(e);
         }
         slot_decref(tgt_s);
+        DISPATCH();
+    }
+
+    CASE(SLICE_GET): {
+        /* 0.13.0 slicing: pop 3 (end, start, target); push slice of target.
+         * Null in either bound means default (0 / len). Same negative
+         * resolution rule as single indexing, then 0<=start<=end<=len
+         * (note <= on the upper end — a[len:] is the empty slice, not an
+         * error). */
+        EigsSlot end_s   = g_vm.stack[g_vm.sp - 1];
+        EigsSlot start_s = g_vm.stack[g_vm.sp - 2];
+        EigsSlot tgt_s   = g_vm.stack[g_vm.sp - 3];
+        g_vm.sp -= 3;
+
+        if (!slot_is_ptr(tgt_s)) {
+            runtime_error(g_vm.current_line, "cannot slice number");
+            slot_decref(start_s); slot_decref(end_s); slot_decref(tgt_s);
+            vm_push_slot(slot_null());
+            DISPATCH();
+        }
+        Value *target = slot_as_ptr(tgt_s);
+        int len;
+        switch (target->type) {
+            case VAL_LIST:   len = target->data.list.count; break;
+            case VAL_STR:    len = (int)strlen(target->data.str); break;
+            case VAL_BUFFER: len = target->data.buffer.count; break;
+            default:
+                runtime_error(g_vm.current_line, "cannot slice %s",
+                              val_type_name(target->type));
+                slot_decref(start_s); slot_decref(end_s); slot_decref(tgt_s);
+                vm_push_slot(slot_null());
+                DISPATCH();
+        }
+
+        /* Extract a slice bound from a slot: null → use default; immediate
+         * num or VAL_NUM → must be an exact integer. Returns 1 on success
+         * (with *out set), 0 on type error (after raising). */
+        int start = 0, end = len;
+        int bound_err = 0;
+
+        #define READ_SLICE_BOUND(slot, defval, outvar)                        \
+            do {                                                              \
+                if (slot_is_num(slot)) {                                      \
+                    if (!vm_index_is_int(slot.d, &(outvar))) {                \
+                        runtime_error(g_vm.current_line,                      \
+                            "slice bound must be an integer, got %g", slot.d);\
+                        bound_err = 1;                                        \
+                    }                                                         \
+                } else if (slot_is_ptr(slot)) {                               \
+                    Value *bv = slot_as_ptr(slot);                            \
+                    if (bv->type == VAL_NULL) {                               \
+                        (outvar) = (defval);                                  \
+                    } else if (bv->type == VAL_NUM) {                         \
+                        if (!vm_index_is_int(bv->data.num, &(outvar))) {      \
+                            runtime_error(g_vm.current_line,                  \
+                                "slice bound must be an integer, got %g",     \
+                                bv->data.num);                                \
+                            bound_err = 1;                                    \
+                        }                                                     \
+                    } else {                                                  \
+                        runtime_error(g_vm.current_line,                      \
+                            "slice bound must be an integer or null, got %s", \
+                            val_type_name(bv->type));                         \
+                        bound_err = 1;                                        \
+                    }                                                         \
+                }                                                             \
+            } while (0)
+
+        READ_SLICE_BOUND(start_s, 0, start);
+        if (!bound_err) READ_SLICE_BOUND(end_s, len, end);
+        #undef READ_SLICE_BOUND
+
+        if (bound_err) {
+            slot_decref(start_s); slot_decref(end_s); slot_decref(tgt_s);
+            vm_push_slot(slot_null());
+            DISPATCH();
+        }
+
+        /* Resolve negatives against len, then bounds-check 0<=s<=e<=len. */
+        int orig_start = start, orig_end = end;
+        if (start < 0) start += len;
+        if (end   < 0) end   += len;
+        if (start < 0 || start > len || end < 0 || end > len || start > end) {
+            runtime_error(g_vm.current_line,
+                "slice %d:%d out of range (length %d)",
+                orig_start, orig_end, len);
+            slot_decref(start_s); slot_decref(end_s); slot_decref(tgt_s);
+            vm_push_slot(slot_null());
+            DISPATCH();
+        }
+
+        int n = end - start;
+        Value *result;
+        if (target->type == VAL_LIST) {
+            result = make_list(n);
+            for (int i = 0; i < n; i++) {
+                Value *e = target->data.list.items[start + i];
+                val_incref(e);
+                result->data.list.items[i] = e;
+            }
+            result->data.list.count = n;
+        } else if (target->type == VAL_STR) {
+            char *buf = xmalloc((size_t)n + 1);
+            if (n > 0) memcpy(buf, target->data.str + start, (size_t)n);
+            buf[n] = '\0';
+            result = make_str_owned(buf);
+        } else {
+            /* VAL_BUFFER */
+            result = xcalloc(1, sizeof(Value));
+            result->type = VAL_BUFFER;
+            result->data.buffer.count = n;
+            result->data.buffer.data = xcalloc(n > 0 ? n : 1, sizeof(double));
+            if (n > 0)
+                memcpy(result->data.buffer.data,
+                       target->data.buffer.data + start,
+                       (size_t)n * sizeof(double));
+            result->refcount = 1;
+        }
+
+        slot_decref(start_s); slot_decref(end_s); slot_decref(tgt_s);
+        vm_push(result);  /* stack takes the constructor's refcount=1 */
         DISPATCH();
     }
 

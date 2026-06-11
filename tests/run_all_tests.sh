@@ -1638,6 +1638,21 @@ else
 fi
 echo ""
 
+# [76] Slicing (0.13.0).
+echo "[76] Slicing (46 checks)"
+SL_OUTPUT=$(./eigenscript ../tests/test_slicing.eigs 2>&1)
+if echo "$SL_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 46))
+    PASS=$((PASS + 46))
+    echo "  PASS: all 46 slicing checks"
+else
+    TOTAL=$((TOTAL + 46))
+    FAIL=$((FAIL + 46))
+    echo "  FAIL: slicing tests"
+    echo "$SL_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
+fi
+echo ""
+
 # [75] Streaming subprocess I/O (0.13.0).
 echo "[75] Streaming Subprocess I/O (25 checks)"
 PS_OUTPUT=$(./eigenscript ../tests/test_proc_stream.eigs 2>&1)
