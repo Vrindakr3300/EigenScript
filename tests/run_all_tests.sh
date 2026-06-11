@@ -1638,6 +1638,21 @@ else
 fi
 echo ""
 
+# [72] Default parameter values (0.13.0).
+echo "[72] Default Parameters (16 checks)"
+DP_OUTPUT=$(./eigenscript ../tests/test_default_params.eigs 2>&1)
+if echo "$DP_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 16))
+    PASS=$((PASS + 16))
+    echo "  PASS: all 16 default-param checks"
+else
+    TOTAL=$((TOTAL + 16))
+    FAIL=$((FAIL + 16))
+    echo "  FAIL: default-param tests"
+    echo "$DP_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
+fi
+echo ""
+
 # [71] Module-chunk teardown with promoted slots. Top-level `unobserved`
 # blocks promote non-escaping names to module-chunk local slots without a
 # local_names array; freeing the script chunk used to segfault at exit

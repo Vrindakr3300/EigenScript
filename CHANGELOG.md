@@ -2,6 +2,38 @@
 
 All notable changes to EigenScript are documented here.
 
+## [0.13.0] — unreleased
+
+A language-features release. First landing: default parameter values.
+
+### Language — default parameter values
+
+`define f(a, b is expr) as: ...` — trailing parameters can carry
+default expressions. When the caller omits an argument the default
+is evaluated *at call time* against the live environment + the
+already-bound earlier parameters, so defaults can reference earlier
+params (`define pair(a, b is a * 2)`) and capture an outer name
+freshly per call (`define scale(x, k is multiplier)` re-reads
+`multiplier`). Defaults are trailing-only — a required parameter
+after a defaulted one is a parse error.
+
+Explicit `null` is a real argument and **does not** trigger the
+default. To call with zero args on a single-parameter function,
+pass the empty list literal: `f of []` lowers to an argc=0 call.
+Lambdas (`->` arrows, `lambda` blocks) do not accept defaults.
+
+Wire-up: AST `func` gains `param_defaults[]` + `first_default`;
+`EigsChunk` gains `first_default`; new opcode
+`OP_DEFAULT_PARAM [slot:16][skip_off:16]` runs at function entry
+and jumps over the per-slot default-eval prologue when
+`frame->call_argc > slot`. The interpreter and the JIT helper-call
+path bind null placeholders for `[argc..param_count)` so the
+default prologue is reachable. Per-chunk env recycling is
+unaffected — its `argc < param_count` reject already routes
+defaulted calls through `env_new`. Test:
+`tests/test_default_params.eigs` (16 checks, wired as suite slot
+[72]).
+
 ## [0.12.0] — 2026-06-10
 
 A JIT performance release. Stage 5 (a–i) lands the inline fast-path

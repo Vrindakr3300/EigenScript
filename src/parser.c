@@ -114,6 +114,12 @@ void free_ast(ASTNode *node) {
             for (int i = 0; i < node->data.func.param_count; i++)
                 free(node->data.func.params[i]);
             free(node->data.func.params);
+            if (node->data.func.param_defaults) {
+                for (int i = 0; i < node->data.func.param_count; i++)
+                    if (node->data.func.param_defaults[i])
+                        free_ast(node->data.func.param_defaults[i]);
+                free(node->data.func.param_defaults);
+            }
             for (int i = 0; i < node->data.func.body_count; i++) free_ast(node->data.func.body[i]);
             if (node->data.func.body) free(node->data.func.body);
             break;
@@ -274,6 +280,13 @@ ASTNode *clone_ast(ASTNode *node) {
             n->data.func.name = xstrdup(node->data.func.name ? node->data.func.name : "");
             n->data.func.params = clone_string_array(node->data.func.params, node->data.func.param_count);
             n->data.func.param_count = node->data.func.param_count;
+            n->data.func.first_default = node->data.func.first_default;
+            if (node->data.func.param_defaults) {
+                n->data.func.param_defaults = xcalloc(node->data.func.param_count, sizeof(ASTNode*));
+                for (int i = 0; i < node->data.func.param_count; i++)
+                    if (node->data.func.param_defaults[i])
+                        n->data.func.param_defaults[i] = clone_ast(node->data.func.param_defaults[i]);
+            }
             n->data.func.body = clone_ast_array(node->data.func.body, node->data.func.body_count);
             n->data.func.body_count = node->data.func.body_count;
             break;
@@ -1015,15 +1028,30 @@ static ASTNode* parse_statement(Parser *p) {
         Token *name_tok = p_cur(p);
         p_expect(p, TOK_IDENT);
 
-        /* Parse optional named parameters: define add(a, b) as: */
+        /* Parse optional named parameters: define add(a, b) as:
+         * Each param may carry a default: define f(a, b is 10): */
         char **params = NULL;
+        ASTNode **defaults = NULL;
         int param_count = 0;
+        int first_default = -1;
         if (p_cur(p)->type == TOK_LPAREN) {
             p_advance(p); /* skip ( */
             params = xmalloc_array(16, sizeof(char*));
+            defaults = xcalloc(16, sizeof(ASTNode*));
             while (p_cur(p)->type == TOK_IDENT && param_count < 16) {
+                int slot = param_count;
                 params[param_count++] = xstrdup(p_cur(p)->str_val);
                 p_advance(p);
+                if (p_cur(p)->type == TOK_IS) {
+                    p_advance(p);
+                    defaults[slot] = parse_expression(p);
+                    if (first_default < 0) first_default = slot;
+                } else if (first_default >= 0) {
+                    fprintf(stderr,
+                        "Parse error line %d: required parameter '%s' cannot follow a parameter with a default\n",
+                        p_cur(p)->line, params[slot]);
+                    g_parse_errors++;
+                }
                 if (p_cur(p)->type == TOK_COMMA) p_advance(p);
             }
             p_expect(p, TOK_RPAREN);
@@ -1031,10 +1059,13 @@ static ASTNode* parse_statement(Parser *p) {
         if (param_count == 0) {
             /* No explicit params: default to single param "n" */
             free(params);
+            free(defaults);
             params = xmalloc(sizeof(char*));
             params[0] = xstrdup("n");
+            defaults = xcalloc(1, sizeof(ASTNode*));
             param_count = 1;
         }
+        if (first_default < 0) first_default = param_count;
 
         if (p_cur(p)->type == TOK_AS) p_advance(p);
         p_expect(p, TOK_COLON);
@@ -1045,7 +1076,9 @@ static ASTNode* parse_statement(Parser *p) {
         n->data.func.name = xstrdup((name_tok && name_tok->str_val) ? name_tok->str_val : "");
         set_name_hash(n, n->data.func.name);
         n->data.func.params = params;
+        n->data.func.param_defaults = defaults;
         n->data.func.param_count = param_count;
+        n->data.func.first_default = first_default;
         n->data.func.body = body;
         n->data.func.body_count = body_count;
         return n;

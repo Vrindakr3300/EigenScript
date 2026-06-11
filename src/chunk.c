@@ -225,6 +225,7 @@ const char *op_name(uint8_t op) {
         [OP_LOCAL_IDX_DOT_SET] = "LOCAL_IDX_DOT_SET",
         [OP_INTERROGATE_NAMED] = "INTERROGATE_NAMED",
         [OP_INTERROGATE_NAMED_AT] = "INTERROGATE_NAMED_AT",
+        [OP_DEFAULT_PARAM] = "DEFAULT_PARAM",
     };
     if (op < OP_COUNT && names[op]) return names[op];
     return "???";

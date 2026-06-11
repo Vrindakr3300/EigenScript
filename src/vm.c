@@ -1378,6 +1378,9 @@ int jit_helper_call(EigsChunk *caller_chunk, int argc, int resume_off) {
         } else {
         call_env = env_new(fn_val->data.fn.closure);
         uint32_t *phashes = fn_val->data.fn.param_hashes;
+        int can_default = (fn_chunk->first_default < param_count) &&
+                          (argc >= fn_chunk->first_default) &&
+                          (argc < param_count);
         if (param_count > 1 && argc > 0) {
             int bound = param_count < argc ? param_count : argc;
             for (int i = 0; i < bound; i++) {
@@ -1387,7 +1390,7 @@ int jit_helper_call(EigsChunk *caller_chunk, int argc, int resume_off) {
                     fn_val->data.fn.params[i], ph,
                     g_vm.stack[g_vm.sp - argc + i]);
             }
-        } else if (param_count == 1) {
+        } else if (param_count == 1 && !can_default) {
             uint32_t ph = phashes ? phashes[0]
                                   : env_hash_name(fn_val->data.fn.params[0]);
             if (argc == 1) {
@@ -1402,6 +1405,14 @@ int jit_helper_call(EigsChunk *caller_chunk, int argc, int resume_off) {
                     fn_val->data.fn.params[0], ph,
                     slot_from_heap(arg_list));
                 val_decref(arg_list);
+            }
+        }
+        if (can_default) {
+            for (int i = argc; i < param_count; i++) {
+                uint32_t ph = phashes ? phashes[i]
+                                      : env_hash_name(fn_val->data.fn.params[i]);
+                env_bind_fresh_param_slot(call_env,
+                    fn_val->data.fn.params[i], ph, slot_null());
             }
         }
         if (fn_chunk->local_count > param_count)
@@ -1428,6 +1439,7 @@ int jit_helper_call(EigsChunk *caller_chunk, int argc, int resume_off) {
         frame->try_count = 0;
         frame->saved_stall_count = g_loop_stall_count;
         frame->saved_loop_iter   = g_loop_iterations;
+        frame->call_argc = argc;
         g_loop_stall_count = 0;
         g_loop_iterations  = 0;
         fn_chunk->exec_count++;
@@ -1709,6 +1721,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_LOCAL_IDX_DOT_SET] = &&lbl_LOCAL_IDX_DOT_SET,
         [OP_INTERROGATE_NAMED] = &&lbl_INTERROGATE_NAMED,
         [OP_INTERROGATE_NAMED_AT] = &&lbl_INTERROGATE_NAMED_AT,
+        [OP_DEFAULT_PARAM] = &&lbl_DEFAULT_PARAM,
     };
     #define CHECK_ERROR() do { \
         if (__builtin_expect(g_has_error, 0)) { \
@@ -2595,6 +2608,15 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             call_env = env_new(fn_val->data.fn.closure);
 
             uint32_t *phashes = fn_val->data.fn.param_hashes;
+            /* When this chunk has trailing defaults and the caller fed
+             * argc in [first_default, param_count], the body's
+             * OP_DEFAULT_PARAM prologue fills the unsent tail; we bind
+             * each tail slot here with a null placeholder so the env
+             * name hash entry exists (closures capturing the param
+             * resolve correctly; OP_SET_LOCAL writes into the slot). */
+            int can_default = (fn_chunk->first_default < param_count) &&
+                              ((int)argc >= fn_chunk->first_default) &&
+                              ((int)argc < param_count);
             if (param_count > 1 && argc > 0) {
                 int bound = param_count < (int)argc ? param_count : (int)argc;
                 for (int i = 0; i < bound; i++) {
@@ -2603,7 +2625,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                         fn_val->data.fn.params[i], ph,
                         g_vm.stack[g_vm.sp - argc + i]);
                 }
-            } else if (param_count == 1) {
+            } else if (param_count == 1 && !can_default) {
                 uint32_t ph = phashes ? phashes[0] : env_hash_name(fn_val->data.fn.params[0]);
                 if (argc == 1) {
                     vm_bind_fresh_param(call_env, 0,
@@ -2617,6 +2639,14 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                         fn_val->data.fn.params[0], ph,
                         slot_from_heap(arg_list));
                     val_decref(arg_list);
+                }
+            }
+            if (can_default) {
+                for (int i = (int)argc; i < param_count; i++) {
+                    uint32_t ph = phashes ? phashes[i]
+                                          : env_hash_name(fn_val->data.fn.params[i]);
+                    env_bind_fresh_param_slot(call_env,
+                        fn_val->data.fn.params[i], ph, slot_null());
                 }
             }
 
@@ -2658,6 +2688,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
              * loop will exit early once the global crosses the threshold. */
             frame->saved_stall_count = g_loop_stall_count;
             frame->saved_loop_iter   = g_loop_iterations;
+            frame->call_argc = (int)argc;
             g_loop_stall_count = 0;
             g_loop_iterations  = 0;
             fn_chunk->exec_count++;
@@ -3542,6 +3573,17 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         DISPATCH();
     }
 
+    CASE(DEFAULT_PARAM): {
+        /* [slot:16][skip_off:16] — if the caller supplied an explicit
+         * arg for this slot (i.e. slot < frame->call_argc), skip the
+         * inlined default expression; else fall through and let the
+         * default run, ending with OP_SET_LOCAL <slot>; OP_POP. */
+        uint16_t slot = read_u16(ip); ip += 2;
+        uint16_t skip = read_u16(ip); ip += 2;
+        if ((int)slot < frame->call_argc) ip += skip;
+        DISPATCH();
+    }
+
     CASE(PREDICATE): {
         uint16_t kind = read_u16(ip); ip += 2;
         Value *v = g_last_observer;
@@ -3813,7 +3855,8 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 }
             } else {
             call_env = env_new(fn->data.fn.closure);
-            if (fn->data.fn.param_count > 0) {
+            int dpc = fn->data.fn.param_count;
+            if (dpc > 0) {
                 uint32_t ph = fn->data.fn.param_hashes ? fn->data.fn.param_hashes[0]
                                                        : env_hash_name(fn->data.fn.params[0]);
                 vm_bind_fresh_param(call_env, 0,
@@ -3821,8 +3864,20 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             } else {
                 slot_decref(arg_s);
             }
+            /* DISPATCH always feeds argc=1; if the callee has defaults
+             * for slots [1..param_count), bind null placeholders so the
+             * body prologue can fill them. */
+            if (dpc > 1 && fn_chunk->first_default <= 1) {
+                uint32_t *phashes = fn->data.fn.param_hashes;
+                for (int i = 1; i < dpc; i++) {
+                    uint32_t ph = phashes ? phashes[i]
+                                          : env_hash_name(fn->data.fn.params[i]);
+                    env_bind_fresh_param_slot(call_env,
+                        fn->data.fn.params[i], ph, slot_null());
+                }
+            }
             /* Pre-allocate slots for non-captured locals */
-            if (fn_chunk->local_count > fn->data.fn.param_count)
+            if (fn_chunk->local_count > dpc)
                 env_reserve_slots(call_env, fn_chunk->local_count);
             }
             slot_decref(table_s);
@@ -3845,6 +3900,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->owns_env = 1;
             frame->is_try = 0;
             frame->try_count = 0;
+            frame->call_argc = 1;
             fn_chunk->exec_count++;
 
             /* JIT hook (mirror of OP_CALL bytecode-fn path). */

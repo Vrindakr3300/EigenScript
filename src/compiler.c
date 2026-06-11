@@ -158,6 +158,8 @@ static int op_stack_effect(uint8_t op) {
     case OP_INTERROGATE_NAMED:  /* pop 1, push 1 = 0 */
     case OP_INTERROGATE_NAMED_AT:  /* pop line, push result = 0 */
         return 0;
+    case OP_DEFAULT_PARAM:  /* conditional skip — no stack change */
+        return 0;
     /* Index set: pop value, pop index, pop target, push value = -2 */
     case OP_INDEX_SET:
         return -2;
@@ -1277,6 +1279,7 @@ static void compile_node(Compiler *c, ASTNode *node) {
         /* Compile function body into nested chunk */
         EigsChunk *fn_chunk = chunk_new(node->data.func.name);
         fn_chunk->param_count = node->data.func.param_count;
+        fn_chunk->first_default = node->data.func.first_default;
 
         Compiler fn_compiler;
         memset(&fn_compiler, 0, sizeof(fn_compiler));
@@ -1312,6 +1315,29 @@ static void compile_node(Compiler *c, ASTNode *node) {
             add_local(&fn_compiler, node->data.func.params[i], h);
         }
 
+        /* Default-param prologue: for each trailing param with a default,
+         * emit OP_DEFAULT_PARAM <slot> <skip>; <default expr>; OP_SET_LOCAL;
+         * OP_POP. Skip target is just past OP_POP. The opcode reads
+         * frame->call_argc — if argc > slot, jump skip (default already
+         * supplied by caller). Else fall through (run the default). */
+        if (node->data.func.param_defaults) {
+            for (int i = node->data.func.first_default;
+                 i < node->data.func.param_count; i++) {
+                ASTNode *dflt = node->data.func.param_defaults[i];
+                if (!dflt) continue;  /* defensive; parser enforces trailing */
+                int line = dflt->line ? dflt->line : node->line;
+                chunk_emit(fn_chunk, OP_DEFAULT_PARAM, line);
+                chunk_emit_u16(fn_chunk, (uint16_t)i, line);
+                int skip_patch = fn_chunk->code_len;
+                chunk_emit_u16(fn_chunk, 0xFFFF, line);
+                compile_node(&fn_compiler, dflt);
+                emit_op_u16(&fn_compiler, OP_SET_LOCAL, (uint16_t)i, line);
+                chunk_emit(fn_chunk, OP_POP, line);
+                adjust_stack(&fn_compiler, -1);
+                chunk_patch_jump(fn_chunk, skip_patch);
+            }
+        }
+
         compile_block(&fn_compiler, node->data.func.body, node->data.func.body_count);
 
         /* Ensure function always returns */
@@ -1343,6 +1369,7 @@ static void compile_node(Compiler *c, ASTNode *node) {
     case AST_LAMBDA: {
         EigsChunk *fn_chunk = chunk_new("<lambda>");
         fn_chunk->param_count = node->data.lambda.param_count;
+        fn_chunk->first_default = node->data.lambda.param_count;  /* lambdas don't support defaults */
 
         Compiler fn_compiler;
         memset(&fn_compiler, 0, sizeof(fn_compiler));
@@ -1420,7 +1447,11 @@ static void compile_node(Compiler *c, ASTNode *node) {
 
         compile_node(c, fn_node);
 
-        if (arg_node && arg_node->type == AST_LIST && arg_node->data.list.count > 1) {
+        if (arg_node && arg_node->type == AST_LIST && arg_node->data.list.count == 0) {
+            /* Zero-arg call: f of [] — required so default-param fns can
+             * be called with no args and let every default fire. */
+            emit_call(c, 0, node->line);
+        } else if (arg_node && arg_node->type == AST_LIST && arg_node->data.list.count > 1) {
             /* Multi-arg: compile each element as separate stack value */
             for (int i = 0; i < arg_node->data.list.count; i++)
                 compile_node(c, arg_node->data.list.elems[i]);

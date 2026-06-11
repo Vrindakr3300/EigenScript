@@ -131,6 +131,10 @@ typedef enum {
     OP_INTERROGATE_NAMED, /* [kind:16][name_idx:16] interrogate with known binding name */
     OP_INTERROGATE_NAMED_AT, /* [kind:16][name_idx:16] interrogate at line (popped from stack) */
 
+    OP_DEFAULT_PARAM,   /* [slot:16][skip_off:16] if frame->call_argc > slot, IP += skip_off
+                         * (skip the default expression); else fall through (default runs
+                         * and ends with OP_SET_LOCAL <slot>; OP_POP). */
+
     OP_COUNT            /* sentinel — number of opcodes */
 } OpCode;
 
@@ -184,6 +188,11 @@ typedef struct EigsChunk {
 
     char    *name;              /* function name or "<module>" */
     int      param_count;
+    int      first_default;     /* slot index of first param with a default; ==
+                                 * param_count when no defaults. Calls with
+                                 * argc in [first_default, param_count] are
+                                 * legal; missing tail slots are filled by the
+                                 * body prologue via OP_DEFAULT_PARAM. */
     int      max_stack;         /* computed max stack depth */
 
     /* JIT — populated lazily on first frame push.
@@ -280,6 +289,9 @@ typedef struct {
      * accumulated stall count / iteration count). Scoped per call frame. */
     int        saved_stall_count;
     int        saved_loop_iter;
+    int        call_argc;        /* args actually passed to this call; <= chunk->param_count.
+                                  * Used by OP_DEFAULT_PARAM to decide if a slot was bound
+                                  * by the caller or needs its default expression run. */
 } CallFrame;
 
 /* ---- VM State ---- */

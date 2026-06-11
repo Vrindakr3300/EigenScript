@@ -163,6 +163,27 @@ unobservable. To get an independent copy, copy explicitly.
 
 **Status:** Enforced — `tests/test_call_semantics.eigs`.
 
+## Default parameter values (0.13.0)
+
+**Promise:** A parameter may carry a default expression: `define f(a, b is expr) as: ...`.
+- Defaults are **trailing-only** — once a parameter has a default, every
+  following parameter must also have one. `define f(a is 1, b)` is a
+  parse error.
+- The default expression is **re-evaluated on every call** that omits
+  the argument (no shared mutable-default footgun).
+- A default expression can reference any earlier parameter in the same
+  signature, as well as any name visible in the enclosing scope at
+  call time. Earlier-param references resolve against the values just
+  bound for *this* call.
+- `null` passed explicitly is a real argument — defaults **do not**
+  fire for it. To request the default, call with fewer arguments. For
+  a single-parameter function with a default, write `f of []` to call
+  with zero args (since `f of null` would bind `null`).
+- Lambdas (`(x) -> expr`, `lambda` blocks) do **not** support
+  defaults.
+
+**Status:** Enforced — `tests/test_default_params.eigs`.
+
 ## Operator precedence
 
 From lowest (binds loosest) to highest (binds tightest):
