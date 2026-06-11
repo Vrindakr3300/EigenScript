@@ -8,6 +8,32 @@ A language-features release.
 
 ### Fixes
 
+- **#159 — `proc_read_buf` for binary-safe child stdout; `proc_read_line`
+  / `proc_write` return partials instead of dropping them.** Three
+  related robustness fixes in the 0.13.0 streaming-subprocess surface:
+  - `proc_read` reads into a heap buffer, writes a trailing NUL, and
+    returns a `VAL_STR` — an embedded NUL in the child's output
+    silently truncated the result at the first one. The natural use
+    of `proc_read` (as opposed to `_line`) is bulk/binary output,
+    where NUL is just a byte. New `proc_read_buf of [fd, max]`
+    mirrors `read_bytes_buf`: returns a `VAL_BUFFER` so every byte
+    survives, indexable like any buffer; `null` on EOF; same 10 MB
+    cap. `proc_read` is now documented as text-only.
+  - `proc_read_line` returned `null` when a mid-stream `read(2)`
+    failed, dropping any partial line already buffered. The
+    documented contract reserves `null` for "EOF with empty buffer";
+    a partial-then-error now returns the partial (mirrors the
+    EOF-with-partial path just below).
+  - `proc_write` returned `-1` after a **partial** write hit an error
+    (e.g. EPIPE mid-stream). Within the contract, but a caller that
+    retries on `-1` then double-sends the delivered prefix. Now
+    returns the partial byte count; `-1` is reserved for the
+    nothing-was-written case (like `write(2)` itself).
+  Regression in `tests/test_proc_stream.eigs` (30 → 39 checks):
+  `printf %b` with an embedded `\0` round-trips through
+  `proc_read_buf` byte-for-byte (15a–15f), `proc_read` still
+  NUL-truncates (16a), and `proc_read_buf` returns `null` on EOF
+  (17a, 17b).
 - **#158 — defaults fire for every unsupplied defaulted slot, regardless
   of `argc`.** The OP_CALL binding logic in `src/vm.c` gated the
   null-placeholder bind-then-OP_DEFAULT_PARAM tail on `(argc >=

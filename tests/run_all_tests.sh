@@ -1694,15 +1694,15 @@ fi
 echo ""
 
 # [75] Streaming subprocess I/O (0.13.0).
-echo "[75] Streaming Subprocess I/O (30 checks)"
+echo "[75] Streaming Subprocess I/O (39 checks)"
 PS_OUTPUT=$(./eigenscript ../tests/test_proc_stream.eigs 2>&1)
 if echo "$PS_OUTPUT" | grep -q "All tests passed"; then
-    TOTAL=$((TOTAL + 30))
-    PASS=$((PASS + 30))
-    echo "  PASS: all 30 proc-stream checks"
+    TOTAL=$((TOTAL + 39))
+    PASS=$((PASS + 39))
+    echo "  PASS: all 39 proc-stream checks"
 else
-    TOTAL=$((TOTAL + 30))
-    FAIL=$((FAIL + 30))
+    TOTAL=$((TOTAL + 39))
+    FAIL=$((FAIL + 39))
     echo "  FAIL: proc-stream tests"
     echo "$PS_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
 fi

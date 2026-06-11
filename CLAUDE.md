@@ -139,7 +139,7 @@ still open.
 
 A post-merge review of the 0.13.0 run filed issues #148–#159 (all
 repro'd against HEAD; suites still pass because none are crashes).
-Eleven fixed so far: **#155** (`call_argc` uninitialized on vm_run
+Twelve fixed so far: **#155** (`call_argc` uninitialized on vm_run
 base frames; spawn/sort_by/dispatch/http defaults clobbered explicit
 args), **#156** (pre-pass walkers didn't know AST_SLICE /
 AST_LIST_PATTERN_ASSIGN; closure capture and module globals silently
@@ -166,8 +166,12 @@ pattern-specific errors instead of silently restoring on >64 names,
 trailing comma, or non-ident targets), **#158** (OP_CALL/OP_DISPATCH
 gate that left underfed-below-first_default tails unfilled — defaults
 now fire for every unsupplied defaulted slot regardless of argc; the
-#154 docs subtlety is gone). Remaining before tagging 0.13.0: docs
-issue #159.
+#154 docs subtlety is gone), **#159** (new `proc_read_buf` returns a
+VAL_BUFFER so an embedded NUL in child output survives; `proc_read`
+documented text-only; `proc_read_line` returns the partial line on
+mid-stream error instead of dropping it; `proc_write` returns the
+partial byte count on error so retrying callers don't double-send).
+All twelve post-merge issues closed; 0.13.0 ready to tag.
 
 Perf carryover from 0.12.0 (ROADMAP.md): NaN-boxing for *container*
 storage (list items / dict values are still `Value**`; stack and env

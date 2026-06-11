@@ -129,6 +129,38 @@ res is exec_capture of [["/bin/sh", "-c", "yes | head -n 1"], 5]
 check of ["14a", res[0], 0]
 check of ["14b", res[1], "y\n"]
 
+# 15. Issue #159 — proc_read_buf is binary-safe: returns a VAL_BUFFER
+#     so an embedded NUL doesn't truncate the result.
+h is proc_spawn of ["/usr/bin/printf", "%b", "ab\\0cd"]
+proc_close of h[1]
+buf is proc_read_buf of [h[2], 64]
+check of ["15a", len of buf, 5]
+check of ["15b", buf[0], 97]
+check of ["15c", buf[1], 98]
+check of ["15d", buf[2], 0]
+check of ["15e", buf[3], 99]
+check of ["15f", buf[4], 100]
+proc_close of h[2]
+proc_wait of h[0]
+
+# 16. proc_read still truncates at the first NUL (documented text-only).
+h is proc_spawn of ["/usr/bin/printf", "%b", "ab\\0cd"]
+proc_close of h[1]
+s is proc_read of [h[2], 64]
+check of ["16a", len of s, 2]
+proc_close of h[2]
+proc_wait of h[0]
+
+# 17. proc_read_buf returns null on EOF.
+h is proc_spawn of ["/bin/echo", "hi"]
+proc_close of h[1]
+b1 is proc_read_buf of [h[2], 64]
+check of ["17a", len of b1, 3]
+eof is proc_read_buf of [h[2], 64]
+check of ["17b", eof, null]
+proc_close of h[2]
+proc_wait of h[0]
+
 if passed == checks:
     print of "All tests passed"
 else:

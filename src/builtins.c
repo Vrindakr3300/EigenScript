@@ -2615,7 +2615,8 @@ Value* builtin_exec_capture(Value *arg) {
  *   proc_spawn of ["cmd", "arg1", ...]     → [pid, in_fd, out_fd]  | [-1,-1,-1]
  *   proc_write of [in_fd, "text"]          → bytes_written | -1 on broken pipe
  *   proc_read_line of out_fd               → string (no trailing \n) | null EOF
- *   proc_read of [out_fd, max_bytes]       → string (raw bytes)      | null EOF
+ *   proc_read of [out_fd, max_bytes]       → string (raw bytes; NUL-truncates) | null EOF
+ *   proc_read_buf of [out_fd, max_bytes]   → VAL_BUFFER (binary-safe) | null EOF
  *   proc_close of fd                       → null (idempotent on EBADF)
  *   proc_wait of pid                       → exit_code | -1 on error
  *
@@ -2722,7 +2723,10 @@ Value* builtin_proc_write(Value *arg) {
         ssize_t n = write(fd, buf + off, total - off);
         if (n < 0) {
             if (errno == EINTR) continue;
-            return make_num(-1);
+            /* #159: return partial bytes-written instead of -1 so a
+             * caller retrying on short-write doesn't double-send the
+             * delivered prefix. -1 only when nothing was written. */
+            return make_num(off > 0 ? (double)off : -1);
         }
         off += (size_t)n;
     }
@@ -2749,8 +2753,11 @@ Value* builtin_proc_read_line(Value *arg) {
         if (n == 0) break;        /* EOF */
         if (n < 0) {
             if (errno == EINTR) continue;
-            free(buf);
-            return make_null();
+            /* #159: mid-stream read error — return the partial line
+             * we already buffered (mirrors the EOF-with-partial path
+             * just below). null is reserved for "EOF, nothing read". */
+            if (len == 0) { free(buf); return make_null(); }
+            break;
         }
         if (c == '\n') {
             buf[len] = '\0';
@@ -2792,6 +2799,42 @@ Value* builtin_proc_read(Value *arg) {
     if (n == 0) { free(buf); return make_null(); }
     buf[n] = '\0';
     return make_str_owned(buf);
+}
+
+/* #159: binary-safe variant of proc_read. Returns a VAL_BUFFER (no
+ * NUL-truncation), null on EOF. Same 10 MB cap as proc_read. */
+Value* builtin_proc_read_buf(Value *arg) {
+    if (replay_blocks("proc_read_buf")) return make_null();
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count != 2)
+        return make_null();
+    Value *fd_v  = arg->data.list.items[0];
+    Value *max_v = arg->data.list.items[1];
+    if (!fd_v || fd_v->type != VAL_NUM || !max_v || max_v->type != VAL_NUM)
+        return make_null();
+    int fd = (int)fd_v->data.num;
+    int max = (int)max_v->data.num;
+    if (fd < 0 || max <= 0) return make_null();
+    if (max > 10 * 1024 * 1024) max = 10 * 1024 * 1024;
+    unsigned char *buf = xmalloc((size_t)max);
+    if (!buf) return make_null();
+    ssize_t n;
+    for (;;) {
+        n = read(fd, buf, (size_t)max);
+        if (n >= 0) break;
+        if (errno == EINTR) continue;
+        free(buf);
+        return make_null();
+    }
+    if (n == 0) { free(buf); return make_null(); }
+    Value *v = xcalloc(1, sizeof(Value));
+    v->type = VAL_BUFFER;
+    v->data.buffer.count = (int)n;
+    v->data.buffer.data = xcalloc((size_t)n, sizeof(double));
+    v->refcount = 1;
+    for (ssize_t i = 0; i < n; i++)
+        v->data.buffer.data[i] = (double)buf[i];
+    free(buf);
+    return v;
 }
 
 Value* builtin_proc_close(Value *arg) {
@@ -4246,6 +4289,7 @@ void register_builtins(Env *env) {
     env_set_local_owned(env, "proc_write", make_builtin(builtin_proc_write));
     env_set_local_owned(env, "proc_read_line", make_builtin(builtin_proc_read_line));
     env_set_local_owned(env, "proc_read", make_builtin(builtin_proc_read));
+    env_set_local_owned(env, "proc_read_buf", make_builtin(builtin_proc_read_buf));
     env_set_local_owned(env, "proc_close", make_builtin(builtin_proc_close));
     env_set_local_owned(env, "proc_wait", make_builtin(builtin_proc_wait));
 

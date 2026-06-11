@@ -256,18 +256,28 @@ buffering, no shell.
   child's stderr is inherited from the parent. Empty argv is the
   failure sentinel.
 - `proc_write of [in_fd, "text"]` — full blocking write to the child's
-  stdin. Returns bytes written. Returns `-1` if the child has closed
-  stdin (EPIPE) or on any other error. SIGPIPE is masked process-wide
-  on first spawn so writes get EPIPE instead of killing the parent.
+  stdin. Returns bytes written. After a partial write that hits an
+  error (e.g. EPIPE mid-stream), returns the partial byte count so a
+  caller retrying doesn't double-send the delivered prefix. Returns
+  `-1` only when the very first write failed (nothing delivered).
+  SIGPIPE is masked process-wide on first spawn so writes get EPIPE
+  instead of killing the parent.
 - `proc_read_line of out_fd` — reads bytes from the child's stdout
   until `\n` or EOF. Returns the line without the trailing newline.
-  Returns `null` only at EOF with an empty buffer; an EOF that
-  follows a partial line returns that partial line.
+  Returns `null` only when nothing was buffered before the
+  EOF-or-error; a mid-stream error or EOF that follows a partial line
+  returns the partial line (matches the EOF-with-partial path).
 - `proc_read of [out_fd, max_bytes]` — single `read(2)` of up to
-  `max_bytes` bytes (capped internally at 10 MB). Returns a string;
+  `max_bytes` bytes (capped internally at 10 MB). Returns a **string**;
   may return fewer bytes than requested. Returns `null` on EOF.
-  Null bytes in the stream truncate the returned string at the first
-  one (EigenScript strings are C-terminated).
+  Text-only: EigenScript strings are C-terminated, so a NUL in the
+  child's output truncates the returned string at the first one. For
+  binary or possibly-NUL output use `proc_read_buf`.
+- `proc_read_buf of [out_fd, max_bytes]` — same semantics as
+  `proc_read` but returns a **VAL_BUFFER** (binary-safe; one
+  byte-as-double per element, indexable like any buffer). Returns
+  `null` on EOF. Use this for any byte stream that isn't guaranteed
+  to be NUL-free.
 - `proc_close of fd` — `close(2)`; idempotent (a bad fd is a no-op).
 - `proc_wait of pid` — blocking `waitpid`; returns the exit code,
   `128 + signal` if the child was killed by a signal, or `-1` on
