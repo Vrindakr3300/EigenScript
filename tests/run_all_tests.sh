@@ -1654,15 +1654,15 @@ fi
 echo ""
 
 # [77] Non-blocking channel recv (0.13.0).
-echo "[77] Non-blocking Channel Recv (22 checks)"
+echo "[77] Non-blocking Channel Recv (29 checks)"
 CNB_OUTPUT=$(./eigenscript ../tests/test_channel_nb.eigs 2>&1)
 if echo "$CNB_OUTPUT" | grep -q "All tests passed"; then
-    TOTAL=$((TOTAL + 22))
-    PASS=$((PASS + 22))
-    echo "  PASS: all 22 channel-nb checks"
+    TOTAL=$((TOTAL + 29))
+    PASS=$((PASS + 29))
+    echo "  PASS: all 29 channel-nb checks"
 else
-    TOTAL=$((TOTAL + 22))
-    FAIL=$((FAIL + 22))
+    TOTAL=$((TOTAL + 29))
+    FAIL=$((FAIL + 29))
     echo "  FAIL: channel-nb tests"
     echo "$CNB_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
 fi

@@ -8,6 +8,20 @@ A language-features release.
 
 ### Fixes
 
+- **#151 — `recv_timeout` clamps `ms` before the `(long)` cast.**
+  `builtin_recv_timeout` cast a `double` ms argument directly to `long`
+  when computing the deadline; NaN, `+inf`, or any value above `LONG_MAX`
+  is undefined behavior in C and in practice produced a garbage deadline
+  that fired immediately (spurious instant timeout) or waited
+  essentially forever. Fix: sanitize `ms` first — NaN degenerates to 0
+  (try_recv), negatives degenerate to 0, anything above ~one year of
+  ms (3.15e10) clamps to that ceiling, which keeps the integer
+  arithmetic well below `LONG_MAX` on every supported `time_t`.
+  Related hardening: channel condvars now use `CLOCK_MONOTONIC` via
+  `pthread_condattr_setclock`, so `recv_timeout`'s deadline is immune
+  to wall-clock steps (NTP, `settimeofday`). Matches `exec_capture`'s
+  monotonic discipline. Regression in `tests/test_channel_nb.eigs`
+  (slot [77], 22 → 29).
 - **#148 — replay boundary for subprocess and concurrency builtins.**
   Ten builtins sit on the wrong side of `EIGS_REPLAY`'s replay-by-tape
   contract: `proc_spawn`, `proc_write`, `proc_read_line`, `proc_read`,

@@ -3455,8 +3455,15 @@ Value* builtin_channel(Value *arg) {
     (void)arg;
     Channel *ch = xcalloc(1, sizeof(Channel));
     pthread_mutex_init(&ch->mutex, NULL);
-    pthread_cond_init(&ch->not_empty, NULL);
-    pthread_cond_init(&ch->not_full, NULL);
+    /* Use CLOCK_MONOTONIC for the condvars so recv_timeout's deadline is
+     * immune to wall-clock steps (NTP, settimeofday). Matches the monotonic
+     * discipline exec_capture uses for its own poll timeout. (#151 hardening) */
+    pthread_condattr_t cattr;
+    pthread_condattr_init(&cattr);
+    pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC);
+    pthread_cond_init(&ch->not_empty, &cattr);
+    pthread_cond_init(&ch->not_full,  &cattr);
+    pthread_condattr_destroy(&cattr);
     ch->closed = 0;
     int hid = handle_register(ch, HANDLE_CHANNEL);
     if (hid < 0) { free(ch); return make_null(); }
@@ -3558,10 +3565,18 @@ Value* builtin_recv_timeout(Value *arg) {
         return make_null();
     }
     double ms = ms_v->data.num;
-    if (ms < 0) ms = 0;
+    /* Sanitize ms before the (long) cast (#151). NaN, +inf, or any value
+     * above ~LONG_MAX is undefined behavior when cast to long, and in
+     * practice produced a garbage deadline that fired immediately or
+     * waited essentially forever. Cap at one year of ms (3.15e10) — well
+     * below LONG_MAX on 32-bit time_t hosts and far beyond any plausible
+     * channel timeout. NaN degenerates to try_recv (ms=0). */
+    if (isnan(ms))      ms = 0.0;
+    else if (ms < 0.0)  ms = 0.0;
+    else if (ms > 3.15e10) ms = 3.15e10;
 
     struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
     long whole_ms = (long)ms;
     long extra_ns = (long)((ms - (double)whole_ms) * 1e6);
     deadline.tv_sec  += whole_ms / 1000;
