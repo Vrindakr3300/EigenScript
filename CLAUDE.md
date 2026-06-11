@@ -139,7 +139,7 @@ still open.
 
 A post-merge review of the 0.13.0 run filed issues #148–#159 (all
 repro'd against HEAD; suites still pass because none are crashes).
-Eight fixed so far: **#155** (`call_argc` uninitialized on vm_run
+Nine fixed so far: **#155** (`call_argc` uninitialized on vm_run
 base frames; spawn/sort_by/dispatch/http defaults clobbered explicit
 args), **#156** (pre-pass walkers didn't know AST_SLICE /
 AST_LIST_PATTERN_ASSIGN; closure capture and module globals silently
@@ -157,8 +157,11 @@ byte-budget gate so a modest loop count over a multi-second clip
 can't queue gigabytes into SDL in one call), **#153** (docs: contract
 spells out `f of [x]` non-spread + default-params footgun; behavior
 unchanged, the rule below in this CLAUDE.md is now also in
-LANGUAGE_CONTRACT.md). Remaining before tagging 0.13.0: small/docs
-issues #154 and #157–#159.
+LANGUAGE_CONTRACT.md), **#154** (docs: 0.13.0's `f of []` argc=0
+lowering silently changed multi-param `g of []` from `a=[], b=null`
+to `a=null, b=null` — change acknowledged in the contract, defaulted-
+multi-param `argc<first_default` edge also pinned down). Remaining
+before tagging 0.13.0: small/docs issues #157–#159.
 
 Perf carryover from 0.12.0 (ROADMAP.md): NaN-boxing for *container*
 storage (list items / dict values are still `Value**`; stack and env

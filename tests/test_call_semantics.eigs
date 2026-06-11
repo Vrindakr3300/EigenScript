@@ -36,6 +36,21 @@ define fib(n, memo is 0) as:
     return (fib of (n - 1)) + (fib of (n - 2))
 assert of [(fib of 10) == 55, "fib paren form recurses correctly"]
 
+# Issue #154: f of [] lowers to a zero-arg call for every callee, so a
+# multi-param callee gets all params = null (or defaults fire). The
+# single-param non-defaulted special case preserves the pre-0.13.0
+# "binds the empty list" shape so `one of []` -> a = [] still works.
+assert of [(mp of []) == [null, null], "multi-param of []: a=null, b=null"]
+assert of [(one of []) == [], "1-param of []: preserves empty-list bind"]
+define hd(x is 99) as:
+    return x
+assert of [(hd of []) == 99, "1-param defaulted of []: default fires"]
+# f of [] is argc=0; defaults only fire when argc >= first_default.
+# Here first_default=1 but argc=0, so the b-default doesn't fire either.
+define mpd2(a, b is 100) as:
+    return [a, b]
+assert of [(mpd2 of []) == [null, null], "multi-param defaulted of []: a=null, b=null (argc<first_default)"]
+
 # Assignment binds a reference: lists/dicts are shared, not copied
 a is [1, 2, 3]
 b is a

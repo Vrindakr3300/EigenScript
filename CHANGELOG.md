@@ -8,6 +8,25 @@ A language-features release.
 
 ### Fixes
 
+- **#154 — docs: unflagged semantic change `g of []` on multi-param fn.**
+  0.13.0's default-params commit lowered `f of []` to an argc=0 call
+  so an all-default function can be called with no args. The single-
+  param non-defaulted case was preserved by a compile-time special
+  case (`one of []` still binds the param to the empty list), but
+  multi-param functions silently changed: `g of []` on
+  `define g(a, b)` now binds `a=null, b=null` (was `a=[], b=null` in
+  0.12.0). The new behavior is the cleaner reading of the contract
+  ("missing parameters are `null`"), but it's still an observable
+  shift that wasn't flagged. Fix: LANGUAGE_CONTRACT.md default-params
+  section now spells out the change, including the subtle case that
+  defaulted multi-param fns *also* get all-null (because defaults fire
+  only when `argc >= first_default`, and argc=0 < 1 = first_default).
+  A grep of the suite and Tidepool turned up no multi-param-takes-
+  empty-list call sites, so no code change needed. Regression in
+  `tests/test_call_semantics.eigs` (12 → 16): pin down the multi-param
+  `[null, null]` shape, the 1-param-preserves-empty-list shape, the
+  defaulted-1-param fires its default, and the defaulted-multi-param
+  all-null (argc<first_default) edge.
 - **#153 — docs: contract spells out the `f of [x]` non-spread rule.**
   `docs/LANGUAGE_CONTRACT.md` previously promised "if `f` has two or
   more parameters and `X` is a list, the elements are spread", which

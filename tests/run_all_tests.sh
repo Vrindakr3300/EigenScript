@@ -391,13 +391,13 @@ else
 fi
 echo ""
 
-echo "[Call Semantics] (12 checks)"
+echo "[Call Semantics] (16 checks)"
 CS_OUTPUT=$(./eigenscript ../tests/test_call_semantics.eigs 2>&1)
-TOTAL=$((TOTAL + 12))
+TOTAL=$((TOTAL + 16))
 if echo "$CS_OUTPUT" | grep -q "All tests passed"; then
-    echo "  PASS: all 12 call-semantics/aliasing checks"; PASS=$((PASS + 12))
+    echo "  PASS: all 16 call-semantics/aliasing checks"; PASS=$((PASS + 16))
 else
-    echo "  FAIL: call-semantics"; FAIL=$((FAIL + 12))
+    echo "  FAIL: call-semantics"; FAIL=$((FAIL + 16))
     echo "$CS_OUTPUT" | grep -iE "ASSERT|error" | head -5
 fi
 echo ""
