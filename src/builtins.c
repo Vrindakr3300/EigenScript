@@ -2438,6 +2438,24 @@ Value* builtin_write_text(Value *arg) {
  *
  * Always returns a 2-item list. Returns [-1, ""] on failure. */
 
+/* Issue #148 — subprocess and channel builtins cannot be safely replayed.
+ * Forking real children, draining real fds, and waking real channel
+ * waiters under EIGS_REPLAY would let a recorded script re-run its
+ * side effects against a tape that does not carry the host-side causal
+ * structure (child exit codes, channel ordering, syscall errnos).
+ * Wrapping these with TRACE_NONDET_TAKE is not enough — the value the
+ * tape carries does not pin down the host state — so the contract is
+ * "fail loudly" at the boundary. Documented in docs/TRACE.md. */
+static int replay_blocks(const char *fn) {
+    if (__builtin_expect(g_replay_enabled, 0)) {
+        runtime_error(0,
+            "%s: not replayable under EIGS_REPLAY (subprocess/concurrency "
+            "boundary; see docs/TRACE.md)", fn);
+        return 1;
+    }
+    return 0;
+}
+
 static Value* exec_capture_result(int code, const char *text) {
     Value *result = make_list(2);
     result->data.list.items[0] = make_num(code);
@@ -2447,6 +2465,7 @@ static Value* exec_capture_result(int code, const char *text) {
 }
 
 Value* builtin_exec_capture(Value *arg) {
+    if (replay_blocks("exec_capture")) return exec_capture_result(-1, "");
     if (!arg || arg->type != VAL_LIST || arg->data.list.count < 1)
         return exec_capture_result(-1, "");
 
@@ -2477,9 +2496,15 @@ Value* builtin_exec_capture(Value *arg) {
     }
     argv[total] = NULL;
 
-    /* Create pipe for stdout capture */
+    /* Create pipe for stdout capture. FD_CLOEXEC on both ends so the pipe
+     * doesn't leak into siblings of subsequent exec_capture / proc_spawn
+     * children — see issue #149. The child reroutes the write end into
+     * stdout via dup2, which clears FD_CLOEXEC on the destination, so the
+     * child's stdout still survives execvp. */
     int pipefd[2];
     if (pipe(pipefd) != 0) { free(argv); return exec_capture_result(-1, ""); }
+    (void)fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -2489,7 +2514,12 @@ Value* builtin_exec_capture(Value *arg) {
     }
 
     if (pid == 0) {
-        /* Child: redirect stdout to pipe, stdin to /dev/null */
+        /* Child: redirect stdout to pipe, stdin to /dev/null.
+         * Reset SIGPIPE to SIG_DFL — proc_spawn installs a process-wide
+         * SIG_IGN once, and that disposition survives fork; without an
+         * explicit reset here the captured child silently no-ops on
+         * broken-pipe writes instead of dying (issue #150). */
+        signal(SIGPIPE, SIG_DFL);
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[1]);
@@ -2611,6 +2641,7 @@ static Value* proc_spawn_fail(void) {
 }
 
 Value* builtin_proc_spawn(Value *arg) {
+    if (replay_blocks("proc_spawn")) return proc_spawn_fail();
     if (!arg || arg->type != VAL_LIST || arg->data.list.count < 1)
         return proc_spawn_fail();
 
@@ -2626,10 +2657,18 @@ Value* builtin_proc_spawn(Value *arg) {
 
     pthread_once(&g_proc_sigpipe_once, proc_install_sigpipe_ignore);
 
+    /* FD_CLOEXEC on both ends of both pipes so subsequent proc_spawn /
+     * exec_capture children don't inherit the parent's open pipes (#149).
+     * The child re-dup2s these into stdin/stdout, which clears FD_CLOEXEC
+     * on the destination, so the child's own stdin/stdout survives exec. */
     int in_pipe[2], out_pipe[2];
     if (pipe(in_pipe) != 0)  { free(argv); return proc_spawn_fail(); }
     if (pipe(out_pipe) != 0) { close(in_pipe[0]); close(in_pipe[1]);
                                free(argv); return proc_spawn_fail(); }
+    (void)fcntl(in_pipe[0],  F_SETFD, FD_CLOEXEC);
+    (void)fcntl(in_pipe[1],  F_SETFD, FD_CLOEXEC);
+    (void)fcntl(out_pipe[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(out_pipe[1], F_SETFD, FD_CLOEXEC);
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -2667,6 +2706,7 @@ Value* builtin_proc_spawn(Value *arg) {
 }
 
 Value* builtin_proc_write(Value *arg) {
+    if (replay_blocks("proc_write")) return make_num(-1);
     if (!arg || arg->type != VAL_LIST || arg->data.list.count != 2)
         return make_num(-1);
     Value *fd_v  = arg->data.list.items[0];
@@ -2690,6 +2730,7 @@ Value* builtin_proc_write(Value *arg) {
 }
 
 Value* builtin_proc_read_line(Value *arg) {
+    if (replay_blocks("proc_read_line")) return make_null();
     if (!arg || arg->type != VAL_NUM) return make_null();
     int fd = (int)arg->data.num;
     if (fd < 0) return make_null();
@@ -2727,6 +2768,7 @@ Value* builtin_proc_read_line(Value *arg) {
 }
 
 Value* builtin_proc_read(Value *arg) {
+    if (replay_blocks("proc_read")) return make_null();
     if (!arg || arg->type != VAL_LIST || arg->data.list.count != 2)
         return make_null();
     Value *fd_v  = arg->data.list.items[0];
@@ -2753,6 +2795,7 @@ Value* builtin_proc_read(Value *arg) {
 }
 
 Value* builtin_proc_close(Value *arg) {
+    if (replay_blocks("proc_close")) return make_null();
     if (!arg || arg->type != VAL_NUM) return make_null();
     int fd = (int)arg->data.num;
     if (fd >= 0) close(fd);
@@ -2760,6 +2803,7 @@ Value* builtin_proc_close(Value *arg) {
 }
 
 Value* builtin_proc_wait(Value *arg) {
+    if (replay_blocks("proc_wait")) return make_num(-1);
     if (!arg || arg->type != VAL_NUM) return make_num(-1);
     pid_t pid = (pid_t)arg->data.num;
     if (pid <= 0) return make_num(-1);
@@ -3453,6 +3497,7 @@ Value* builtin_send(Value *arg) {
 }
 
 Value* builtin_recv(Value *arg) {
+    if (replay_blocks("recv")) return make_null();
     Channel *ch = get_channel(arg);
     if (!ch) {
         runtime_error(0, "recv: invalid channel");
@@ -3474,6 +3519,7 @@ Value* builtin_recv(Value *arg) {
 
 /* try_recv of channel — non-blocking receive, returns null if empty */
 Value* builtin_try_recv(Value *arg) {
+    if (replay_blocks("try_recv")) return make_null();
     Channel *ch = get_channel(arg);
     if (!ch) {
         runtime_error(0, "try_recv: invalid channel");
@@ -3496,6 +3542,7 @@ Value* builtin_try_recv(Value *arg) {
  * interpreted as milliseconds; fractional values are honored (ns precision
  * on Linux). Negative ms degenerates to a try_recv. */
 Value* builtin_recv_timeout(Value *arg) {
+    if (replay_blocks("recv_timeout")) return make_null();
     if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) {
         runtime_error(0, "recv_timeout requires [channel, ms]");
         return make_null();

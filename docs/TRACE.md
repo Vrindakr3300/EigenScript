@@ -63,6 +63,35 @@ The hook is the `TRACE_NONDET_RET` macro in `src/trace.h`, used at
 every nondet return site — adding a new nondet builtin means wrapping
 its return in the same macro.
 
+## Non-Replayable Builtins (issue #148)
+
+Some nondet builtins are *not* wrapped, and **fail loudly** when
+called under `EIGS_REPLAY`. They sit on the wrong side of the replay
+boundary because the tape's recorded return value does not pin down
+the host-side causal structure the call depends on — re-running the
+underlying source under replay would re-execute real side effects
+that the original tape neither captured nor re-creates:
+
+- **Subprocess streaming I/O:** `proc_spawn`, `proc_write`,
+  `proc_read_line`, `proc_read`, `proc_close`, `proc_wait`.
+  Replaying a recorded fd is meaningless — the child process from
+  the recorded run does not exist; forking a fresh one would change
+  the world a second time.
+- **Bulk-output exec:** `exec_capture` — same reason. The tape
+  carries the captured stdout, but the child fork would still happen,
+  and its real side effects (writes outside the captured pipe, file
+  changes, network calls) would re-run.
+- **Concurrent channel receive:** `recv`, `try_recv`, `recv_timeout`.
+  Channel ordering depends on the live scheduler — replay against a
+  tape with a different interleaving would deadlock or silently
+  diverge.
+
+These builtins raise a catchable runtime error under
+`EIGS_REPLAY`, with the message format
+`"<fn>: not replayable under EIGS_REPLAY (subprocess/concurrency
+boundary; see docs/TRACE.md)"`. Programs that need to be replay-safe
+must guard these call sites or avoid them entirely.
+
 ## Replay Semantics
 
 With `EIGS_REPLAY` set, each nondet builtin call takes the next `N`

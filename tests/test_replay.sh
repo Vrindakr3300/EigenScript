@@ -140,6 +140,82 @@ else
     fail "strict replay" "rc=$STRICT_RC err='$STRICT_ERR'"
 fi
 
+# ---- Non-replayable boundary (#148): subprocess/concurrency builtins ----
+# Each of the seven builtins below must refuse to run under EIGS_REPLAY and
+# raise a catchable runtime error rather than silently re-executing real
+# side effects against a tape that has no host-side causal structure.
+cat > "$TMPDIR/p_block.eigs" <<'EOF'
+caught is 0
+try:
+    r is exec_capture of [["true"]]
+catch e:
+    caught is caught + 1
+try:
+    r is proc_spawn of ["true"]
+catch e:
+    caught is caught + 1
+try:
+    r is proc_write of [1, "x"]
+catch e:
+    caught is caught + 1
+try:
+    r is proc_read_line of 0
+catch e:
+    caught is caught + 1
+try:
+    r is proc_read of [0, 16]
+catch e:
+    caught is caught + 1
+try:
+    r is proc_close of 0
+catch e:
+    caught is caught + 1
+try:
+    r is proc_wait of 1
+catch e:
+    caught is caught + 1
+ch is channel of null
+try:
+    r is recv of ch
+catch e:
+    caught is caught + 1
+try:
+    r is try_recv of ch
+catch e:
+    caught is caught + 1
+try:
+    r is recv_timeout of [ch, 1]
+catch e:
+    caught is caught + 1
+print of caught
+EOF
+
+# Empty tape so replay is enabled but every builtin's TAKE returns 0 — the
+# replay_blocks guard fires before TAKE on these builtins, so no record is
+# consumed. The script just counts how many calls raised.
+: > "$TMPDIR/block.tape"
+BLOCK_OUT=$(EIGS_REPLAY="$TMPDIR/block.tape" "$EIGS" "$TMPDIR/p_block.eigs" 2>/dev/null)
+if [ "$BLOCK_OUT" = "10" ]; then
+    ok "replay-block: all 10 subprocess/channel builtins refuse under EIGS_REPLAY (#148)"
+else
+    fail "replay-block" "caught=$BLOCK_OUT (expected 10)"
+fi
+
+# And the error text identifies the boundary so the user can find docs/TRACE.md.
+cat > "$TMPDIR/p_block_msg.eigs" <<'EOF'
+try:
+    r is proc_spawn of ["true"]
+catch e:
+    print of e
+EOF
+BLOCK_MSG=$(EIGS_REPLAY="$TMPDIR/block.tape" "$EIGS" "$TMPDIR/p_block_msg.eigs" 2>/dev/null)
+if echo "$BLOCK_MSG" | grep -q "not replayable under EIGS_REPLAY" \
+   && echo "$BLOCK_MSG" | grep -q "subprocess/concurrency"; then
+    ok "replay-block: error text names the replay boundary"
+else
+    fail "replay-block message" "out='$BLOCK_MSG'"
+fi
+
 echo
 echo "REPLAY: $PASS passed, $FAIL failed"
 [ "$FAIL" = "0" ] && exit 0 || exit 1

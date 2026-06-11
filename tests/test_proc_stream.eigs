@@ -104,6 +104,31 @@ check of ["11a", proc_wait of -1, -1]
 # 12. proc_read_line on a closed fd returns null.
 check of ["12a", proc_read_line of 9999, null]
 
+# 13. Issue #149 — pipe fds carry FD_CLOEXEC so they don't leak into
+#     subsequent children. Spawn a long-lived cat, then exec_capture a
+#     checker that inspects /proc/self/fd for cat's parent-side fds.
+h is proc_spawn of ["/bin/cat"]
+in_fd is h[1]
+out_fd is h[2]
+script is "test -e /proc/self/fd/" + str of in_fd + " && echo present || echo absent"
+res is exec_capture of ["/bin/sh", "-c", script]
+check of ["13a", res[0], 0]
+check of ["13b", res[1], "absent\n"]
+script2 is "test -e /proc/self/fd/" + str of out_fd + " && echo present || echo absent"
+res2 is exec_capture of ["/bin/sh", "-c", script2]
+check of ["13c", res2[1], "absent\n"]
+proc_close of in_fd
+proc_close of out_fd
+proc_wait of h[0]
+
+# 14. Issue #150 — exec_capture's child resets SIGPIPE to SIG_DFL even after
+#     proc_spawn has installed SIG_IGN process-wide. Without the reset,
+#     `yes | head -1` hangs: head exits, but yes inherits SIG_IGN and loops
+#     forever filling the pipe buffer.
+res is exec_capture of [["/bin/sh", "-c", "yes | head -n 1"], 5]
+check of ["14a", res[0], 0]
+check of ["14b", res[1], "y\n"]
+
 if passed == checks:
     print of "All tests passed"
 else:

@@ -139,14 +139,18 @@ still open.
 
 A post-merge review of the 0.13.0 run filed issues #148–#159 (all
 repro'd against HEAD; suites still pass because none are crashes).
-The two wrong-answer bugs are now fixed: **#155** (`call_argc`
-uninitialized on vm_run base frames; spawn/sort_by/dispatch/http
-defaults clobbered explicit args) and **#156** (pre-pass walkers
-didn't know AST_SLICE / AST_LIST_PATTERN_ASSIGN; closure capture
-and module globals silently broke). Remaining before tagging
-0.13.0: #148/#149/#150 (proc replay, missing O_CLOEXEC, SIGPIPE
-leak into exec_capture children) first; the rest are small or
-docs.
+Five fixed so far: **#155** (`call_argc` uninitialized on vm_run
+base frames; spawn/sort_by/dispatch/http defaults clobbered explicit
+args), **#156** (pre-pass walkers didn't know AST_SLICE /
+AST_LIST_PATTERN_ASSIGN; closure capture and module globals silently
+broke), **#148** (proc_* / exec_capture / recv* now fail loudly under
+`EIGS_REPLAY` — boundary documented in `docs/TRACE.md`), **#149**
+(`FD_CLOEXEC` on every pipe end in proc_spawn / exec_capture so the
+fds don't leak into subsequent children), **#150** (exec_capture
+child resets `SIGPIPE` to `SIG_DFL` so `yes | head -1` and similar
+inherited-`SIG_IGN` hang patterns drain instead of hanging).
+Remaining before tagging 0.13.0: the small/docs issues #151–#154 and
+#157–#159.
 
 Perf carryover from 0.12.0 (ROADMAP.md): NaN-boxing for *container*
 storage (list items / dict values are still `Value**`; stack and env

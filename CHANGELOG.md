@@ -8,6 +8,47 @@ A language-features release.
 
 ### Fixes
 
+- **#148 — replay boundary for subprocess and concurrency builtins.**
+  Ten builtins sit on the wrong side of `EIGS_REPLAY`'s replay-by-tape
+  contract: `proc_spawn`, `proc_write`, `proc_read_line`, `proc_read`,
+  `proc_close`, `proc_wait`, `exec_capture`, `recv`, `try_recv`,
+  `recv_timeout`. Their return values do not pin down the host-side
+  causal structure (child PIDs, fd numbers, kernel scheduling), so
+  replaying them — even with `TRACE_NONDET_TAKE` — would let a recorded
+  script re-execute real side effects against a tape that cannot
+  re-create the world it ran in (verified: replaying a proc program
+  forked real children). Fix: each of the ten builtins now checks
+  `g_replay_enabled` first and raises a catchable runtime error
+  (`"<fn>: not replayable under EIGS_REPLAY (subprocess/concurrency
+  boundary; see docs/TRACE.md)"`). Boundary is documented in a new
+  "Non-Replayable Builtins" section of `docs/TRACE.md`. Regression in
+  `tests/test_replay.sh` (two new cases).
+- **#149 — `FD_CLOEXEC` on `proc_spawn` and `exec_capture` pipe fds.**
+  The four pipe ends in `proc_spawn` (`in_pipe[0/1]`, `out_pipe[0/1]`)
+  and the two in `exec_capture` (`pipefd[0/1]`) were left without
+  `FD_CLOEXEC` after `pipe(2)`, so a subsequent `proc_spawn` /
+  `exec_capture` child inherited the parent-side fds of every prior
+  spawn — a long-running interpreter accumulating live procs would leak
+  growing fd tables into each new child. Fix: `fcntl(F_SETFD,
+  FD_CLOEXEC)` on every pipe end right after `pipe()`. The child's
+  `dup2` into `STDIN_FILENO`/`STDOUT_FILENO` clears `FD_CLOEXEC` on the
+  destination, so the child's own stdio still survives `execvp`.
+  Regression in `tests/test_proc_stream.eigs` (case 13: spawn cat, then
+  `exec_capture` a `sh -c` checker that asserts the pipe fds are absent
+  from the new child's `/proc/self/fd`).
+- **#150 — `exec_capture` child resets `SIGPIPE` to `SIG_DFL`.**
+  `proc_spawn` installs a process-wide `SIGPIPE = SIG_IGN` once (so
+  the EigenScript parent gets `EPIPE` on write instead of dying), and
+  that disposition survives `fork`. After at least one `proc_spawn`,
+  every `exec_capture` child inherits `SIG_IGN`, so any subprocess
+  pipeline that relies on `SIGPIPE` to drain (`yes | head -1`,
+  `cat | head`, GNU `tar | cmd`) hangs — the upstream producer fills
+  its pipe buffer instead of dying when the downstream reader exits.
+  Fix: `signal(SIGPIPE, SIG_DFL)` in the `exec_capture` child block
+  between `fork` and `execvp`, mirroring `proc_spawn`. Regression in
+  `tests/test_proc_stream.eigs` (case 14: `yes | head -n 1` under
+  `exec_capture` with a 5s timeout — passes promptly when SIGPIPE is
+  reset, would hit the timeout otherwise).
 - **#155 — `frame->call_argc` initialized on `vm_run`'s base frame.**
   Every entry path that runs a user function through `vm_execute`
   (`spawn`, `sort_by` / tensor gradient callbacks via `call_eigs_fn`,
