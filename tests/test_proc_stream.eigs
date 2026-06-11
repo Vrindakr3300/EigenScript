@@ -42,11 +42,12 @@ code is proc_wait of h[0]
 check of ["4d", code, 0]
 
 # 5. wc -l: write three lines, close stdin, read count.
+# BSD wc left-pads the count ("       3"), GNU doesn't — trim before compare.
 h is proc_spawn of ["/usr/bin/wc", "-l"]
 proc_write of [h[1], "a\nb\nc\n"]
 proc_close of h[1]
 out is proc_read_line of h[2]
-check of ["5a", out, "3"]
+check of ["5a", trim of out, "3"]
 proc_close of h[2]
 code is proc_wait of h[0]
 check of ["5b", code, 0]
@@ -131,25 +132,38 @@ check of ["14b", res[1], "y\n"]
 
 # 15. Issue #159 — proc_read_buf is binary-safe: returns a VAL_BUFFER
 #     so an embedded NUL doesn't truncate the result.
-h is proc_spawn of ["/usr/bin/printf", "%b", "ab\\0cd"]
+# BSD printf %b stops at \0 (it prints the expansion as a C string), so
+# the original `printf %b 'ab\0cd'` child emitted only "ab" on macOS.
+# Emit the NUL with dd instead — and since that child makes three
+# separate writes, accumulate chunks until EOF rather than assuming one
+# read returns everything (that's the documented streaming contract).
+h is proc_spawn of ["/bin/sh", "-c", "printf ab; dd if=/dev/zero bs=1 count=1 2>/dev/null; printf cd"]
 proc_close of h[1]
-buf is proc_read_buf of [h[2], 64]
-check of ["15a", len of buf, 5]
-check of ["15b", buf[0], 97]
-check of ["15c", buf[1], 98]
-check of ["15d", buf[2], 0]
-check of ["15e", buf[3], 99]
-check of ["15f", buf[4], 100]
+bytes is []
+chunk is proc_read_buf of [h[2], 64]
+loop while chunk != null:
+    for v in chunk:
+        append of [bytes, v]
+    chunk is proc_read_buf of [h[2], 64]
+check of ["15a", len of bytes, 5]
+check of ["15b", bytes[0], 97]
+check of ["15c", bytes[1], 98]
+check of ["15d", bytes[2], 0]
+check of ["15e", bytes[3], 99]
+check of ["15f", bytes[4], 100]
 proc_close of h[2]
 proc_wait of h[0]
 
 # 16. proc_read still truncates at the first NUL (documented text-only).
-h is proc_spawn of ["/usr/bin/printf", "%b", "ab\\0cd"]
+# Wait for the child first so all three writes are in the pipe and one
+# read sees "ab\0cd" — len 2 then proves the NUL truncation, not a
+# short read.
+h is proc_spawn of ["/bin/sh", "-c", "printf ab; dd if=/dev/zero bs=1 count=1 2>/dev/null; printf cd"]
 proc_close of h[1]
+proc_wait of h[0]
 s is proc_read of [h[2], 64]
 check of ["16a", len of s, 2]
 proc_close of h[2]
-proc_wait of h[0]
 
 # 17. proc_read_buf returns null on EOF.
 h is proc_spawn of ["/bin/echo", "hi"]

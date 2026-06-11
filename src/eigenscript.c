@@ -267,6 +267,12 @@ __thread double g_obs_h_low    = 0.1;
 
 void free_value(Value *v) {
     if (!v || v->arena) return;
+    /* The observer holds a borrowed alias, not a ref. Freeing the value
+     * it points at (e.g. `b is buffer of N` then `b is null` — the
+     * rebind drops the last ref) left a dangling pointer that the next
+     * loop-stall check / predicate / interrogative dereferenced; for
+     * freelisted NUMs it silently read recycled data instead. */
+    if (v == g_last_observer) g_last_observer = NULL;
     if (v->type == VAL_NUM) {
         /* Route freed NUMs to freelist for reuse by make_num */
         if (g_num_freelist_count < NUM_FREELIST_CAP) {
@@ -555,7 +561,7 @@ Value* make_text_builder(void) {
     return v;
 }
 
-Value* make_fn(const char *name, char **params, int param_count, ASTNode **body, int body_count, Env *closure) {
+Value* make_fn(const char *name, char **params, int param_count, Env *closure) {
     Value *v = xcalloc(1, sizeof(Value));
     v->type = VAL_FN;
     v->data.fn.name = xstrdup(name);
@@ -566,8 +572,11 @@ Value* make_fn(const char *name, char **params, int param_count, ASTNode **body,
         v->data.fn.params[i] = env_intern_name(params[i]);
         v->data.fn.param_hashes[i] = env_hash_name(params[i]);
     }
-    v->data.fn.body = clone_ast_array(body, body_count);
-    v->data.fn.body_count = body_count;
+    /* AST bodies died with the tree-walking evaluator. OP_CLOSURE
+     * overwrites body with the compiled chunk ptr and body_count with
+     * the -1 bytecode sentinel right after this returns. */
+    v->data.fn.body = NULL;
+    v->data.fn.body_count = 0;
     v->data.fn.closure = closure;
     if (closure) {
         if (__builtin_expect(g_vm_multithreaded, 0))
