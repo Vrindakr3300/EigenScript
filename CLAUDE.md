@@ -88,19 +88,35 @@ make jit-smoke  # standalone emitter tests (jit_smoke.c stubs all helpers)
   /dev/null — `test_terminal.eigs` blocks forever reading a pipe that
   never EOFs (e.g. backgrounded runs).
 
-## Current focus: 0.12.0 performance
+## Current focus: 0.13.0 language features (+ perf carryover)
 
-Stage 5 (a–h) is fully shipped: inline fast paths (INDEX_SET, EnvIC
-name get/set, dict-dot via 2-way inline cache, tracked-num
-arith/compare operands), native VAL_FN calls inside thunks, per-loop
-OSR slots (`jit_osr[4]`), and the DOT_SET in-place write. Cumulative:
+0.12.0 perf is shipped. JIT Stage 5 (a–i) is the full matrix:
+inline fast paths (INDEX_SET, EnvIC name get/set, dict-dot via 2-way
+inline cache, tracked-num arith/compare operands), native VAL_FN
+calls inside thunks, per-loop OSR slots (`jit_osr[4]`), the DOT_SET
+in-place write, and per-chunk call-env recycling (5i). Cumulative:
 `bench_dmg_shape` 239 → ~118 ms (2.0×); the JIT beats `EIGS_JIT_OFF`
-by ~45% on it. Design record: CHANGELOG.md (Stages 5–5h) +
+by ~45% on it. Design record: CHANGELOG.md (Stages 5–5i) +
 `docs/JIT_STAGE5_INLINE_IC.md` (spec + as-built deltas).
 
-Remaining 0.12.0 items (ROADMAP.md): NaN-boxing for *container*
+0.13.0 has shipped a run of language features (CHANGELOG.md
+[0.13.0] for the full record): destructuring assignment, streaming
+subprocess I/O (`proc_spawn` / `proc_write` / `proc_read_line` /
+`proc_read` / `proc_close` / `proc_wait`), negative indexing,
+slicing (`a[start:end]` half-open with defaults + negative bounds +
+strict bounds-check, lists/strings/buffers), default parameter
+values, non-blocking channel recv (`recv_timeout of [ch, ms]` plus
+suite coverage for the pre-existing `try_recv`), `spawn` with
+multiple positional args, and finite-count `audio_play_loop` (gfx).
+Tidepool downstream: GAP-001 / GAP-002 finite / GAP-005 / GAP-006
+all closed; GAP-002 infinite loop and GAP-003 per-channel volume
+still open.
+
+Perf carryover from 0.12.0 (ROADMAP.md): NaN-boxing for *container*
 storage (list items / dict values are still `Value**`; stack and env
 slots are already EigsSlot), extending GET_LOCAL/SET_LOCAL to all
-locals, and per-call env churn (`env_new`/`env_free` per call — now
-the likely top DMG cost). Re-profile before picking: every stage this
-cycle changed the profile shape.
+locals (currently restricted; broadening unlocks JIT inline ICs on
+every local), and per-call env churn (`env_new` / `env_free` per
+call — likely the top DMG cost post-5i for non-recyclable
+callsites). Re-profile before picking: every stage last cycle moved
+the profile shape.
