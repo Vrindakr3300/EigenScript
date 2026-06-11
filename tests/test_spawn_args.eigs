@@ -1,0 +1,123 @@
+# spawn with multiple args (0.13.0).
+checks is 0
+passed is 0
+
+define check(label, got, want) as:
+    checks is checks + 1
+    if got == want:
+        passed is passed + 1
+    else:
+        print of ("MISMATCH " + label + ": got=" + str of got + " want=" + str of want)
+
+# 1. Zero-arg form (existing, regression guard).
+define greet() as:
+    return "hi"
+t is spawn of greet
+check of ["1a", thread_join of t, "hi"]
+
+# 2. Bare-list zero-arg form (`[fn]` with no further args).
+t is spawn of [greet]
+check of ["2a", thread_join of t, "hi"]
+
+# 3. Single-arg form (existing).
+define double(x) as:
+    return x * 2
+t is spawn of [double, 21]
+check of ["3a", thread_join of t, 42]
+
+# 4. Two-arg form (new).
+define sum2(a, b) as:
+    return a + b
+t is spawn of [sum2, 10, 32]
+check of ["4a", thread_join of t, 42]
+
+# 5. Three-arg form (new).
+define sum3(a, b, c) as:
+    return a + b + c
+t is spawn of [sum3, 1, 2, 3]
+check of ["5a", thread_join of t, 6]
+
+# 6. Args are positional in order.
+define order_str(a, b, c) as:
+    return a + b + c
+t is spawn of [order_str, "x", "y", "z"]
+check of ["6a", thread_join of t, "xyz"]
+
+# 7. Underfill: missing trailing args bind to null.
+define show3(a, b, c) as:
+    return [a, b, c]
+t is spawn of [show3, "p", "q"]
+check of ["7a", thread_join of t, ["p", "q", null]]
+
+t is spawn of [show3, "p"]
+check of ["7b", thread_join of t, ["p", null, null]]
+
+t is spawn of [show3]
+check of ["7c", thread_join of t, [null, null, null]]
+
+# 8. Overfill: extra args ignored.
+t is spawn of [double, 5, 999, 1000]
+check of ["8a", thread_join of t, 10]
+
+# 9. Heterogeneous arg types (number, string, list, dict, null).
+define show5(a, b, c, d, e) as:
+    return [a, b, c, d, e]
+arg_list is [1, 2]
+arg_dict is {"k": "v"}
+t is spawn of [show5, 7, "s", arg_list, arg_dict, null]
+got is thread_join of t
+check of ["9a", got[0], 7]
+check of ["9b", got[1], "s"]
+check of ["9c", got[2], [1, 2]]
+check of ["9d", got[3]["k"], "v"]
+check of ["9e", got[4], null]
+
+# 10. Multiple spawns concurrently with different args — no arg-pack
+#     cross-talk between threads.
+define mul(a, b) as:
+    return a * b
+t1 is spawn of [mul, 3, 4]
+t2 is spawn of [mul, 5, 6]
+t3 is spawn of [mul, 7, 8]
+check of ["10a", thread_join of t1, 12]
+check of ["10b", thread_join of t2, 30]
+check of ["10c", thread_join of t3, 56]
+
+# 11. Args shared by reference (consistent with channels).
+shared is [100, 200, 300]
+define first_of(lst) as:
+    return lst[0]
+t is spawn of [first_of, shared]
+check of ["11a", thread_join of t, 100]
+
+# 12. Channel + multiple args — classic producer pattern.
+ch is channel of null
+define producer(c, x, y) as:
+    send of [c, x * y]
+t is spawn of [producer, ch, 6, 7]
+thread_join of t
+check of ["12a", recv of ch, 42]
+
+# 13. Spawn a closure that captures + receives extra args.
+multiplier is 10
+define scale(x) as:
+    return x * multiplier
+t is spawn of [scale, 5]
+check of ["13a", thread_join of t, 50]
+
+# 14. Non-function first arg raises.
+err is null
+try:
+    bad is spawn of [42, 1, 2]
+catch e:
+    err is e
+checks is checks + 1
+if err != null:
+    passed is passed + 1
+else:
+    print of "MISMATCH 14a: expected error for non-function spawn"
+
+if passed == checks:
+    print of "All tests passed"
+else:
+    print of f"FAIL: {passed}/{checks} passed"

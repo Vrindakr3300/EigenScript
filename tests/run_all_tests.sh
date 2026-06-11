@@ -1638,6 +1638,21 @@ else
 fi
 echo ""
 
+# [78] spawn with multiple args (0.13.0).
+echo "[78] Spawn With Multiple Args (22 checks)"
+SP_OUTPUT=$(./eigenscript ../tests/test_spawn_args.eigs 2>&1)
+if echo "$SP_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 22))
+    PASS=$((PASS + 22))
+    echo "  PASS: all 22 spawn-args checks"
+else
+    TOTAL=$((TOTAL + 22))
+    FAIL=$((FAIL + 22))
+    echo "  FAIL: spawn-args tests"
+    echo "$SP_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
+fi
+echo ""
+
 # [77] Non-blocking channel recv (0.13.0).
 echo "[77] Non-blocking Channel Recv (22 checks)"
 CNB_OUTPUT=$(./eigenscript ../tests/test_channel_nb.eigs 2>&1)

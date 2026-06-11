@@ -6,6 +6,37 @@ All notable changes to EigenScript are documented here.
 
 A language-features release.
 
+### Language — `spawn` with multiple args
+
+`spawn of [fn, arg1, arg2, ...]` now passes N positional arguments
+to the spawned function, not just one. Bare `spawn of fn` (no args)
+and the existing `spawn of [fn, arg]` (one arg) keep working
+verbatim. Missing trailing params bind to `null`; extra args are
+ignored — same arity-tolerant stance EigenScript already uses for
+regular calls. Args are shared by reference, not deep-copied,
+matching the channel model already in place (`docs/BUILTINS.md`
+thread-safety note: mutable containers shouldn't be mutated
+concurrently from both sides; transfer ownership or send immutable
+values).
+
+Wire-up: `ThreadHandle` swaps its single `fn_arg: Value*` slot for
+`fn_args: Value**` + `fn_arg_count: int`; `builtin_spawn` incref's
+every list element 1..N (element 0 is the fn) into a heap-allocated
+arg array; `thread_entry` binds `args[0..bind_n)` to params via
+`env_set_local`, then fills the remaining params with `null` via
+`env_set_local_owned`; `builtin_thread_join` decref's every arg
+and frees the array on cleanup. For `VAL_BUILTIN` callees the
+1-arg path stays `fn(args[0])` (zero churn for existing one-shots
+like `spawn of [my_builtin, x]`); 0-arg becomes `fn(null)`; N-arg
+packs into a list to match how EigenScript surfaces multi-arg
+calls to builtins everywhere else.
+
+Test: `tests/test_spawn_args.eigs` (22 checks across 0/1/2/3-arg
+forms, underfill / overfill, heterogeneous types, concurrent
+spawns with no cross-talk, shared-by-ref semantics, closure capture
++ extra args, and the non-function-first-arg error path; suite slot
+[78]). Fix for Tidepool `GAPS.md` GAP-006.
+
 ### Language — non-blocking channel recv (`recv_timeout`)
 
 `recv_timeout of [channel, ms]` joins `try_recv` as the second

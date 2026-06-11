@@ -3252,7 +3252,8 @@ Value* builtin_get_at(Value *arg) {
 
 typedef struct {
     Value *fn;
-    Value *fn_arg;
+    Value **fn_args;       /* arg_count Value* — owned (incref'd by spawn) */
+    int fn_arg_count;
     Env *parent_env;
     Value *result;
     volatile int done;
@@ -3265,9 +3266,13 @@ static void *thread_entry(void *arg) {
     Value *fn = h->fn;
     if (fn->type == VAL_FN) {
         Env *call_env = env_new(fn->data.fn.closure);
-        if (fn->data.fn.param_count > 0) {
-            env_set_local(call_env, fn->data.fn.params[0],
-                          h->fn_arg ? h->fn_arg : make_null());
+        int bind_n = h->fn_arg_count;
+        if (bind_n > fn->data.fn.param_count) bind_n = fn->data.fn.param_count;
+        for (int i = 0; i < bind_n; i++) {
+            env_set_local(call_env, fn->data.fn.params[i], h->fn_args[i]);
+        }
+        for (int i = bind_n; i < fn->data.fn.param_count; i++) {
+            env_set_local_owned(call_env, fn->data.fn.params[i], make_null());
         }
         Value *result = make_null();
         g_returning = 0;
@@ -3285,7 +3290,23 @@ static void *thread_entry(void *arg) {
         if (result) val_incref(result);
         env_free(call_env);
     } else if (fn->type == VAL_BUILTIN) {
-        h->result = fn->data.builtin(h->fn_arg ? h->fn_arg : make_null());
+        /* Builtins take a single Value*; pass args[0] for 1-arg form,
+         * or a list of all args for N-arg form (consistent with how
+         * EigenScript surfaces multi-arg calls to builtins). */
+        Value *bin_arg;
+        if (h->fn_arg_count == 0) {
+            bin_arg = make_null();
+        } else if (h->fn_arg_count == 1) {
+            bin_arg = h->fn_args[0];
+            val_incref(bin_arg);
+        } else {
+            Value *l = make_list(h->fn_arg_count);
+            for (int i = 0; i < h->fn_arg_count; i++)
+                list_append(l, h->fn_args[i]);
+            bin_arg = l;
+        }
+        h->result = fn->data.builtin(bin_arg);
+        val_decref(bin_arg);
         if (h->result) val_incref(h->result);
     }
     h->done = 1;
@@ -3294,27 +3315,46 @@ static void *thread_entry(void *arg) {
 
 Value* builtin_spawn(Value *arg) {
     Value *fn = arg;
-    Value *fn_arg = NULL;
-    /* Accept [fn, arg] list or bare function */
+    Value **fn_args = NULL;
+    int fn_arg_count = 0;
+    /* Accept bare function (0 args) or [fn, arg1, arg2, ...] (N args) */
     if (arg && arg->type == VAL_LIST && arg->data.list.count >= 1) {
         fn = arg->data.list.items[0];
-        if (arg->data.list.count >= 2)
-            fn_arg = arg->data.list.items[1];
+        fn_arg_count = arg->data.list.count - 1;
+        if (fn_arg_count > 0) {
+            fn_args = xmalloc(sizeof(Value*) * fn_arg_count);
+            for (int i = 0; i < fn_arg_count; i++) {
+                fn_args[i] = arg->data.list.items[i + 1];
+                val_incref(fn_args[i]);
+            }
+        }
     }
     if (!fn || (fn->type != VAL_FN && fn->type != VAL_BUILTIN)) {
-        runtime_error(0, "spawn requires a function or [function, arg]");
+        if (fn_args) {
+            for (int i = 0; i < fn_arg_count; i++) val_decref(fn_args[i]);
+            free(fn_args);
+        }
+        runtime_error(0, "spawn requires a function or [function, arg1, ...]");
         return make_null();
     }
     ThreadHandle *h = xmalloc(sizeof(ThreadHandle));
     h->fn = fn;
     val_incref(fn);
-    h->fn_arg = fn_arg;
-    if (fn_arg) val_incref(fn_arg);
+    h->fn_args = fn_args;
+    h->fn_arg_count = fn_arg_count;
     h->parent_env = g_global_env;
     h->result = NULL;
     h->done = 0;
     int hid = handle_register(h, HANDLE_THREAD);
-    if (hid < 0) { free(h); val_decref(arg); return make_null(); }
+    if (hid < 0) {
+        val_decref(fn);
+        if (fn_args) {
+            for (int i = 0; i < fn_arg_count; i++) val_decref(fn_args[i]);
+            free(fn_args);
+        }
+        free(h);
+        return make_null();
+    }
     /* Flip refcounts to atomic mode before any new thread can observe
      * a Value. pthread_create supplies the full barrier. */
     g_vm_multithreaded = 1;
@@ -3338,7 +3378,10 @@ Value* builtin_thread_join(Value *arg) {
     pthread_join(h->tid, NULL);
     Value *result = h->result ? h->result : make_null();
     val_decref(h->fn);
-    if (h->fn_arg) val_decref(h->fn_arg);
+    if (h->fn_args) {
+        for (int i = 0; i < h->fn_arg_count; i++) val_decref(h->fn_args[i]);
+        free(h->fn_args);
+    }
     handle_release(hid);
     free(h);
     return result;

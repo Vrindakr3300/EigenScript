@@ -449,7 +449,7 @@ Requires full build. Transformer model inference and training.
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `spawn` | `spawn of fn` or `spawn of [fn, arg]` | Spawn a thread running `fn`. With list form, passes `arg` as the function's first parameter. Returns a thread handle dict. |
+| `spawn` | `spawn of fn` or `spawn of [fn, arg1, ...]` | Spawn a thread running `fn`. Bare-fn form passes no args; list form passes `arg1...` positionally. Missing trailing params bind to `null`; extra args are ignored. Args are shared by reference (consistent with channels) — see thread-safety note below. Returns a thread handle dict. |
 | `thread_join` | `thread_join of handle` | Block until thread completes. Returns the thread function's return value. |
 | `channel` | `channel of null` | Create a bounded FIFO channel (capacity 64). Returns a channel handle dict. |
 | `send` | `send of [channel, value]` | Send a value to the channel. Blocks if full. |
