@@ -1678,6 +1678,13 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     frame->try_count = 0;
     frame->saved_stall_count = g_loop_stall_count;
     frame->saved_loop_iter   = g_loop_iterations;
+    /* Entry paths via vm_execute (thread_entry, call_eigs_fn, dispatch,
+     * HTTP handlers, module-level) have already bound every param in
+     * env before getting here. Mark all slots as caller-supplied so
+     * OP_DEFAULT_PARAM doesn't re-fire defaults over them — and so a
+     * stale value left by a prior frame at this depth can't clobber
+     * explicit args. */
+    frame->call_argc = chunk->param_count;
     chunk->exec_count++;
     jit_register_chunk(chunk);
 

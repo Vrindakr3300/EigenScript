@@ -73,6 +73,29 @@ define fact(n, acc is 1) as:
 check of ["7a", fact of 5, 120]
 check of ["7b", fact of [5, 2], 240]
 
+# 8. Issue #155 — defaults must not clobber explicit args on entry
+#    paths that go through vm_execute. spawn binds args via
+#    env_set_local then calls vm_execute; the base frame's call_argc
+#    used to read stale stack memory, so OP_DEFAULT_PARAM could fire
+#    over a slot the caller did supply (most reproducible on a fresh
+#    thread, where the frame storage is zeroed → call_argc=0 → every
+#    default fires).
+define worker(a, b is 100) as:
+    return a + b
+
+t is spawn of [worker, 1, 2]
+check of ["8a", thread_join of t, 3]
+
+t is spawn of [worker, 7, 11]
+check of ["8b", thread_join of t, 18]
+
+# Both args explicit on a 3-param fn with two defaults.
+define triple(a, b is 10, c is 100) as:
+    return a + b + c
+
+t is spawn of [triple, 1, 2, 3]
+check of ["8c", thread_join of t, 6]
+
 if passed == checks:
     print of "All tests passed"
 else:

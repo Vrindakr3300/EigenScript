@@ -99,6 +99,34 @@ ys is [1, 2, 3]
 check of ["12a", len of ys, 3]
 check of ["12b", ys[0], 1]
 
+# 13. Issue #156 — module-level destructured names must be registered as
+#     module names. Without it, `gx is 999` inside a function silently
+#     creates a local and the global stays 100.
+[gx_dest, gy_dest] is [100, 200]
+define bump_gx() as:
+    gx_dest is 999
+bump_gx of []
+check of ["13a", gx_dest, 999]
+check of ["13b", gy_dest, 200]
+
+# Plain-assigned twin must keep the same global-write semantics — both
+# paths should behave identically.
+ax_plain is 100
+define bump_ax() as:
+    ax_plain is 999
+bump_ax of []
+check of ["13c", ax_plain, 999]
+
+# 14. Issue #156 — closure capture through a destructure RHS. The
+#     inner closure references `pair_src` only via destructure expr.
+define outer_dest() as:
+    pair_src is [7, 11]
+    define inner() as:
+        [hh, tt] is pair_src
+        return hh + tt
+    return inner of []
+check of ["14a", outer_dest of null, 18]
+
 if passed == checks:
     print of "All tests passed"
 else:

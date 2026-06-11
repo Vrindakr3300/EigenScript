@@ -168,6 +168,24 @@ check of ["17a", mid of [1, 2, 3, 4, 5], [2, 3, 4]]
 check of ["18a", a[1:4][0], 20]
 check of ["18b", a[:][0:2], [10, 20]]
 
+# 19. Issue #156 — closure that references an outer local only through a
+#     slice. Capture analysis must descend into AST_SLICE (target, start,
+#     end) or `data` slot-promotes and `inner` sees null.
+define outer_slice() as:
+    data is [1, 2, 3, 4, 5]
+    define inner() as:
+        return data[1:3]
+    return inner of []
+check of ["19a", outer_slice of null, [2, 3]]
+
+# Variant: slice bound references an outer local.
+define outer_slice_bound() as:
+    end_idx is 3
+    define inner() as:
+        return [10, 20, 30, 40][1:end_idx]
+    return inner of []
+check of ["19b", outer_slice_bound of null, [20, 30]]
+
 if passed == checks:
     print of "All tests passed"
 else:

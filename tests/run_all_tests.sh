@@ -1669,15 +1669,15 @@ fi
 echo ""
 
 # [76] Slicing (0.13.0).
-echo "[76] Slicing (46 checks)"
+echo "[76] Slicing (48 checks)"
 SL_OUTPUT=$(./eigenscript ../tests/test_slicing.eigs 2>&1)
 if echo "$SL_OUTPUT" | grep -q "All tests passed"; then
-    TOTAL=$((TOTAL + 46))
-    PASS=$((PASS + 46))
-    echo "  PASS: all 46 slicing checks"
+    TOTAL=$((TOTAL + 48))
+    PASS=$((PASS + 48))
+    echo "  PASS: all 48 slicing checks"
 else
-    TOTAL=$((TOTAL + 46))
-    FAIL=$((FAIL + 46))
+    TOTAL=$((TOTAL + 48))
+    FAIL=$((FAIL + 48))
     echo "  FAIL: slicing tests"
     echo "$SL_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
 fi
@@ -1699,15 +1699,15 @@ fi
 echo ""
 
 # [74] Destructuring assignment (0.13.0).
-echo "[74] Destructuring (26 checks)"
+echo "[74] Destructuring (28 checks)"
 DS_OUTPUT=$(./eigenscript ../tests/test_destructuring.eigs 2>&1)
 if echo "$DS_OUTPUT" | grep -q "All tests passed"; then
-    TOTAL=$((TOTAL + 26))
-    PASS=$((PASS + 26))
-    echo "  PASS: all 26 destructuring checks"
+    TOTAL=$((TOTAL + 28))
+    PASS=$((PASS + 28))
+    echo "  PASS: all 28 destructuring checks"
 else
-    TOTAL=$((TOTAL + 26))
-    FAIL=$((FAIL + 26))
+    TOTAL=$((TOTAL + 28))
+    FAIL=$((FAIL + 28))
     echo "  FAIL: destructuring tests"
     echo "$DS_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
 fi
@@ -1729,15 +1729,15 @@ fi
 echo ""
 
 # [72] Default parameter values (0.13.0).
-echo "[72] Default Parameters (16 checks)"
+echo "[72] Default Parameters (21 checks)"
 DP_OUTPUT=$(./eigenscript ../tests/test_default_params.eigs 2>&1)
 if echo "$DP_OUTPUT" | grep -q "All tests passed"; then
-    TOTAL=$((TOTAL + 16))
-    PASS=$((PASS + 16))
-    echo "  PASS: all 16 default-param checks"
+    TOTAL=$((TOTAL + 21))
+    PASS=$((PASS + 21))
+    echo "  PASS: all 21 default-param checks"
 else
-    TOTAL=$((TOTAL + 16))
-    FAIL=$((FAIL + 16))
+    TOTAL=$((TOTAL + 21))
+    FAIL=$((FAIL + 21))
     echo "  FAIL: default-param tests"
     echo "$DP_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
 fi

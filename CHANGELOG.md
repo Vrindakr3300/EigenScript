@@ -6,6 +6,37 @@ All notable changes to EigenScript are documented here.
 
 A language-features release.
 
+### Fixes
+
+- **#155 — `frame->call_argc` initialized on `vm_run`'s base frame.**
+  Every entry path that runs a user function through `vm_execute`
+  (`spawn`, `sort_by` / tensor gradient callbacks via `call_eigs_fn`,
+  `dispatch`, HTTP handlers, module-level) leaves the base frame's
+  `call_argc` reading whatever stale value the last occupant of that
+  depth left behind — or zero on a fresh thread. `OP_DEFAULT_PARAM`
+  compared against that garbage, so a 0.13.0 default could fire over
+  a slot the caller did supply. Most reproducible on a fresh thread:
+  `spawn of [worker(a, b is 100), 1, 2]` was returning 101 instead of
+  3. Fix: set `frame->call_argc = chunk->param_count` in the base-frame
+  init — the C caller has already bound every param, so no default
+  should re-fire. Regression in `tests/test_default_params.eigs`
+  (slot [72], 16 → 21).
+- **#156 — AST pre-pass walkers handle `AST_SLICE` and
+  `AST_LIST_PATTERN_ASSIGN`.** All five compiler walkers
+  (`collect_referenced_names`, `collect_referenced_names_skip`,
+  `scan_for_captures`, `scan_for_interrogated`,
+  `collect_module_names_walk`) fell through `default: break` on the
+  two 0.13.0 node types, so a closure that touched an outer local
+  only through a slice (`data[1:3]`) or a destructure RHS
+  (`[m, n] is pair`) slot-promoted the outer and read `null`, and a
+  module-level destructure (`[gx, gy] is [100, 200]`) was invisible
+  to module-name collection so writes inside functions silently
+  created locals instead of updating the globals. Fix: register
+  destructure target names and recurse into RHS / slice
+  (target, start, end) in every walker. Regressions in
+  `tests/test_slicing.eigs` (slot [76], 46 → 48) and
+  `tests/test_destructuring.eigs` (slot [74], 26 → 28).
+
 ### Audio — `audio_play_loop` (finite-count loop playback)
 
 `audio_play_loop of [samples, loops]` queues a sample list `loops`

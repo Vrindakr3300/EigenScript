@@ -447,6 +447,16 @@ static void collect_referenced_names_skip(ASTNode *node, ASTNode *skip, NameSet 
                 collect_referenced_names_skip(node->data.match.bodies[i][j], skip, out);
         }
         break;
+    case AST_LIST_PATTERN_ASSIGN:
+        for (int i = 0; i < node->data.list_pattern_assign.name_count; i++)
+            name_set_add(out, node->data.list_pattern_assign.names[i]);
+        collect_referenced_names_skip(node->data.list_pattern_assign.expr, skip, out);
+        break;
+    case AST_SLICE:
+        collect_referenced_names_skip(node->data.slice.target, skip, out);
+        collect_referenced_names_skip(node->data.slice.start, skip, out);
+        collect_referenced_names_skip(node->data.slice.end, skip, out);
+        break;
     case AST_PROGRAM:
         for (int i = 0; i < node->data.program.count; i++)
             collect_referenced_names_skip(node->data.program.stmts[i], skip, out);
@@ -569,6 +579,16 @@ static void collect_referenced_names(ASTNode *node, NameSet *out) {
             for (int j = 0; j < node->data.match.body_counts[i]; j++)
                 collect_referenced_names(node->data.match.bodies[i][j], out);
         }
+        break;
+    case AST_LIST_PATTERN_ASSIGN:
+        for (int i = 0; i < node->data.list_pattern_assign.name_count; i++)
+            name_set_add(out, node->data.list_pattern_assign.names[i]);
+        collect_referenced_names(node->data.list_pattern_assign.expr, out);
+        break;
+    case AST_SLICE:
+        collect_referenced_names(node->data.slice.target, out);
+        collect_referenced_names(node->data.slice.start, out);
+        collect_referenced_names(node->data.slice.end, out);
         break;
     case AST_PROGRAM:
         for (int i = 0; i < node->data.program.count; i++)
@@ -697,6 +717,14 @@ static void scan_for_captures(ASTNode *node, NameSet *out) {
         scan_for_captures(node->data.index_assign.index, out);
         scan_for_captures(node->data.index_assign.expr, out);
         break;
+    case AST_LIST_PATTERN_ASSIGN:
+        scan_for_captures(node->data.list_pattern_assign.expr, out);
+        break;
+    case AST_SLICE:
+        scan_for_captures(node->data.slice.target, out);
+        scan_for_captures(node->data.slice.start, out);
+        scan_for_captures(node->data.slice.end, out);
+        break;
     default:
         break;
     }
@@ -792,6 +820,14 @@ static void scan_for_interrogated(ASTNode *node, NameSet *out) {
             for (int j = 0; j < node->data.match.body_counts[i]; j++)
                 scan_for_interrogated(node->data.match.bodies[i][j], out);
         break;
+    case AST_LIST_PATTERN_ASSIGN:
+        scan_for_interrogated(node->data.list_pattern_assign.expr, out);
+        break;
+    case AST_SLICE:
+        scan_for_interrogated(node->data.slice.target, out);
+        scan_for_interrogated(node->data.slice.start, out);
+        scan_for_interrogated(node->data.slice.end, out);
+        break;
     default:
         break;
     }
@@ -837,6 +873,10 @@ static void collect_module_names_walk(ASTNode *node, NameSet *out) {
     case AST_MATCH:
         for (int i = 0; i < node->data.match.case_count; i++)
             collect_module_names_block(node->data.match.bodies[i], node->data.match.body_counts[i], out);
+        break;
+    case AST_LIST_PATTERN_ASSIGN:
+        for (int i = 0; i < node->data.list_pattern_assign.name_count; i++)
+            name_set_add(out, node->data.list_pattern_assign.names[i]);
         break;
     case AST_PROGRAM:
         collect_module_names_block(node->data.program.stmts, node->data.program.count, out);
