@@ -292,7 +292,7 @@ Value* make_str_owned(char *s);
 Value* make_null(void);
 Value* make_list(int capacity);
 Value* make_text_builder(void);
-Value* make_fn(const char *name, char **params, int param_count, ASTNode **body, int body_count, Env *closure);
+Value* make_fn(const char *name, char **params, int param_count, Env *closure);
 Value* make_builtin(BuiltinFn fn);
 Value* make_dict(int capacity);
 void dict_set(Value *dict, const char *key, Value *val);
@@ -423,8 +423,6 @@ int tok_base_string_id_count(void);
  * special-case those IDs (see structural_ids in the vocab JSON). */
 const char* tok_base_string(TokType t);
 ASTNode* parse(TokenList *tl);
-ASTNode* clone_ast(ASTNode *node);
-ASTNode** clone_ast_array(ASTNode **nodes, int count);
 void free_ast(ASTNode *node);
 Value* eval_node(ASTNode *node, Env *env);
 Value* eval_block(ASTNode **stmts, int count, Env *env);

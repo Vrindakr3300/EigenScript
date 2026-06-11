@@ -47,7 +47,7 @@ extern Value* make_null(void);
 extern Value* make_list(int cap);
 extern Value* make_dict(int cap);
 extern Value* make_fn(const char *name, char **params, int param_count,
-                       ASTNode **body, int body_count, Env *closure);
+                       Env *closure);
 extern Value* make_builtin(Value* (*fn)(Value*));
 extern void list_append(Value *list, Value *item);
 extern void dict_set(Value *dict, const char *key, Value *val);
@@ -2509,14 +2509,15 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             for (int i = 0; i < fn_chunk->param_count; i++)
                 params[i] = strdup(fn_chunk->local_names ? fn_chunk->local_names[i] : "");
         }
-        /* Mark env as captured so it survives after this frame returns */
+        /* Mark env as captured so it survives after this frame returns.
+         * The fn's ref on the env is taken inside make_fn — do NOT also
+         * bump env_refcount here: that second, ownerless ref meant a
+         * closure-defining call env could never drop to zero, leaking
+         * the env and every heap binding in it on every call that
+         * defined a closure. */
         frame->env->captured = 1;
-        if (__builtin_expect(g_vm_multithreaded, 0))
-            __atomic_add_fetch(&frame->env->env_refcount, 1, __ATOMIC_RELAXED);
-        else
-            frame->env->env_refcount++;
         Value *fn = make_fn(fn_chunk->name, params, fn_chunk->param_count,
-                            NULL, 0, frame->env);
+                            frame->env);
         chunk_incref(fn_chunk);   /* the VAL_FN's ref; dropped in free_val */
         /* make_fn interned its own copies — the temp array and its
          * strdups are ours to free, else every closure creation leaks

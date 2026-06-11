@@ -228,6 +228,13 @@ void free_ast(ASTNode *node) {
     free(node);
 }
 
+/* clone_ast's only remaining caller is the compound dot-assign
+ * desugaring below (obj.f += e → obj.f is obj.f + e), which clones the
+ * dot target subtree for the read side. It was exported while the
+ * tree-walking evaluator's make_fn cloned function bodies; that path
+ * is gone, so these are parser-internal now. */
+static ASTNode *clone_ast(ASTNode *node);
+
 static char **clone_string_array(char **items, int count) {
     if (!items || count <= 0) return NULL;
     char **copy = xcalloc_array(count, sizeof(char *));
@@ -236,7 +243,7 @@ static char **clone_string_array(char **items, int count) {
     return copy;
 }
 
-ASTNode **clone_ast_array(ASTNode **nodes, int count) {
+static ASTNode **clone_ast_array(ASTNode **nodes, int count) {
     if (!nodes || count <= 0) return NULL;
     ASTNode **copy = xcalloc_array(count, sizeof(ASTNode *));
     for (int i = 0; i < count; i++)
@@ -244,7 +251,7 @@ ASTNode **clone_ast_array(ASTNode **nodes, int count) {
     return copy;
 }
 
-ASTNode *clone_ast(ASTNode *node) {
+static ASTNode *clone_ast(ASTNode *node) {
     if (!node) return NULL;
     ASTNode *n = make_node_col(node->type, node->line, node->col);
     n->name_hash = node->name_hash;
