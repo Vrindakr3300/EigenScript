@@ -682,6 +682,41 @@ Value* builtin_audio_play(Value *arg) {
     return make_null();
 }
 
+/* audio_play_loop of [samples, loops] — queue `samples` `loops` times.
+ * Finite count only: loops must be >= 1. Returns the total sample
+ * count queued, or 0 on a bad arg / closed device. Saves N round-trips
+ * through the per-frame poll-and-refill workaround for ambient loops.
+ *
+ * NOTE: loops == -1 (infinite) is intentionally rejected — infinite
+ * playback needs a background refill mechanism and is a separate ship.
+ */
+Value* builtin_audio_play_loop(Value *arg) {
+    if (!g_audio_device || !arg || arg->type != VAL_LIST || arg->data.list.count < 2)
+        return make_num(0);
+    Value *samples = arg->data.list.items[0];
+    Value *loops_v = arg->data.list.items[1];
+    if (samples->type != VAL_LIST || loops_v->type != VAL_NUM)
+        return make_num(0);
+    int loops = (int)loops_v->data.num;
+    if (loops < 1) return make_num(0);
+    int n = samples->data.list.count;
+    if (n == 0) return make_num(0);
+
+    int16_t *buf = xmalloc_array(n, sizeof(int16_t));
+    for (int i = 0; i < n; i++) {
+        double s = (samples->data.list.items[i]->type == VAL_NUM)
+                   ? samples->data.list.items[i]->data.num : 0;
+        if (s > 1.0) s = 1.0;
+        if (s < -1.0) s = -1.0;
+        buf[i] = (int16_t)(s * 32767);
+    }
+    for (int k = 0; k < loops; k++) {
+        p_SDL_QueueAudio(g_audio_device, buf, n * sizeof(int16_t));
+    }
+    free(buf);
+    return make_num((double)n * (double)loops);
+}
+
 /* audio_queue_size of null — bytes queued */
 Value* builtin_audio_queue_size(Value *arg) {
     (void)arg;
@@ -1156,6 +1191,7 @@ void register_gfx_builtins(Env *env) {
     env_set_local_owned(env, "audio_close", make_builtin(builtin_audio_close));
     env_set_local_owned(env, "audio_pause", make_builtin(builtin_audio_pause));
     env_set_local_owned(env, "audio_play", make_builtin(builtin_audio_play));
+    env_set_local_owned(env, "audio_play_loop", make_builtin(builtin_audio_play_loop));
     env_set_local_owned(env, "audio_queue_size", make_builtin(builtin_audio_queue_size));
     env_set_local_owned(env, "audio_clear", make_builtin(builtin_audio_clear));
     env_set_local_owned(env, "audio_sine", make_builtin(builtin_audio_sine));

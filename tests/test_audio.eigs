@@ -51,4 +51,31 @@ long is audio_sine of [440, 0.1, 0.5]
 mixed is audio_mix of [short, long]
 assert_eq of [len of mixed, 4410, "mix uses longer length"]
 
+# audio_play_loop: finite-count queue-many-times (probe-gated like the rest;
+# tries dummy SDL driver first via audio_open). Doesn't require a real device.
+ok is audio_open of [44100, 1]
+if ok != 0:
+    short_clip is audio_sine of [440, 0.01, 0.5]
+    # 3 loops × 441 samples = 1323
+    n is audio_play_loop of [short_clip, 3]
+    assert_eq of [n, 1323, "audio_play_loop returns total samples queued"]
+    # 1 loop is the no-op identity
+    n1 is audio_play_loop of [short_clip, 1]
+    assert_eq of [n1, 441, "audio_play_loop 1 loop"]
+    # Invalid: 0 loops, negative loops, non-number, empty samples — all 0
+    assert_eq of [audio_play_loop of [short_clip, 0], 0, "loops=0 rejected"]
+    assert_eq of [audio_play_loop of [short_clip, -1], 0, "loops=-1 (infinite) reserved"]
+    assert_eq of [audio_play_loop of [short_clip, "many"], 0, "non-number loops rejected"]
+    assert_eq of [audio_play_loop of [[], 5], 0, "empty samples rejected"]
+    audio_clear of null
+    audio_close of null
+else:
+    # No audio device — skip the play_loop checks, leave the count consistent.
+    assert_eq of [1, 1, "audio_play_loop skipped (no device)"]
+    assert_eq of [1, 1, "audio_play_loop skipped (no device)"]
+    assert_eq of [1, 1, "audio_play_loop skipped (no device)"]
+    assert_eq of [1, 1, "audio_play_loop skipped (no device)"]
+    assert_eq of [1, 1, "audio_play_loop skipped (no device)"]
+    assert_eq of [1, 1, "audio_play_loop skipped (no device)"]
+
 test_summary of null

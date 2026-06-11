@@ -45,6 +45,10 @@ now beats `EIGS_JIT_OFF` by ~45% on it.
 - [x] `spawn` with multiple args (`spawn of [fn, arg1, arg2, ...]`,
       positional, missing params → null, extras ignored, args shared
       by reference) — shipped 0.13.0; fixes Tidepool GAP-006
+- [x] `audio_play_loop of [samples, loops]` finite-count loop
+      playback — shipped 0.13.0; fixes Tidepool GAP-002 finite form
+      (infinite-loop variant deferred — needs a background refill
+      mechanism)
 
 ### Downstream gaps feeding back
 
@@ -53,10 +57,13 @@ when picked up:
 
 - **Tidepool** (`InauguralSystems/Tidepool/GAPS.md`):
   GAP-001/002/003 audio (sweep, loop, per-channel volume),
+  GAP-003 per-channel volume (needs multi-channel mixer),
   GAP-004 inner-loop function-call cost (partial mitigation via
   v0.12.0 hoist sweep).
-  (GAP-005 non-blocking channel recv and GAP-006 spawn-with-args
-  both shipped 0.13.0.)
+  (GAP-001 audio_sweep was already shipped; GAP-002 finite-count
+  audio_play_loop shipped 0.13.0; GAP-005 non-blocking channel
+  recv and GAP-006 spawn-with-args both shipped 0.13.0. GAP-002
+  infinite loop variant still open.)
 - **EigenMiniSat** (`InauguralSystems/EigenMiniSat/GAPS.md`):
   open watchlist around CDCL hot-path inlining patterns.
 

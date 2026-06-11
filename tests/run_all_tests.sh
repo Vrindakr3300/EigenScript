@@ -1529,15 +1529,15 @@ AUDIO_PROBE_OUT=$(./eigenscript "$AUDIO_PROBE_FILE" 2>&1)
 rm -f "$AUDIO_PROBE_FILE"
 
 if ! echo "$AUDIO_PROBE_OUT" | grep -q "undefined variable"; then
-    echo "[62] Audio Synthesis (14 checks)"
+    echo "[62] Audio Synthesis (20 checks)"
     AU_OUTPUT=$(./eigenscript ../tests/test_audio.eigs 2>&1)
     if echo "$AU_OUTPUT" | grep -q "All tests passed"; then
-        TOTAL=$((TOTAL + 14))
-        PASS=$((PASS + 14))
-        echo "  PASS: all 14 audio checks"
+        TOTAL=$((TOTAL + 20))
+        PASS=$((PASS + 20))
+        echo "  PASS: all 20 audio checks"
     else
-        TOTAL=$((TOTAL + 14))
-        FAIL=$((FAIL + 14))
+        TOTAL=$((TOTAL + 20))
+        FAIL=$((FAIL + 20))
         echo "  FAIL: audio tests"
         echo "$AU_OUTPUT" | grep -iE "assert|error|FAIL" | head -5
     fi

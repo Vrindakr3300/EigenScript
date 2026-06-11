@@ -6,6 +6,39 @@ All notable changes to EigenScript are documented here.
 
 A language-features release.
 
+### Audio — `audio_play_loop` (finite-count loop playback)
+
+`audio_play_loop of [samples, loops]` queues a sample list `loops`
+times in a single call (finite, `loops >= 1`). Saves N round-trips
+through the workaround pattern of polling `audio_queue_size` each
+frame to refill an ambient loop. Returns total samples queued
+(`len of samples * loops`), or `0` on bad args / closed device.
+
+`loops == -1` (continuous infinite loop) is intentionally rejected
+for now — that needs a background refill mechanism and is a
+separate ship. The proper way to choose between the two: pick
+`audio_play_loop` for any finite repetition (game ambient that
+plays N times, sound cue repeated, music loop that ends with the
+level); pick the existing poll-and-refill workaround for genuinely
+infinite cases until the infinite variant lands.
+
+Wire-up: new `builtin_audio_play_loop` in `src/ext_gfx.c` next to
+`builtin_audio_play`, registered alongside it. Single int16
+conversion pass, then N `SDL_QueueAudio` calls with the same
+buffer — keeps memory flat regardless of `loops` count (vs. a
+single-call `n * loops` allocation that would balloon for long
+clips).
+
+Test: 6 new checks appended to `tests/test_audio.eigs` (suite slot
+[62], 14 → 20), gated on a successful `audio_open` so the
+non-gfx builds and headless-CI machines fall through to skip-asserts.
+SDL2's `dummy` audio driver is enough to exercise the success path
+locally (`SDL_AUDIODRIVER=dummy`). Closes Tidepool `GAPS.md`
+GAP-002 finite-count form.
+
+Note also: GAP-001 (`audio_sweep`) was already shipped (predates
+this cycle); Tidepool's GAPS.md just hadn't been updated.
+
 ### Language — `spawn` with multiple args
 
 `spawn of [fn, arg1, arg2, ...]` now passes N positional arguments

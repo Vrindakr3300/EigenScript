@@ -12,7 +12,8 @@ New since 0.8.1: concurrency (`spawn`, `thread_join`, `channel`, `send`,
 `store_count`, `store_update`, `store_collections`, `store_drop`),
 observer tuning (`set_observer_thresholds`, `get_observer_thresholds`),
 audio (`audio_open`, `audio_close`, `audio_pause`, `audio_play`,
-`audio_queue_size`, `audio_clear`, `audio_sine`, `audio_saw`, `audio_sweep`,
+`audio_play_loop`, `audio_queue_size`, `audio_clear`, `audio_sine`,
+`audio_saw`, `audio_sweep`,
 `audio_square`, `audio_noise`, `audio_mix`, `audio_gain`,
 `audio_envelope`), and `free_val`/`free_ast` for memory management.
 
@@ -475,3 +476,4 @@ strings).
 | Name | Signature | Description |
 |------|-----------|-------------|
 | `audio_sweep` | `audio_sweep of [freq_start, freq_end, duration, amplitude, waveform]` | Generate a frequency sweep with continuous phase. `waveform`: 0=sine, 1=sawtooth. Returns sample list. |
+| `audio_play_loop` | `audio_play_loop of [samples, loops]` | Queue `samples` `loops` times in one call (finite count, `loops >= 1`). Returns total samples queued (`len of samples * loops`), or `0` on bad args / closed device. Use instead of polling `audio_queue_size` to refill an ambient loop each frame. `loops == -1` (infinite) is reserved for a future ship and currently returns `0`. |
