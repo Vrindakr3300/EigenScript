@@ -5,7 +5,9 @@ Core builtins are always available; extension builtins (HTTP, DB, model,
 gfx, audio) require a full build or the `gfx` target.
 
 New since 0.8.1: concurrency (`spawn`, `thread_join`, `channel`, `send`,
-`recv`, `try_recv`, `close_channel`, `channel_closed`), spatial queries
+`recv`, `try_recv`, `recv_timeout`, `close_channel`, `channel_closed`),
+streaming subprocess I/O (`proc_spawn`, `proc_write`, `proc_read_line`,
+`proc_read`, `proc_close`, `proc_wait`), spatial queries
 (`nearest_in_range`), hashing (`sha256`, `md5`,
 `sha256_file`, `md5_file`, `hmac_sha256`), EigenStore (`store_open`,
 `store_close`, `store_put`, `store_get`, `store_delete`, `store_query`,
@@ -199,6 +201,12 @@ Boolean keywords that check the most recently observed value:
 | `read_text` | `read_text of "path"` | Read file contents as string ("" on failure, 10 MB cap) |
 | `write_text` | `write_text of ["path", text]` | Write string to file (1 on success, 0 on failure) |
 | `exec_capture` | `exec_capture of ["cmd", "arg1", ...]` | Run subprocess, return [exit_code, stdout_text]. No shell (direct exec). Child stdin is /dev/null. Returns [-1, ""] on failure, [-2, partial] on timeout. 10 MB output cap. Timeout form: `exec_capture of [["cmd", ...], seconds]` |
+| `proc_spawn` | `proc_spawn of ["cmd", "arg1", ...]` | Fork+execvp a child with stdin/stdout connected to anonymous pipes. Returns `[pid, in_fd, out_fd]` (or `[-1,-1,-1]` on failure). Caller is responsible for `proc_close` on both fds and `proc_wait` on the pid. SIGPIPE is set to `SIG_IGN` process-wide on first spawn so the parent gets `EPIPE` from `proc_write` instead of dying; child resets to `SIG_DFL` post-fork. |
+| `proc_write` | `proc_write of [in_fd, text]` | Write bytes to child's stdin pipe (raw `write(2)`, no parent-side buffering). Returns bytes written, or `-1` on error (including `EPIPE` when the child has closed its stdin). |
+| `proc_read_line` | `proc_read_line of out_fd` | Read up to the next `\n` from the child's stdout (raw `read(2)`). Returns the line without the trailing newline, or `""` at EOF. Line streaming relies on the child not block-buffering its stdout — wrap with `stdbuf -oL` when in doubt. |
+| `proc_read` | `proc_read of [out_fd, max_bytes]` | Single non-line-oriented `read(2)` of up to `max_bytes`. Returns the bytes (possibly shorter than asked), or `""` at EOF. |
+| `proc_close` | `proc_close of fd` | Idempotent `close(2)`. Returns 1 on success, 0 if already closed / invalid. |
+| `proc_wait` | `proc_wait of pid` | Block on `waitpid(pid, ...)` and return the exit code (or `128 + signum` if killed by a signal). |
 | `env_get` | `env_get of "VAR_NAME"` | Get environment variable (empty string if unset) |
 | `random_hex` | `random_hex of n` | Generate n random hex characters from /dev/urandom |
 | `try_parse` | `try_parse of code_string` | 1 if string is valid EigenScript syntax, 0 otherwise |

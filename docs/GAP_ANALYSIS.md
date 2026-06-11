@@ -198,9 +198,10 @@ The 0.8.1 view of the roadmap is preserved below for historical
 reference. **The live state lives in `ROADMAP.md`.** As of 0.12.0,
 most of these have shipped:
 
-- Concurrency primitives — **shipped 0.9.0**
+- Concurrency primitives — **shipped 0.9.0** (with non-blocking
+  `try_recv` / `recv_timeout` and multi-arg `spawn` **shipped 0.13.0**)
 - Pattern matching / destructuring — pattern matching **shipped 0.7.0**;
-  destructuring assignment planned for 0.13.0
+  destructuring assignment **shipped 0.13.0**
 - Debugger and source maps — **shipped 0.9.0**
 - LSP — **shipped 0.9.1**
 - JIT — **shipped 0.12.0** (copy-and-patch x86-64 + inline ICs)
@@ -210,6 +211,7 @@ most of these have shipped:
 
 Gaps still without roadmap entries beyond ecosystem placeholders:
 crypto (AEAD/TLS), raw TCP/UDP sockets, additional database drivers
-(SQLite/MySQL/NoSQL), compression, decimal/bigint, streaming
-subprocess I/O (streaming subprocess I/O is planned for 0.13.0).
-Regex was added in 0.7.0 (POSIX ERE).
+(SQLite/MySQL/NoSQL), compression, decimal/bigint. Streaming
+subprocess I/O **shipped 0.13.0** (`proc_spawn` / `proc_write` /
+`proc_read_line` / `proc_read` / `proc_close` / `proc_wait`). Regex
+was added in 0.7.0 (POSIX ERE).
