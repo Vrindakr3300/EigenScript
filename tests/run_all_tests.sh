@@ -1638,6 +1638,21 @@ else
 fi
 echo ""
 
+# [75] Streaming subprocess I/O (0.13.0).
+echo "[75] Streaming Subprocess I/O (25 checks)"
+PS_OUTPUT=$(./eigenscript ../tests/test_proc_stream.eigs 2>&1)
+if echo "$PS_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 25))
+    PASS=$((PASS + 25))
+    echo "  PASS: all 25 proc-stream checks"
+else
+    TOTAL=$((TOTAL + 25))
+    FAIL=$((FAIL + 25))
+    echo "  FAIL: proc-stream tests"
+    echo "$PS_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
+fi
+echo ""
+
 # [74] Destructuring assignment (0.13.0).
 echo "[74] Destructuring (26 checks)"
 DS_OUTPUT=$(./eigenscript ../tests/test_destructuring.eigs 2>&1)

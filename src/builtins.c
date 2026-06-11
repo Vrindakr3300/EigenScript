@@ -2576,6 +2576,206 @@ Value* builtin_exec_capture(Value *arg) {
     return result;
 }
 
+/* ==== BUILTIN: proc_spawn / proc_write / proc_read_line / proc_read /
+ *               proc_close / proc_wait — streaming subprocess I/O (0.13.0) ====
+ *
+ * Sibling API to exec_capture for cases where you need to interact with a
+ * child process over time instead of waiting for it to terminate.
+ *
+ *   proc_spawn of ["cmd", "arg1", ...]     → [pid, in_fd, out_fd]  | [-1,-1,-1]
+ *   proc_write of [in_fd, "text"]          → bytes_written | -1 on broken pipe
+ *   proc_read_line of out_fd               → string (no trailing \n) | null EOF
+ *   proc_read of [out_fd, max_bytes]       → string (raw bytes)      | null EOF
+ *   proc_close of fd                       → null (idempotent on EBADF)
+ *   proc_wait of pid                       → exit_code | -1 on error
+ *
+ * Pipes are raw read(2)/write(2); no stdio buffering on the parent side.
+ * Children using stdio block-buffer their own stdout when not on a tty —
+ * wrap unbuffered programs with stdbuf -oL / -o0 if you need line streaming.
+ *
+ * SIGPIPE is set to SIG_IGN once on first spawn so a writing parent gets
+ * EPIPE instead of dying when the child exits. */
+
+static pthread_once_t g_proc_sigpipe_once = PTHREAD_ONCE_INIT;
+static void proc_install_sigpipe_ignore(void) {
+    signal(SIGPIPE, SIG_IGN);
+}
+
+static Value* proc_spawn_fail(void) {
+    Value *r = make_list(3);
+    r->data.list.items[0] = make_num(-1);
+    r->data.list.items[1] = make_num(-1);
+    r->data.list.items[2] = make_num(-1);
+    r->data.list.count = 3;
+    return r;
+}
+
+Value* builtin_proc_spawn(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 1)
+        return proc_spawn_fail();
+
+    int total = arg->data.list.count;
+    char **argv = xmalloc_array((size_t)total + 1, sizeof(char*));
+    if (!argv) return proc_spawn_fail();
+    for (int i = 0; i < total; i++) {
+        Value *v = arg->data.list.items[i];
+        if (!v || v->type != VAL_STR) { free(argv); return proc_spawn_fail(); }
+        argv[i] = v->data.str;
+    }
+    argv[total] = NULL;
+
+    pthread_once(&g_proc_sigpipe_once, proc_install_sigpipe_ignore);
+
+    int in_pipe[2], out_pipe[2];
+    if (pipe(in_pipe) != 0)  { free(argv); return proc_spawn_fail(); }
+    if (pipe(out_pipe) != 0) { close(in_pipe[0]); close(in_pipe[1]);
+                               free(argv); return proc_spawn_fail(); }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        free(argv);
+        return proc_spawn_fail();
+    }
+
+    if (pid == 0) {
+        /* Child: stdin from in_pipe read end, stdout to out_pipe write end.
+         * Reset SIGPIPE to SIG_DFL — parent ignores SIGPIPE so it sees EPIPE
+         * on write, but the child should die silently on broken pipe like
+         * a conventional Unix process. */
+        signal(SIGPIPE, SIG_DFL);
+        dup2(in_pipe[0],  STDIN_FILENO);
+        dup2(out_pipe[1], STDOUT_FILENO);
+        close(in_pipe[0]);  close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    /* Parent: keep in_pipe[1] (write to child) and out_pipe[0] (read from child). */
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+    free(argv);
+
+    Value *r = make_list(3);
+    r->data.list.items[0] = make_num((double)pid);
+    r->data.list.items[1] = make_num((double)in_pipe[1]);
+    r->data.list.items[2] = make_num((double)out_pipe[0]);
+    r->data.list.count = 3;
+    return r;
+}
+
+Value* builtin_proc_write(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count != 2)
+        return make_num(-1);
+    Value *fd_v  = arg->data.list.items[0];
+    Value *str_v = arg->data.list.items[1];
+    if (!fd_v || fd_v->type != VAL_NUM || !str_v || str_v->type != VAL_STR)
+        return make_num(-1);
+    int fd = (int)fd_v->data.num;
+    if (fd < 0) return make_num(-1);
+    const char *buf = str_v->data.str;
+    size_t total = strlen(buf);
+    size_t off = 0;
+    while (off < total) {
+        ssize_t n = write(fd, buf + off, total - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return make_num(-1);
+        }
+        off += (size_t)n;
+    }
+    return make_num((double)off);
+}
+
+Value* builtin_proc_read_line(Value *arg) {
+    if (!arg || arg->type != VAL_NUM) return make_null();
+    int fd = (int)arg->data.num;
+    if (fd < 0) return make_null();
+    size_t cap = 256, len = 0;
+    char *buf = xmalloc(cap + 1);
+    if (!buf) return make_null();
+    for (;;) {
+        if (len >= cap) {
+            size_t newcap = cap * 2;
+            char *nb = xrealloc(buf, newcap + 1);
+            if (!nb) { free(buf); return make_null(); }
+            buf = nb; cap = newcap;
+        }
+        char c;
+        ssize_t n = read(fd, &c, 1);
+        if (n == 0) break;        /* EOF */
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            free(buf);
+            return make_null();
+        }
+        if (c == '\n') {
+            buf[len] = '\0';
+            Value *s = make_str(buf);
+            free(buf);
+            return s;
+        }
+        buf[len++] = c;
+    }
+    if (len == 0) { free(buf); return make_null(); }
+    buf[len] = '\0';
+    Value *s = make_str(buf);
+    free(buf);
+    return s;
+}
+
+Value* builtin_proc_read(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count != 2)
+        return make_null();
+    Value *fd_v  = arg->data.list.items[0];
+    Value *max_v = arg->data.list.items[1];
+    if (!fd_v || fd_v->type != VAL_NUM || !max_v || max_v->type != VAL_NUM)
+        return make_null();
+    int fd = (int)fd_v->data.num;
+    int max = (int)max_v->data.num;
+    if (fd < 0 || max <= 0) return make_null();
+    if (max > 10 * 1024 * 1024) max = 10 * 1024 * 1024;
+    char *buf = xmalloc((size_t)max + 1);
+    if (!buf) return make_null();
+    ssize_t n;
+    for (;;) {
+        n = read(fd, buf, (size_t)max);
+        if (n >= 0) break;
+        if (errno == EINTR) continue;
+        free(buf);
+        return make_null();
+    }
+    if (n == 0) { free(buf); return make_null(); }
+    buf[n] = '\0';
+    return make_str_owned(buf);
+}
+
+Value* builtin_proc_close(Value *arg) {
+    if (!arg || arg->type != VAL_NUM) return make_null();
+    int fd = (int)arg->data.num;
+    if (fd >= 0) close(fd);
+    return make_null();
+}
+
+Value* builtin_proc_wait(Value *arg) {
+    if (!arg || arg->type != VAL_NUM) return make_num(-1);
+    pid_t pid = (pid_t)arg->data.num;
+    if (pid <= 0) return make_num(-1);
+    int status = 0;
+    for (;;) {
+        pid_t r = waitpid(pid, &status, 0);
+        if (r == pid) break;
+        if (r < 0 && errno == EINTR) continue;
+        return make_num(-1);
+    }
+    int code = WIFEXITED(status) ? WEXITSTATUS(status)
+             : WIFSIGNALED(status) ? (128 + WTERMSIG(status))
+             : -1;
+    return make_num((double)code);
+}
+
 /* ==== BUILTIN: arena_mark ==== */
 /* arena_mark of null — saves current arena position. All Values allocated
  * after this point will be reclaimed on arena_reset. Call before a training step. */
@@ -3875,6 +4075,12 @@ void register_builtins(Env *env) {
     env_set_local_owned(env, "read_text", make_builtin(builtin_read_text));
     env_set_local_owned(env, "write_text", make_builtin(builtin_write_text));
     env_set_local_owned(env, "exec_capture", make_builtin(builtin_exec_capture));
+    env_set_local_owned(env, "proc_spawn", make_builtin(builtin_proc_spawn));
+    env_set_local_owned(env, "proc_write", make_builtin(builtin_proc_write));
+    env_set_local_owned(env, "proc_read_line", make_builtin(builtin_proc_read_line));
+    env_set_local_owned(env, "proc_read", make_builtin(builtin_proc_read));
+    env_set_local_owned(env, "proc_close", make_builtin(builtin_proc_close));
+    env_set_local_owned(env, "proc_wait", make_builtin(builtin_proc_wait));
 
     /* ---- Tensor / math stdlib (always available) ---- */
     env_set_local_owned(env, "matmul", make_builtin(builtin_tensor_matmul));

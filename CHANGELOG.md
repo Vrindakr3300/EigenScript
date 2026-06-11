@@ -6,6 +6,26 @@ All notable changes to EigenScript are documented here.
 
 A language-features release.
 
+### Language — streaming subprocess I/O
+
+Six new builtins for talking to a child process over time, sibling to
+`exec_capture`'s all-at-once form. `proc_spawn of [argv...]` returns
+`[pid, in_fd, out_fd]` (or `[-1,-1,-1]` on failure) for a fork+execvp
+child with stdin/stdout connected to anonymous pipes; `proc_write`,
+`proc_read_line`, and `proc_read` move bytes through those pipes with
+raw `read(2)`/`write(2)` (no parent-side stdio buffering — line
+streaming relies on the child not block-buffering its stdout, hence
+the `stdbuf -oL` note in the contract); `proc_close` is an idempotent
+`close(2)`; `proc_wait` blocks on `waitpid` and returns the exit code
+(or `128+sig` if killed by a signal).
+
+SIGPIPE is set to `SIG_IGN` process-wide on first spawn so a writing
+parent gets `EPIPE` from `proc_write` instead of dying; the child
+resets SIGPIPE to `SIG_DFL` post-fork so it keeps conventional Unix
+broken-pipe semantics. No GC integration on the handle for v1:
+callers explicitly `proc_close` both fds and `proc_wait` the pid.
+Test: `tests/test_proc_stream.eigs` (25 checks, suite slot [75]).
+
 ### Language — destructuring assignment
 
 `[a, b, c] is rhs` evaluates `rhs` once, requires it to be a list of
