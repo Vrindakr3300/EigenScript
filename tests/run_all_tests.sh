@@ -1638,6 +1638,21 @@ else
 fi
 echo ""
 
+# [74] Destructuring assignment (0.13.0).
+echo "[74] Destructuring (26 checks)"
+DS_OUTPUT=$(./eigenscript ../tests/test_destructuring.eigs 2>&1)
+if echo "$DS_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 26))
+    PASS=$((PASS + 26))
+    echo "  PASS: all 26 destructuring checks"
+else
+    TOTAL=$((TOTAL + 26))
+    FAIL=$((FAIL + 26))
+    echo "  FAIL: destructuring tests"
+    echo "$DS_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
+fi
+echo ""
+
 # [73] Negative indexing (0.13.0).
 echo "[73] Negative Indexing (19 checks)"
 NI_OUTPUT=$(./eigenscript ../tests/test_negative_index.eigs 2>&1)

@@ -1736,6 +1736,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         [OP_INTERROGATE_NAMED] = &&lbl_INTERROGATE_NAMED,
         [OP_INTERROGATE_NAMED_AT] = &&lbl_INTERROGATE_NAMED_AT,
         [OP_DEFAULT_PARAM] = &&lbl_DEFAULT_PARAM,
+        [OP_DESTRUCTURE_UNPACK] = &&lbl_DESTRUCTURE_UNPACK,
     };
     #define CHECK_ERROR() do { \
         if (__builtin_expect(g_has_error, 0)) { \
@@ -3596,6 +3597,43 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         uint16_t slot = read_u16(ip); ip += 2;
         uint16_t skip = read_u16(ip); ip += 2;
         if ((int)slot < frame->call_argc) ip += skip;
+        DISPATCH();
+    }
+
+    CASE(DESTRUCTURE_UNPACK): {
+        /* [n:16] — pop TOS list, verify it's a VAL_LIST of length n,
+         * push its elements onto the stack in reverse so element 0
+         * ends up at TOS for the N assignment ops the compiler
+         * emits after this. Length mismatch raises. */
+        uint16_t n = read_u16(ip); ip += 2;
+        EigsSlot tgt_s = g_vm.stack[g_vm.sp - 1];
+        g_vm.sp -= 1;
+        if (!slot_is_ptr(tgt_s) || slot_as_ptr(tgt_s)->type != VAL_LIST) {
+            runtime_error(current_line,
+                "destructuring requires a list, got %s",
+                slot_is_ptr(tgt_s) ? val_type_name(slot_as_ptr(tgt_s)->type) : "number");
+            slot_decref(tgt_s);
+            for (int i = 0; i < n; i++) vm_push_slot(slot_null());
+            DISPATCH();
+        }
+        Value *lst = slot_as_ptr(tgt_s);
+        if (lst->data.list.count != n) {
+            runtime_error(current_line,
+                "destructuring expected list of length %d, got %d",
+                n, lst->data.list.count);
+            slot_decref(tgt_s);
+            for (int i = 0; i < n; i++) vm_push_slot(slot_null());
+            DISPATCH();
+        }
+        /* Push elements in reverse: stack ends up [..., e[n-1], ..., e[1], e[0]]
+         * so each SET op consumes elements in declaration order. Incref each
+         * element so the list's release below doesn't free them prematurely. */
+        for (int i = n - 1; i >= 0; i--) {
+            Value *e = lst->data.list.items[i];
+            val_incref(e);
+            vm_push(e);
+        }
+        slot_decref(tgt_s);
         DISPATCH();
     }
 

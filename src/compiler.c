@@ -160,6 +160,8 @@ static int op_stack_effect(uint8_t op) {
         return 0;
     case OP_DEFAULT_PARAM:  /* conditional skip — no stack change */
         return 0;
+    case OP_DESTRUCTURE_UNPACK:  /* dynamic: -1 + n; caller adjusts directly */
+        return 0;
     /* Index set: pop value, pop index, pop target, push value = -2 */
     case OP_INDEX_SET:
         return -2;
@@ -864,6 +866,77 @@ static int name_in_enclosing(Compiler *c, const char *name) {
     return 0;
 }
 
+/* Emit OBSERVE + SET ops for an assignment whose value is already on TOS.
+ * Mirrors the AST_ASSIGN body so list-pattern destructuring (which leaves
+ * each element on TOS via OP_DESTRUCTURE_UNPACK) can reuse the same
+ * slot/captured/global resolution rules. local_only matches
+ * node->data.assign.local_only — destructure callers pass 0. */
+static void emit_assign_for_tos(Compiler *c, const char *name, uint32_t name_hash,
+                                int local_only, int line) {
+    uint32_t h = name_hash ? name_hash : env_hash_name(name);
+    uint8_t  set_op   = 0;
+    uint16_t set_arg  = 0;
+    uint8_t  obs_op   = 0;
+    uint16_t obs_arg  = 0;
+
+    if (c->enclosing) {
+        int slot = resolve_local(c, name, h);
+        if (slot >= 0) {
+            set_op = OP_SET_LOCAL; set_arg = (uint16_t)slot;
+            obs_op = OP_OBSERVE_ASSIGN_LOCAL; obs_arg = (uint16_t)slot;
+        } else {
+            int captured     = name_set_has(&c->captured, name);
+            int interrogated = name_set_has(&c->interrogated, name);
+            int in_outer     = name_in_enclosing(c, name);
+            int in_module    = c->module_names && name_set_has(c->module_names, name);
+            int in_globals   = c->env && env_get_hashed(c->env, name, h) != NULL;
+            int local_eligible = !captured && !interrogated && !in_outer && !in_module && !in_globals;
+
+            if (local_eligible) {
+                int new_slot = add_local(c, name, h);
+                if (new_slot >= 0) {
+                    set_op = OP_SET_LOCAL; set_arg = (uint16_t)new_slot;
+                    obs_op = OP_OBSERVE_ASSIGN_LOCAL; obs_arg = (uint16_t)new_slot;
+                } else {
+                    int idx = add_string_constant(c, name);
+                    set_op = OP_SET_FN_NAME_LOCAL; set_arg = (uint16_t)idx;
+                    obs_op = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
+                }
+            } else if (local_only || captured || interrogated) {
+                int idx = add_string_constant(c, name);
+                set_op = OP_SET_FN_NAME_LOCAL; set_arg = (uint16_t)idx;
+                obs_op = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
+            } else {
+                int idx = add_string_constant(c, name);
+                set_op = OP_SET_NAME; set_arg = (uint16_t)idx;
+                obs_op = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
+            }
+        }
+    } else {
+        int picked = 0;
+        if (name_set_has(&c->module_slot_names, name)) {
+            int slot = resolve_local(c, name, h);
+            if (slot >= 0) {
+                set_op = OP_SET_LOCAL; set_arg = (uint16_t)slot;
+                obs_op = OP_OBSERVE_ASSIGN_LOCAL; obs_arg = (uint16_t)slot;
+                picked = 1;
+            }
+        }
+        if (!picked) {
+            int idx = add_string_constant(c, name);
+            if (local_only) {
+                set_op = OP_SET_NAME_LOCAL; set_arg = (uint16_t)idx;
+            } else {
+                set_op = OP_SET_NAME; set_arg = (uint16_t)idx;
+            }
+            obs_op = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
+        }
+    }
+
+    emit_op_u16(c, obs_op, obs_arg, line);
+    emit_op_u16(c, set_op, set_arg, line);
+}
+
 /* ---- AST compilation ---- */
 
 static void compile_node(Compiler *c, ASTNode *node) {
@@ -924,86 +997,29 @@ static void compile_node(Compiler *c, ASTNode *node) {
 
     case AST_ASSIGN: {
         compile_node(c, node->data.assign.expr);
-        const char *name = node->data.assign.name;
-        uint32_t h = node->name_hash;
-        if (h == 0) h = env_hash_name(name);
+        emit_assign_for_tos(c, node->data.assign.name, node->name_hash,
+                            node->data.assign.local_only, node->line);
+        break;
+    }
 
-        /* Decide the SET path first, then emit the matching OBSERVE op so it
-         * knows where the prior binding lives. OBSERVE_ASSIGN walks the env
-         * by name (works for SET_NAME/SET_NAME_LOCAL); OBSERVE_ASSIGN_LOCAL
-         * reads from a function-env slot (works for SET_LOCAL). Picking the
-         * wrong variant lets observer history reset on every write — see #129. */
-        uint8_t  set_op   = 0;
-        uint16_t set_arg  = 0;
-        uint8_t  obs_op   = 0;
-        uint16_t obs_arg  = 0;
-
-        if (c->enclosing) {
-            int slot = resolve_local(c, name, h);
-            if (slot >= 0) {
-                set_op  = OP_SET_LOCAL;  set_arg = (uint16_t)slot;
-                obs_op  = OP_OBSERVE_ASSIGN_LOCAL; obs_arg = (uint16_t)slot;
-            } else {
-                int captured     = name_set_has(&c->captured, name);
-                int interrogated = name_set_has(&c->interrogated, name);
-                int in_outer     = name_in_enclosing(c, name);
-                int in_module    = c->module_names && name_set_has(c->module_names, name);
-                int in_globals   = c->env && env_get_hashed(c->env, name, h) != NULL;
-                int local_eligible = !captured && !interrogated && !in_outer && !in_module && !in_globals;
-
-                if (local_eligible) {
-                    int new_slot = add_local(c, name, h);
-                    if (new_slot >= 0) {
-                        set_op  = OP_SET_LOCAL;  set_arg = (uint16_t)new_slot;
-                        obs_op  = OP_OBSERVE_ASSIGN_LOCAL; obs_arg = (uint16_t)new_slot;
-                    } else {
-                        /* Slot table full — fall back to the function-env path
-                         * (not loop-local), so nested writes still find the
-                         * binding. */
-                        int idx = add_string_constant(c, name);
-                        set_op  = OP_SET_FN_NAME_LOCAL; set_arg = (uint16_t)idx;
-                        obs_op  = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
-                    }
-                } else if (node->data.assign.local_only || captured || interrogated) {
-                    /* Anchored in this function's env: SET_FN_NAME_LOCAL pins
-                     * the write to frame->fn_env even when frame->env is a
-                     * nested loop/try scope. SET_NAME_LOCAL targets frame->env
-                     * and would silently shadow the function binding for the
-                     * remainder of the iteration (see #129b: unobserved+for+
-                     * interrogated accumulator never updates). */
-                    int idx = add_string_constant(c, name);
-                    set_op  = OP_SET_FN_NAME_LOCAL; set_arg = (uint16_t)idx;
-                    obs_op  = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
-                } else {
-                    int idx = add_string_constant(c, name);
-                    set_op  = OP_SET_NAME; set_arg = (uint16_t)idx;
-                    obs_op  = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
-                }
-            }
-        } else {
-            /* Module level — slot promotion if eligible (Part B), else name-based */
-            int picked = 0;
-            if (name_set_has(&c->module_slot_names, name)) {
-                int slot = resolve_local(c, name, h);
-                if (slot >= 0) {
-                    set_op = OP_SET_LOCAL; set_arg = (uint16_t)slot;
-                    obs_op = OP_OBSERVE_ASSIGN_LOCAL; obs_arg = (uint16_t)slot;
-                    picked = 1;
-                }
-            }
-            if (!picked) {
-                int idx = add_string_constant(c, name);
-                if (node->data.assign.local_only) {
-                    set_op = OP_SET_NAME_LOCAL; set_arg = (uint16_t)idx;
-                } else {
-                    set_op = OP_SET_NAME; set_arg = (uint16_t)idx;
-                }
-                obs_op = OP_OBSERVE_ASSIGN; obs_arg = (uint16_t)idx;
-            }
+    case AST_LIST_PATTERN_ASSIGN: {
+        /* Compile RHS, unpack into N stack slots (element 0 at TOS), then
+         * for each name: obs+set (peek-only) followed by OP_POP to expose
+         * the next element. Skip the trailing POP on the last name so the
+         * statement leaves exactly one value on TOS, matching AST_ASSIGN's
+         * convention (the outer AST_PROGRAM/BLOCK emits inter-statement POPs). */
+        int n = node->data.list_pattern_assign.name_count;
+        compile_node(c, node->data.list_pattern_assign.expr);
+        chunk_emit(c->chunk, OP_DESTRUCTURE_UNPACK, node->line);
+        chunk_emit_u16(c->chunk, (uint16_t)n, node->line);
+        adjust_stack(c, n - 1);  /* pop list (-1), push n elements (+n) */
+        for (int i = 0; i < n; i++) {
+            emit_assign_for_tos(c,
+                node->data.list_pattern_assign.names[i],
+                node->data.list_pattern_assign.name_hashes[i],
+                0, node->line);
+            if (i + 1 < n) emit(c, OP_POP, node->line);
         }
-
-        emit_op_u16(c, obs_op, obs_arg, node->line);
-        emit_op_u16(c, set_op, set_arg, node->line);
         break;
     }
 

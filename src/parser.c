@@ -186,6 +186,13 @@ void free_ast(ASTNode *node) {
             free_ast(node->data.index_assign.index);
             free_ast(node->data.index_assign.expr);
             break;
+        case AST_LIST_PATTERN_ASSIGN:
+            for (int i = 0; i < node->data.list_pattern_assign.name_count; i++)
+                free(node->data.list_pattern_assign.names[i]);
+            free(node->data.list_pattern_assign.names);
+            free(node->data.list_pattern_assign.name_hashes);
+            free_ast(node->data.list_pattern_assign.expr);
+            break;
         case AST_LISTCOMP:
             free_ast(node->data.listcomp.expr);
             if (node->data.listcomp.var) free(node->data.listcomp.var);
@@ -352,6 +359,18 @@ ASTNode *clone_ast(ASTNode *node) {
             n->data.index_assign.index = clone_ast(node->data.index_assign.index);
             n->data.index_assign.expr = clone_ast(node->data.index_assign.expr);
             break;
+        case AST_LIST_PATTERN_ASSIGN: {
+            int nc = node->data.list_pattern_assign.name_count;
+            n->data.list_pattern_assign.name_count = nc;
+            n->data.list_pattern_assign.names = xmalloc_array(nc, sizeof(char*));
+            n->data.list_pattern_assign.name_hashes = xmalloc_array(nc, sizeof(uint32_t));
+            for (int i = 0; i < nc; i++) {
+                n->data.list_pattern_assign.names[i] = xstrdup(node->data.list_pattern_assign.names[i]);
+                n->data.list_pattern_assign.name_hashes[i] = node->data.list_pattern_assign.name_hashes[i];
+            }
+            n->data.list_pattern_assign.expr = clone_ast(node->data.list_pattern_assign.expr);
+            break;
+        }
         case AST_LISTCOMP:
             n->data.listcomp.expr = clone_ast(node->data.listcomp.expr);
             n->data.listcomp.var = xstrdup(node->data.listcomp.var ? node->data.listcomp.var : "");
@@ -1265,6 +1284,50 @@ static ASTNode* parse_statement(Parser *p) {
     if (t->type == TOK_CONTINUE) {
         p_advance(p);
         return make_node(AST_CONTINUE, t->line);
+    }
+
+    /* Destructuring assignment: [a, b, c] is rhs (0.13.0).
+     * Lookahead: '[' IDENT (',' IDENT)* ']' 'is'  — anything else falls
+     * through so list-literal expressions still parse. */
+    if (t->type == TOK_LBRACKET) {
+        int saved = p->pos;
+        p_advance(p); /* skip '[' */
+        int matched = 0, n = 0;
+        char *names_tmp[64];
+        int  lines_tmp[64];
+        if (p_cur(p)->type == TOK_IDENT) {
+            while (p_cur(p)->type == TOK_IDENT && n < 64) {
+                lines_tmp[n] = p_cur(p)->line;
+                names_tmp[n++] = xstrdup(p_cur(p)->str_val);
+                p_advance(p);
+                if (p_cur(p)->type == TOK_COMMA) { p_advance(p); continue; }
+                break;
+            }
+            if (n >= 1 && p_cur(p)->type == TOK_RBRACKET) {
+                p_advance(p); /* skip ']' */
+                if (p_cur(p)->type == TOK_IS) {
+                    matched = 1;
+                    p_advance(p); /* skip 'is' */
+                    ASTNode *rhs = parse_expression(p);
+                    p_match(p, TOK_NEWLINE);
+                    ASTNode *node = make_node(AST_LIST_PATTERN_ASSIGN, t->line);
+                    node->data.list_pattern_assign.name_count = n;
+                    node->data.list_pattern_assign.names = xmalloc_array(n, sizeof(char*));
+                    node->data.list_pattern_assign.name_hashes = xmalloc_array(n, sizeof(uint32_t));
+                    for (int k = 0; k < n; k++) {
+                        node->data.list_pattern_assign.names[k] = names_tmp[k];
+                        node->data.list_pattern_assign.name_hashes[k] = env_name_hash(names_tmp[k]);
+                        (void)lines_tmp;
+                    }
+                    node->data.list_pattern_assign.expr = rhs;
+                    return node;
+                }
+            }
+        }
+        if (!matched) {
+            for (int k = 0; k < n; k++) free(names_tmp[k]);
+            p->pos = saved;
+        }
     }
 
     /* Dot-assignment: config.name is "value", items[0].name is "value" */

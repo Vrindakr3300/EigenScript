@@ -6,6 +6,29 @@ All notable changes to EigenScript are documented here.
 
 A language-features release.
 
+### Language — destructuring assignment
+
+`[a, b, c] is rhs` evaluates `rhs` once, requires it to be a list of
+exactly 3 elements, and binds the three names. Length mismatch and
+non-list RHS both raise; matches the strict bounds-check stance the
+language already uses for indexing. Swap is the natural consequence:
+`[a, b] is [b, a]` builds the RHS list first, so both reads happen
+before either write.
+
+Wire-up: AST `AST_LIST_PATTERN_ASSIGN { names[], name_hashes[],
+expr }`; new opcode `OP_DESTRUCTURE_UNPACK <n:u16>` that pops a list,
+validates length, then pushes elements in reverse so element 0 ends
+up at TOS. Compiler factors the per-name OBSERVE+SET emission out of
+AST_ASSIGN into a reusable `emit_assign_for_tos` helper (same slot/
+captured/global resolution rules) and the destructure case calls it
+N times with `OP_POP` between each to expose the next element.
+Parser recognises `[ IDENT (, IDENT)* ] is` at statement start via
+lookahead with save/restore, so list-literal expressions still parse
+as expressions. V1 supports plain identifier targets only — nested
+patterns, index/field targets, and rest patterns are deliberately
+deferred. Test: `tests/test_destructuring.eigs` (26 checks, suite
+slot [74]).
+
 ### Language — negative indexing
 
 `a[-1]` is now the last element of `a`, `a[-2]` the second-to-last,

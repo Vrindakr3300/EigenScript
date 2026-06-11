@@ -184,6 +184,31 @@ unobservable. To get an independent copy, copy explicitly.
 
 **Status:** Enforced — `tests/test_default_params.eigs`.
 
+## Destructuring assignment (0.13.0)
+
+**Promise:** `[a, b, c] is rhs` evaluates `rhs` once, requires it to be
+a list of length exactly 3, and binds `a` `b` `c` to its elements in
+order.
+- **Length is strict:** mismatch raises a runtime error. No
+  truncation, no padding with `null`, no clamping. Matches the same
+  decision as out-of-range indexing.
+- **Type is strict:** the RHS must be a list. A non-list (number,
+  string, dict, buffer, null) raises. To convert, do it explicitly
+  before the destructure.
+- **RHS evaluated exactly once:** side effects fire once and the
+  result is unpacked. So `[a, b] is mkpair of null` calls `mkpair`
+  once even though two names are bound.
+- **Swap works:** `[a, b] is [b, a]` builds the RHS list first, then
+  unpacks — so the two reads happen before either write.
+- **Plain identifiers only (v1):** the LHS is `[ IDENT (, IDENT)* ]`.
+  Nested patterns (`[a, [b, c]] is ...`), index/field targets
+  (`[items[0], obj.field] is ...`), and rest patterns (`[a, *rest]`)
+  are not supported yet; ambient-list-literal expressions still
+  parse as expressions (lookahead requires the trailing `]` to be
+  followed by `is`).
+
+**Status:** Enforced — `tests/test_destructuring.eigs`.
+
 ## Operator precedence
 
 From lowest (binds loosest) to highest (binds tightest):

@@ -134,6 +134,9 @@ typedef enum {
     OP_DEFAULT_PARAM,   /* [slot:16][skip_off:16] if frame->call_argc > slot, IP += skip_off
                          * (skip the default expression); else fall through (default runs
                          * and ends with OP_SET_LOCAL <slot>; OP_POP). */
+    OP_DESTRUCTURE_UNPACK, /* [n:16] pop list, raise if not VAL_LIST or length != n,
+                            * else push elements onto stack in reverse so element 0 is TOS.
+                            * Pairs with N assignment ops emitted after by the compiler. */
 
     OP_COUNT            /* sentinel — number of opcodes */
 } OpCode;

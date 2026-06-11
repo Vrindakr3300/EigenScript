@@ -106,7 +106,7 @@ typedef enum {
     AST_PROGRAM,
     AST_INTERROGATE, AST_PREDICATE,
     AST_TRY, AST_DICT, AST_DOT, AST_BREAK, AST_CONTINUE, AST_DOT_ASSIGN, AST_IMPORT,
-    AST_MATCH, AST_LAMBDA, AST_UNOBSERVED, AST_INDEX_ASSIGN
+    AST_MATCH, AST_LAMBDA, AST_UNOBSERVED, AST_INDEX_ASSIGN, AST_LIST_PATTERN_ASSIGN
 } ASTType;
 
 typedef struct ASTNode ASTNode;
@@ -145,6 +145,7 @@ struct ASTNode {
         struct { char *module_name; } import;
         struct { ASTNode *expr; ASTNode **patterns; ASTNode ***bodies; int *body_counts; int case_count; } match;
         struct { char **params; int param_count; ASTNode *body; } lambda;
+        struct { char **names; uint32_t *name_hashes; int name_count; ASTNode *expr; } list_pattern_assign;
     } data;
 };
 
