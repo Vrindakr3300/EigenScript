@@ -267,6 +267,12 @@ __thread double g_obs_h_low    = 0.1;
 
 void free_value(Value *v) {
     if (!v || v->arena) return;
+    /* The observer holds a borrowed alias, not a ref. Freeing the value
+     * it points at (e.g. `b is buffer of N` then `b is null` — the
+     * rebind drops the last ref) left a dangling pointer that the next
+     * loop-stall check / predicate / interrogative dereferenced; for
+     * freelisted NUMs it silently read recycled data instead. */
+    if (v == g_last_observer) g_last_observer = NULL;
     if (v->type == VAL_NUM) {
         /* Route freed NUMs to freelist for reuse by make_num */
         if (g_num_freelist_count < NUM_FREELIST_CAP) {

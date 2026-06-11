@@ -91,4 +91,20 @@ assert of [(what is test_num) == 42, "OI13 what-is gives numeric value"]
 
 assert of [(when is test_val) > 0, "OI14 when-is gives observation age > 0"]
 
+# === OBSERVER ALIAS VS FREED VALUE (UAF regression) ===
+# g_last_observer is a borrowed alias. Rebinding the observed value so
+# its last ref drops (`ob is null`) used to leave the alias dangling;
+# the next loop-condition stall check dereferenced freed memory
+# (heap-use-after-free in observer_ensure_fresh under ASan).
+ob is buffer of 2
+loop while ob != null:
+    ob is null
+assert of [ob == null, "OI15 freed observed value cleared safely"]
+
+# Same shape through a predicate read after the free.
+ob2 is buffer of 2
+ob2 is null
+p is converged
+assert of [(p == 0) or (p == 1), "OI16 predicate after observed free"]
+
 print of "observer interactions: all passed"
