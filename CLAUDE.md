@@ -139,7 +139,7 @@ still open.
 
 A post-merge review of the 0.13.0 run filed issues #148–#159 (all
 repro'd against HEAD; suites still pass because none are crashes).
-Nine fixed so far: **#155** (`call_argc` uninitialized on vm_run
+Ten fixed so far: **#155** (`call_argc` uninitialized on vm_run
 base frames; spawn/sort_by/dispatch/http defaults clobbered explicit
 args), **#156** (pre-pass walkers didn't know AST_SLICE /
 AST_LIST_PATTERN_ASSIGN; closure capture and module globals silently
@@ -160,8 +160,11 @@ unchanged, the rule below in this CLAUDE.md is now also in
 LANGUAGE_CONTRACT.md), **#154** (docs: 0.13.0's `f of []` argc=0
 lowering silently changed multi-param `g of []` from `a=[], b=null`
 to `a=null, b=null` — change acknowledged in the contract, defaulted-
-multi-param `argc<first_default` edge also pinned down). Remaining
-before tagging 0.13.0: small/docs issues #157–#159.
+multi-param `argc<first_default` edge also pinned down), **#157**
+(destructure pattern parser bracket-counts the lookahead and emits
+pattern-specific errors instead of silently restoring on >64 names,
+trailing comma, or non-ident targets). Remaining before tagging
+0.13.0: small/docs issues #158–#159.
 
 Perf carryover from 0.12.0 (ROADMAP.md): NaN-boxing for *container*
 storage (list items / dict values are still `Value**`; stack and env

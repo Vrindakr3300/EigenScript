@@ -8,6 +8,25 @@ A language-features release.
 
 ### Fixes
 
+- **#157 — destructure pattern parser: specific errors, no silent fallthrough.**
+  The 0.13.0 destructuring lookahead in `src/parser.c` filled a fixed
+  `names_tmp[64]` buffer and silently `p->pos = saved`-restored the
+  position on any mismatch (>64 names, trailing comma, non-ident
+  target). The user then hit whatever the list-literal expression
+  parser said about the same tokens — usually "1 parse error(s)" with
+  no hint that they'd written something close to a destructure.
+  Fix: before consuming, bracket-count the lookahead to find the
+  matching `]` and check if the following token is `is`. If so, commit
+  to destructure parsing and emit pattern-specific errors:
+  - `[a, b,] is rhs` → "trailing comma in destructuring pattern"
+  - `[a[0], b] is rhs` / `[a.x, b] is rhs` → "destructuring pattern
+    requires identifiers (index/field targets like a[0] or a.x are not
+    supported)"
+  - 65+ name pattern → "destructuring pattern exceeds 64 names"
+  List-literal expression statements that don't end in `] is` still
+  parse normally (the scan returns "not a destructure"). Regression in
+  `tests/run_all_tests.sh` (slot [16/16] Error Messages, +3 checks
+  EM21/EM22/EM23).
 - **#154 — docs: unflagged semantic change `g of []` on multi-param fn.**
   0.13.0's default-params commit lowered `f of []` to an argc=0 call
   so an all-default function can be called with no args. The single-

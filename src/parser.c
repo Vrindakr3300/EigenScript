@@ -1293,46 +1293,109 @@ static ASTNode* parse_statement(Parser *p) {
     }
 
     /* Destructuring assignment: [a, b, c] is rhs (0.13.0).
-     * Lookahead: '[' IDENT (',' IDENT)* ']' 'is'  — anything else falls
-     * through so list-literal expressions still parse. */
+     * Lookahead: bracket-count to find the matching ']' and check if the
+     * next token is 'is'. If so, we're committed to a destructure pattern
+     * and emit destructure-specific errors instead of falling through to
+     * list-literal expression parsing (issue #157). */
     if (t->type == TOK_LBRACKET) {
-        int saved = p->pos;
-        p_advance(p); /* skip '[' */
-        int matched = 0, n = 0;
-        char *names_tmp[64];
-        int  lines_tmp[64];
-        if (p_cur(p)->type == TOK_IDENT) {
-            while (p_cur(p)->type == TOK_IDENT && n < 64) {
-                lines_tmp[n] = p_cur(p)->line;
-                names_tmp[n++] = xstrdup(p_cur(p)->str_val);
-                p_advance(p);
-                if (p_cur(p)->type == TOK_COMMA) { p_advance(p); continue; }
-                break;
-            }
-            if (n >= 1 && p_cur(p)->type == TOK_RBRACKET) {
-                p_advance(p); /* skip ']' */
-                if (p_cur(p)->type == TOK_IS) {
-                    matched = 1;
-                    p_advance(p); /* skip 'is' */
-                    ASTNode *rhs = parse_expression(p);
-                    p_match(p, TOK_NEWLINE);
-                    ASTNode *node = make_node(AST_LIST_PATTERN_ASSIGN, t->line);
-                    node->data.list_pattern_assign.name_count = n;
-                    node->data.list_pattern_assign.names = xmalloc_array(n, sizeof(char*));
-                    node->data.list_pattern_assign.name_hashes = xmalloc_array(n, sizeof(uint32_t));
-                    for (int k = 0; k < n; k++) {
-                        node->data.list_pattern_assign.names[k] = names_tmp[k];
-                        node->data.list_pattern_assign.name_hashes[k] = env_name_hash(names_tmp[k]);
-                        (void)lines_tmp;
+        int is_destructure = 0;
+        {
+            int i = p->pos + 1;
+            int depth = 0;
+            while (i < p->tl->count) {
+                TokType tt = p->tl->tokens[i].type;
+                if (tt == TOK_LBRACKET) depth++;
+                else if (tt == TOK_RBRACKET) {
+                    if (depth == 0) {
+                        if (i + 1 < p->tl->count &&
+                            p->tl->tokens[i+1].type == TOK_IS)
+                            is_destructure = 1;
+                        break;
                     }
-                    node->data.list_pattern_assign.expr = rhs;
-                    return node;
+                    depth--;
+                } else if (tt == TOK_EOF) {
+                    break;
                 }
+                i++;
             }
         }
-        if (!matched) {
-            for (int k = 0; k < n; k++) free(names_tmp[k]);
-            p->pos = saved;
+        if (is_destructure) {
+            int line = t->line;
+            p_advance(p); /* skip '[' */
+            int n = 0;
+            char *names_tmp[64];
+            for (;;) {
+                if (p_cur(p)->type != TOK_IDENT) {
+                    fprintf(stderr,
+                        "Parse error line %d: destructuring pattern requires "
+                        "identifiers (index/field targets like a[0] or a.x "
+                        "are not supported)\n", p_cur(p)->line);
+                    g_parse_errors++;
+                    for (int k = 0; k < n; k++) free(names_tmp[k]);
+                    while (p_cur(p)->type != TOK_NEWLINE &&
+                           p_cur(p)->type != TOK_EOF) p_advance(p);
+                    return make_node(AST_NULL, line);
+                }
+                if (n >= 64) {
+                    fprintf(stderr,
+                        "Parse error line %d: destructuring pattern exceeds "
+                        "64 names\n", p_cur(p)->line);
+                    g_parse_errors++;
+                    for (int k = 0; k < n; k++) free(names_tmp[k]);
+                    while (p_cur(p)->type != TOK_NEWLINE &&
+                           p_cur(p)->type != TOK_EOF) p_advance(p);
+                    return make_node(AST_NULL, line);
+                }
+                names_tmp[n++] = xstrdup(p_cur(p)->str_val);
+                p_advance(p);
+                if (p_cur(p)->type == TOK_RBRACKET) break;
+                if (p_cur(p)->type == TOK_COMMA) {
+                    p_advance(p);
+                    if (p_cur(p)->type == TOK_RBRACKET) {
+                        fprintf(stderr,
+                            "Parse error line %d: trailing comma in "
+                            "destructuring pattern\n", p_cur(p)->line);
+                        g_parse_errors++;
+                        for (int k = 0; k < n; k++) free(names_tmp[k]);
+                        while (p_cur(p)->type != TOK_NEWLINE &&
+                               p_cur(p)->type != TOK_EOF) p_advance(p);
+                        return make_node(AST_NULL, line);
+                    }
+                    continue;
+                }
+                if (p_cur(p)->type == TOK_LBRACKET ||
+                    p_cur(p)->type == TOK_DOT) {
+                    fprintf(stderr,
+                        "Parse error line %d: destructuring pattern "
+                        "requires identifiers (index/field targets like "
+                        "a[0] or a.x are not supported)\n",
+                        p_cur(p)->line);
+                } else {
+                    fprintf(stderr,
+                        "Parse error line %d: expected ',' or ']' in "
+                        "destructuring pattern, got %s\n",
+                        p_cur(p)->line, tok_type_name(p_cur(p)->type));
+                }
+                g_parse_errors++;
+                for (int k = 0; k < n; k++) free(names_tmp[k]);
+                while (p_cur(p)->type != TOK_NEWLINE &&
+                       p_cur(p)->type != TOK_EOF) p_advance(p);
+                return make_node(AST_NULL, line);
+            }
+            p_advance(p); /* skip ']' */
+            p_advance(p); /* skip 'is' (scan verified) */
+            ASTNode *rhs = parse_expression(p);
+            p_match(p, TOK_NEWLINE);
+            ASTNode *node = make_node(AST_LIST_PATTERN_ASSIGN, line);
+            node->data.list_pattern_assign.name_count = n;
+            node->data.list_pattern_assign.names = xmalloc_array(n, sizeof(char*));
+            node->data.list_pattern_assign.name_hashes = xmalloc_array(n, sizeof(uint32_t));
+            for (int k = 0; k < n; k++) {
+                node->data.list_pattern_assign.names[k] = names_tmp[k];
+                node->data.list_pattern_assign.name_hashes[k] = env_name_hash(names_tmp[k]);
+            }
+            node->data.list_pattern_assign.expr = rhs;
+            return node;
         }
     }
 

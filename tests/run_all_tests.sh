@@ -592,6 +592,16 @@ check_exit "EM17 stack overflow exits non-zero" 'define r(n) as:
     return 1 + (r of (n + 1))
 print of (r of 0)' "1"
 
+# #157: destructure pattern parser UX — specific errors instead of falling
+# through to generic list-literal expression errors.
+check_stderr "EM21 destructure trailing comma" '[a, b,] is [1, 2]' \
+    "trailing comma in destructuring pattern"
+check_stderr "EM22 destructure non-ident target" '[a[0], b] is [1, 2]' \
+    "destructuring pattern requires identifiers"
+EM23_SCRIPT=$(printf '['; for i in $(seq 0 69); do [ $i -gt 0 ] && printf ', '; printf 'n%d' $i; done; printf '] is [0]')
+check_stderr "EM23 destructure exceeds 64 names" "$EM23_SCRIPT" \
+    "destructuring pattern exceeds 64 names"
+
 # Regression: a caught error still allows the program to succeed (exit 0)
 check_exit "EM18 caught error exits 0" 'try:
     x is undefined_thing
