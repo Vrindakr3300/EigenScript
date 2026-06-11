@@ -217,8 +217,12 @@ unary and `of` are right-associative.
 
 ## Indexing — `[ ]`
 
-**Promise (decision):** An index must be an integer in `[0, length)`.
-- Out-of-range indices (including negative) raise a runtime error.
+**Promise (decision):** An index must be an integer in `[-length, length)`.
+- Negative indices count from the end: `a[-1]` is the last element,
+  `a[-len of a]` is the first. Resolution is `i + len` *before* the
+  bounds check, matching Python and Ruby.
+- Out-of-range indices (including too-negative, e.g. `a[-(len+1)]`)
+  raise a runtime error.
 - A non-integer index **raises** (`a[1.5]` → error). Integer-valued doubles
   are accepted (`a[2.0]` works), since EigenScript has a single number type;
   but a fractional value is never silently truncated. Because `/` always
@@ -232,12 +236,9 @@ unary and `of` are right-associative.
 every dynamic index site in `OP_INDEX_GET`/`OP_INDEX_SET` and
 `jit_helper_index_get` in `vm.c`.
 
-**Reserved (not yet implemented): negative indexing and slicing.** The
-`a[-1]` and `a[start:end]` syntax is reserved for one coherent future
-addition; today `a[-1]` raises (out of range) and `a[1:3]` is a parse error.
-When it lands, the committed design is:
-- **Negative indices** count from the end (`a[-1]` is the last element),
-  resolved to `len + i` *before* any bounds check.
+**Reserved (not yet implemented): slicing.** The `a[start:end]` syntax
+is reserved; today `a[1:3]` is a parse error. When it lands, the
+committed design is:
 - **Slices** are half-open `a[start:end)`, with defaults `a[start:]`
   (end = len), `a[:end]` (start = 0), `a[:]` (the whole sequence).
 - **Slice bounds are positions between elements**, so the valid range is
@@ -247,8 +248,8 @@ When it lands, the committed design is:
 - **Out-of-range slice bounds raise** (they do not clamp), consistent with
   the single-index rule and with Rust/Go; only the coercion-happy languages
   (Python/JS) clamp. Write `min of [end, len of a]` for explicit clamping.
-- Once negative indexing lands, negatives resolve to absolute positions
-  first, then the `0 <= start <= end <= len` check applies.
+- Negatives resolve to absolute positions first (same rule as single
+  indexing), then the `0 <= start <= end <= len` check applies.
 
 **Dict access — missing key returns `null` (deliberate, not an error).**
 A missing dict key (`d["k"]`) or field (`d.k`) evaluates to `null`, on

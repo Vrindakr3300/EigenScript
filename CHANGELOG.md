@@ -4,7 +4,28 @@ All notable changes to EigenScript are documented here.
 
 ## [0.13.0] — unreleased
 
-A language-features release. First landing: default parameter values.
+A language-features release.
+
+### Language — negative indexing
+
+`a[-1]` is now the last element of `a`, `a[-2]` the second-to-last,
+through `a[-len of a]` which is the first. Applies uniformly to
+lists, strings, and buffers (the three sequence types `a[i]` accepts
+today). Resolution is `i + len` *before* the bounds check, so the
+valid input range becomes `[-len, len)`; too-negative indices raise
+the same out-of-range error as too-positive ones. Error messages
+report the original user-written index (`a[-99]` on len 5 raises
+"index -99 out of range" — not the post-resolution value).
+
+Wire-up: new `vm_index_resolve(&i, len)` helper in vm.c sits between
+`vm_index_is_int` and the bounds check; all 14 index sites
+(OP_INDEX_GET / OP_INDEX_SET / jit_helper_index_get /
+jit_helper_index_set, slot fast paths and slow paths, list+string+
+buffer arms) route through it. JIT inline INDEX_SET buffer fast path
+needs no change: its unsigned-compare bounds-check already bails to
+the helper on negative indices, and the helper now resolves them.
+Test: `tests/test_negative_index.eigs` (19 checks including
+JIT-loop coverage, suite slot [73]).
 
 ### Language — default parameter values
 

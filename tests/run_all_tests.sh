@@ -1638,6 +1638,21 @@ else
 fi
 echo ""
 
+# [73] Negative indexing (0.13.0).
+echo "[73] Negative Indexing (19 checks)"
+NI_OUTPUT=$(./eigenscript ../tests/test_negative_index.eigs 2>&1)
+if echo "$NI_OUTPUT" | grep -q "All tests passed"; then
+    TOTAL=$((TOTAL + 19))
+    PASS=$((PASS + 19))
+    echo "  PASS: all 19 negative-index checks"
+else
+    TOTAL=$((TOTAL + 19))
+    FAIL=$((FAIL + 19))
+    echo "  FAIL: negative-index tests"
+    echo "$NI_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
+fi
+echo ""
+
 # [72] Default parameter values (0.13.0).
 echo "[72] Default Parameters (16 checks)"
 DP_OUTPUT=$(./eigenscript ../tests/test_default_params.eigs 2>&1)

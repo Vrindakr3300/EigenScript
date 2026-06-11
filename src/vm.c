@@ -1033,6 +1033,19 @@ static inline int vm_index_is_int(double d, int *out) {
     return 1;
 }
 
+/* 0.13.0: resolve negative index against len, then bounds-check.
+ * On success, *i is rewritten to the absolute position; on failure
+ * *i is left at the original value so error messages report what
+ * the user wrote (a[-5] on len 3 says "-5 out of range", not "-2").
+ * Negative resolution happens before the bounds check, matching
+ * LANGUAGE_CONTRACT.md. */
+static inline int vm_index_resolve(int *i, int len) {
+    int r = (*i < 0) ? *i + len : *i;
+    if (r < 0 || r >= len) return 0;
+    *i = r;
+    return 1;
+}
+
 /* Stage 4q-c: out-of-line helper for OP_INDEX_GET.
  *
  * Mirrors CASE(INDEX_GET) below: pops the index and target slots
@@ -1139,7 +1152,7 @@ void jit_helper_index_set(void) {
         Value *target = slot_as_ptr(tgt_s);
         int i, _ok = vm_index_is_int(idx_s.d, &i);
         if (target->type == VAL_BUFFER && slot_is_num(val_s)) {
-            if (_ok && i >= 0 && i < target->data.buffer.count) {
+            if (_ok && vm_index_resolve(&i, target->data.buffer.count)) {
                 target->data.buffer.data[i] = (int)val_s.d;
             } else {
                 if (!_ok) runtime_error(g_vm.current_line, "index must be an integer, got %g", idx_s.d);
@@ -1153,7 +1166,7 @@ void jit_helper_index_set(void) {
             return;
         }
         if (target->type == VAL_LIST && slot_is_num(val_s)) {
-            if (_ok && i >= 0 && i < target->data.list.count) {
+            if (_ok && vm_index_resolve(&i, target->data.list.count)) {
                 Value *existing = target->data.list.items[i];
                 if (existing && existing->type == VAL_NUM &&
                     existing->refcount == 1 && existing->obs_age == 0 &&
@@ -1180,7 +1193,7 @@ void jit_helper_index_set(void) {
         int i;
         if (!vm_index_is_int(idx->data.num, &i)) {
             runtime_error(g_vm.current_line, "index must be an integer, got %g", idx->data.num);
-        } else if (i >= 0 && i < target->data.list.count) {
+        } else if (vm_index_resolve(&i, target->data.list.count)) {
             val_incref(val);
             val_decref(target->data.list.items[i]);
             target->data.list.items[i] = val;
@@ -1191,10 +1204,11 @@ void jit_helper_index_set(void) {
         int i;
         if (!vm_index_is_int(idx->data.num, &i)) {
             runtime_error(g_vm.current_line, "index must be an integer, got %g", idx->data.num);
-        } else if (i >= 0 && i < target->data.buffer.count && val->type == VAL_NUM)
-            target->data.buffer.data[i] = (int)val->data.num;
-        else if (i < 0 || i >= target->data.buffer.count)
+        } else if (!vm_index_resolve(&i, target->data.buffer.count)) {
             runtime_error(g_vm.current_line, "buffer index %d out of range (length %d)", i, target->data.buffer.count);
+        } else if (val->type == VAL_NUM) {
+            target->data.buffer.data[i] = (int)val->data.num;
+        }
     } else if (target->type == VAL_DICT && idx->type == VAL_STR) {
         dict_set(target, idx->data.str, val);
     } else if (target->type != VAL_NULL) {
@@ -1212,7 +1226,7 @@ void jit_helper_index_get(void) {
         Value *target = slot_as_ptr(tgt_s);
         int i, _ok = vm_index_is_int(idx_s.d, &i);
         if (target->type == VAL_LIST) {
-            if (_ok && i >= 0 && i < target->data.list.count) {
+            if (_ok && vm_index_resolve(&i, target->data.list.count)) {
                 Value *r = target->data.list.items[i];
                 if (r && r->type == VAL_NUM && r->obs_age == 0) {
                     /* See CASE(INDEX_GET) for the use-after-free story —
@@ -1237,7 +1251,7 @@ void jit_helper_index_get(void) {
             return;
         }
         if (target->type == VAL_BUFFER) {
-            if (_ok && i >= 0 && i < target->data.buffer.count) {
+            if (_ok && vm_index_resolve(&i, target->data.buffer.count)) {
                 double v = target->data.buffer.data[i];
                 slot_decref(tgt_s);
                 vm_push_slot(slot_from_num(v));
@@ -1262,7 +1276,7 @@ void jit_helper_index_get(void) {
         int i;
         if (!vm_index_is_int(idx->data.num, &i)) {
             runtime_error(g_vm.current_line, "index must be an integer, got %g", idx->data.num);
-        } else if (i >= 0 && i < target->data.list.count) {
+        } else if (vm_index_resolve(&i, target->data.list.count)) {
             result = target->data.list.items[i];
             val_incref(result);
         } else {
@@ -1277,7 +1291,7 @@ void jit_helper_index_get(void) {
         int i;
         if (!vm_index_is_int(idx->data.num, &i)) {
             runtime_error(g_vm.current_line, "index must be an integer, got %g", idx->data.num);
-        } else if (i >= 0 && i < (int)strlen(target->data.str)) {
+        } else if (vm_index_resolve(&i, (int)strlen(target->data.str))) {
             char buf[2] = { target->data.str[i], 0 };
             result = make_str(buf);
         } else {
@@ -1289,7 +1303,7 @@ void jit_helper_index_get(void) {
         int i;
         if (!vm_index_is_int(idx->data.num, &i))
             runtime_error(g_vm.current_line, "index must be an integer, got %g", idx->data.num);
-        else if (i >= 0 && i < target->data.buffer.count)
+        else if (vm_index_resolve(&i, target->data.buffer.count))
             result = make_num(target->data.buffer.data[i]);
         else
             runtime_error(g_vm.current_line,
@@ -2871,7 +2885,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             Value *target = slot_as_ptr(tgt_s);
             int i, _ok = vm_index_is_int(idx_s.d, &i);
             if (target->type == VAL_LIST) {
-                if (_ok && i >= 0 && i < target->data.list.count) {
+                if (_ok && vm_index_resolve(&i, target->data.list.count)) {
                     Value *r = target->data.list.items[i];
                     if (r && r->type == VAL_NUM && r->obs_age == 0) {
                         /* Snapshot the double BEFORE decref'ing the list:
@@ -2902,7 +2916,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 DISPATCH();
             }
             if (target->type == VAL_BUFFER) {
-                if (_ok && i >= 0 && i < target->data.buffer.count) {
+                if (_ok && vm_index_resolve(&i, target->data.buffer.count)) {
                     double v = target->data.buffer.data[i];
                     slot_decref(tgt_s);
                     vm_push_slot(slot_from_num(v));
@@ -2926,7 +2940,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             int i;
             if (!vm_index_is_int(idx->data.num, &i)) {
                 runtime_error(current_line, "index must be an integer, got %g", idx->data.num);
-            } else if (i >= 0 && i < target->data.list.count) {
+            } else if (vm_index_resolve(&i, target->data.list.count)) {
                 result = target->data.list.items[i];
                 val_incref(result);
             } else {
@@ -2939,7 +2953,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             int i;
             if (!vm_index_is_int(idx->data.num, &i)) {
                 runtime_error(current_line, "index must be an integer, got %g", idx->data.num);
-            } else if (i >= 0 && i < (int)strlen(target->data.str)) {
+            } else if (vm_index_resolve(&i, (int)strlen(target->data.str))) {
                 char buf[2] = { target->data.str[i], 0 };
                 result = make_str(buf);
             } else {
@@ -2949,7 +2963,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             int i;
             if (!vm_index_is_int(idx->data.num, &i))
                 runtime_error(current_line, "index must be an integer, got %g", idx->data.num);
-            else if (i >= 0 && i < target->data.buffer.count)
+            else if (vm_index_resolve(&i, target->data.buffer.count))
                 result = make_num(target->data.buffer.data[i]);
             else
                 runtime_error(current_line, "buffer index %d out of range (length %d)", i, target->data.buffer.count);
@@ -2971,7 +2985,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             Value *target = slot_as_ptr(tgt_s);
             int i, _ok = vm_index_is_int(idx_s.d, &i);
             if (target->type == VAL_BUFFER && slot_is_num(val_s)) {
-                if (_ok && i >= 0 && i < target->data.buffer.count) {
+                if (_ok && vm_index_resolve(&i, target->data.buffer.count)) {
                     target->data.buffer.data[i] = (int)val_s.d;
                 } else {
                     if (!_ok) runtime_error(current_line, "index must be an integer, got %g", idx_s.d);
@@ -2985,7 +2999,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 DISPATCH();
             }
             if (target->type == VAL_LIST && slot_is_num(val_s)) {
-                if (_ok && i >= 0 && i < target->data.list.count) {
+                if (_ok && vm_index_resolve(&i, target->data.list.count)) {
                     Value *existing = target->data.list.items[i];
                     /* In-place mutate when slot is an exclusive untracked VAL_NUM. */
                     if (existing && existing->type == VAL_NUM &&
@@ -3013,7 +3027,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             int i;
             if (!vm_index_is_int(idx->data.num, &i)) {
                 runtime_error(current_line, "index must be an integer, got %g", idx->data.num);
-            } else if (i >= 0 && i < target->data.list.count) {
+            } else if (vm_index_resolve(&i, target->data.list.count)) {
                 val_incref(val);
                 val_decref(target->data.list.items[i]);
                 target->data.list.items[i] = val;
@@ -3024,10 +3038,11 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             int i;
             if (!vm_index_is_int(idx->data.num, &i)) {
                 runtime_error(current_line, "index must be an integer, got %g", idx->data.num);
-            } else if (i >= 0 && i < target->data.buffer.count && val->type == VAL_NUM)
-                target->data.buffer.data[i] = (int)val->data.num;
-            else if (i < 0 || i >= target->data.buffer.count)
+            } else if (!vm_index_resolve(&i, target->data.buffer.count)) {
                 runtime_error(current_line, "buffer index %d out of range (length %d)", i, target->data.buffer.count);
+            } else if (val->type == VAL_NUM) {
+                target->data.buffer.data[i] = (int)val->data.num;
+            }
         } else if (target->type == VAL_DICT && idx->type == VAL_STR) {
             dict_set(target, idx->data.str, val);
         } else if (target->type != VAL_NULL) {
