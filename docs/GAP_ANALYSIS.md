@@ -1,17 +1,22 @@
 # EigenScript Gap Analysis [HISTORICAL]
 
-**This document is a historical snapshot from version 0.8.1.** Many listed
-gaps have been resolved in later releases:
+**This document is a historical snapshot from version 0.8.1.** Current
+version is **0.12.0**. Many listed gaps have been resolved in later
+releases:
 
 - **Concurrency**: spawn/thread_join/channels added in 0.9.0
+- **Pattern matching / lambdas / regex / imports**: added in 0.7.0
 - **Hashing**: SHA-256, MD5, HMAC-SHA256 added in 0.9.2
-- **UI**: 44-widget GUI toolkit added in 0.9.3
+- **LSP**: eigenlsp + VS Code extension shipped in 0.9.1
+- **Debugger**: graphical debugger with observer-aware inspection in 0.9.0
+- **UI**: 44-widget GUI toolkit added in 0.9.0
 - **STEM**: 14 scientific libraries added in 0.9.3
 - **Bytecode VM**: Tree-walker replaced with compiled bytecode in 0.10.0
+- **JIT**: copy-and-patch x86-64 JIT with inline ICs in 0.12.0
 - **Standard library**: Expanded to 49 modules
 
-The sections below reflect the state as of 0.8.1 and should not be taken
-as current. See CHANGELOG.md for the current feature set.
+For the live status see `ROADMAP.md` and `CHANGELOG.md`. The sections
+below reflect the state as of 0.8.1 and should not be taken as current.
 
 EigenScript is a general-purpose language, but some program classes stress
 capabilities that the current runtime and standard library do not provide.
@@ -187,19 +192,24 @@ cleanly with what ships today:
 - Physics, game-logic, and simulation demos (see `examples/`: rope,
   orbital, PID control, ray marching, Sokoban, Game of Life)
 
-## Relationship to the Roadmap
+## Relationship to the Roadmap (0.8.1 snapshot)
 
-Many of the gaps above have corresponding roadmap entries:
+The 0.8.1 view of the roadmap is preserved below for historical
+reference. **The live state lives in `ROADMAP.md`.** As of 0.12.0,
+most of these have shipped:
 
-- Concurrency primitives — medium-term
-- WASM target — medium-term
-- Pattern matching / destructuring — medium-term
-- Debugger and source maps — near-term
-- Package manager / module registry — near-term
-- LSP — long-term
-- FFI — long-term
-- JIT — long-term
+- Concurrency primitives — **shipped 0.9.0**
+- Pattern matching / destructuring — pattern matching **shipped 0.7.0**;
+  destructuring assignment planned for 0.13.0
+- Debugger and source maps — **shipped 0.9.0**
+- LSP — **shipped 0.9.1**
+- JIT — **shipped 0.12.0** (copy-and-patch x86-64 + inline ICs)
+- WASM target — still open (ecosystem)
+- Package manager / module registry — still open (ecosystem)
+- FFI — still open (ecosystem)
 
-Gaps without roadmap entries (notably crypto, sockets, additional
-database drivers, compression, decimal/bigint, streaming subprocess I/O)
-are candidates for future proposals. Regex was added in 0.7.0 (POSIX ERE).
+Gaps still without roadmap entries beyond ecosystem placeholders:
+crypto (AEAD/TLS), raw TCP/UDP sockets, additional database drivers
+(SQLite/MySQL/NoSQL), compression, decimal/bigint, streaming
+subprocess I/O (streaming subprocess I/O is planned for 0.13.0).
+Regex was added in 0.7.0 (POSIX ERE).

@@ -1,101 +1,35 @@
 # Roadmap
 
-Current version: **0.11.8**
+Current version: **0.12.0**
 
-Recently shipped (0.11.5–0.11.8): cross-platform CI + sanitizer matrix,
-HTTP server hardening (threaded accept, protocol hygiene), execution
-trace tape + deterministic replay (`EIGS_TRACE`/`EIGS_REPLAY`), temporal
-interrogatives (`prev of`, `at`, `state_at` + line-floor index),
-debugger step-back, leak-clean suite under ASan (enforced in CI), and
-refcounted bytecode chunks.
+Recently shipped (0.12.0): JIT Stage 5 inline matrix (a–i) — buffer
+INDEX_SET, EnvIC name get/set, 2-way dict-dot cache, tracked-num
+arith/compare operands, native VAL_FN calls inside thunks, per-loop
+OSR slots, DOT_SET in-place write, per-chunk call-env recycling — plus
+temporal-trace compile gate (recording off unless the program uses
+`prev of`/`at`/`state_at`). `bench_dmg_shape` 239 → ~118 ms (2.0×); JIT
+now beats `EIGS_JIT_OFF` by ~45% on it.
 
-## Next: Performance (0.12.0)
+## Next (0.13.0)
 
-Fresh profile (gprof, post-0.11.8, `tests/bench_dmg_shape.eigs` —
-500k dispatch-table steps; the DMG ROM workload itself lives outside
-the repo):
+### Performance carryover
 
-- First finding (fixed): the 0.11.7 reversibility machinery ran
-  unconditionally — 17.8M `trace_line` + 2.5M `trace_assign` calls per
-  500k steps, ~1/3 of runtime. History recording is now compile-gated
-  (`g_trace_hist`); the workload dropped 295 → 243 ms and the
-  micro-benches 20–57%.
-- Post-fix profile: ~65% vm_run dispatch (structural — JIT territory),
-  then env churn (`env_free` 2.58M calls ≈ one per fn call,
-  `env_set_local`/`slot_from_value` 0.57M, `env_hash_find` 1.3M) and
-  `make_num` traffic (2.1M calls).
-
-DMG benchmark: **target met** — ~5 MHz on cpu_instrs at 0.11.8
-(5.11 MHz over 5M cycles, 4.80 MHz sustained over 30M; target was
-4.19 MHz real-hardware speed; was 1.094 MHz at 0.11.4). Remaining
-0.12.0 items are for headroom and for non-DMG workloads.
-
-- [x] **JIT Stage 5 — inline the hot fast paths.** Buffer-INDEX_SET
-      and GET_NAME/SET name EnvIC fast paths now emit as native
-      templates with helper fallback on guard failure, plus a
-      (env, binding_version, slot) write cache for the per-iteration
-      `__loop_iterations__` update. bench_dmg_shape 239→218 ms,
-      bench_idxset 29.7→24.6 ms; isolation probes 2.8–3.4×. Spec in
-      `docs/JIT_STAGE5_INLINE_IC.md` (status updated in place).
-- [x] **JIT Stage 5d — inline dict-dot fast paths.** LOCAL_DOT_GET/SET
-      cache-hit paths emit inline (baked hash, interned-key pointer
-      equality, in-place num mutate); helper fallback repopulates the
-      dict cache. Isolated dict-RMW loop −31% (65→45 ms).
-- [x] **JIT Stage 5e — tracked-num operands in arith/compare
-      templates.** Root cause refined: CASE(SET_LOCAL)'s in-place
-      branch mutates an observed-then-unobserved counter's tracked
-      Value forever (pointer identity preserved by design — and
-      g_last_observer may alias it), so native arith/compare bailed on
-      it every iteration. ADD/SUB/MUL/DIV/MOD and all six comparisons
-      now accept heap/tracked VAL_NUM operands (refcount ≥ 2; rc==1
-      routes to the interpreter so NUM_REUSE keeps its in-place
-      semantics), with post-commit operand decrefs and a branched
-      commit that keeps the imm/imm path at pre-5e cost. The JIT
-      SET_LOCAL template gained the interpreter's exact in-place
-      branch (required: the swap path would free a Value
-      g_last_observer can still point at). Poisoned-counter loop
-      −26% (141→105 ms); bench_idxset −10% (24.6→22.2 ms).
-- [x] **JIT Stage 5f/5g — native VAL_FN calls + per-loop OSR slots.**
-      Two structural fixes: (5g) chunks now carry one OSR slot per hot
-      loop header (`jit_osr[4]`) — the old single slot was pinned by
-      bench_dmg_shape's setup loop, leaving the main loop interpreted
-      through every prior stage; (5f) `jit_helper_call` pushes the
-      callee frame and invokes a compiled callee's thunk directly,
-      with a `-2` deep-bail sentinel for mid-callee guard failures.
-      Plus OP_DOT_SET coverage (last unsupported op in the DMG loop).
-      bench_dmg_shape 212→156 ms (−27%); JIT now ~33% faster than
-      EIGS_JIT_OFF on it (previously near parity).
-- [x] **Stage 5h — DOT_SET immediate fast path + 2-way dict cache.**
-      Post-5f/5g profile fixes: DOT_SET now mutates exclusive untracked
-      num fields in place (was 2 make_num/step via vm_pop
-      materialization), and the dict field cache is 2-way
-      set-associative (the DMG "pc"/"cycles" pair collided in the
-      direct map and evicted each other every step). dmg 156→118 ms;
-      interpreter (EIGS_JIT_OFF) 230→213 ms.
-
-Post-Stage-5h profile (gprof call counts, bench_dmg_shape, per 500k
-steps): make_num collapsed 2.1M → 16k and free_value 765k → 16k (the
-DOT_SET/dict fixes); what remains is per-call env churn — env_new,
-env_free, env_hash_insert, and vm_bind_fresh_param each run once per
-step (one per handler call), plus chunk_incref/decref per frame.
-
-- [x] **Stage 5i — per-chunk call-env recycling.** A returned call env
-      parks on its chunk (values nulled; param names/hash/version
-      kept) and the next call rebinds params in place — EnvICs stay
-      valid across calls. Guarded: single-threaded, non-captured,
-      fully-bound params, layout-exact count. env_new on
-      bench_dmg_shape: 500k → 9 per run; trivial-call probe −26%
-      (147→109 ms), recursive fib −17%; dmg itself ~−2% (env work was
-      a thin time slice despite dominating call counts).
-- [ ] NaN-boxing for container storage — stack and env slots are
+- [ ] **NaN-boxing for container storage** — stack and env slots are
       already EigsSlot/NaN-boxed; list items and dict values are still
-      `Value**`. The DMG-shaped make_num churn is gone post-5h (writes
-      mutate in place); this now mainly buys allocation-free list/dict
-      construction and reads for non-num or shared values. Big surface
-      (every `data.list.items` / `data.dict.vals` touch site).
-- [ ] Extend GET_LOCAL/SET_LOCAL to all local variables (closure-safe)
+      `Value**`. Post-5h, the DMG-shaped `make_num` churn is gone
+      (writes mutate in place); this now mainly buys allocation-free
+      list/dict construction and reads for non-num or shared values.
+      Big surface (every `data.list.items` / `data.dict.vals` touch
+      site).
+- [ ] **Extend GET_LOCAL/SET_LOCAL to all local variables**
+      (closure-safe). Currently restricted; broadening unlocks JIT
+      inline ICs on every local, not just function params.
+- [ ] **Per-call env churn** — `env_new` / `env_free` per call is the
+      likely top DMG cost post-5i for non-recyclable callsites.
+      Re-profile before picking; the profile shape moved every stage
+      this cycle.
 
-### Language features (0.13.0)
+### Language features
 
 - [ ] Destructuring assignment (`[a, b] is [1, 2]`)
 - [ ] Streaming subprocess I/O (stdin pipe, unbuffered stdout)
@@ -104,12 +38,29 @@ step (one per handler call), plus chunk_incref/decref per frame.
       reserved in `docs/LANGUAGE_CONTRACT.md`
 - [ ] Default parameter values
 
+### Downstream gaps feeding back
+
+Filed by stress-test repos; promote into a numbered EigenScript item
+when picked up:
+
+- **Tidepool** (`InauguralSystems/Tidepool/GAPS.md`):
+  GAP-001/002/003 audio (sweep, loop, per-channel volume),
+  GAP-004 inner-loop function-call cost (partial mitigation via
+  v0.12.0 hoist sweep), GAP-005 non-blocking channel recv,
+  GAP-006 spawn-with-args.
+- **EigenMiniSat** (`InauguralSystems/EigenMiniSat/GAPS.md`):
+  open watchlist around CDCL hot-path inlining patterns.
+
 ### Ecosystem
 
 - [ ] Package manager / module registry
 - [ ] More STEM modules (graph theory, regression, numerical PDEs)
 - [ ] WASM compilation target
 - [ ] Foreign function interface (FFI) for calling C libraries
+- [ ] Crypto / HTTPS in-process (SHA hashes shipped 0.9.2; no AEAD, no TLS)
+- [ ] Raw TCP/UDP sockets
+- [ ] Additional DB drivers (SQLite, MySQL, NoSQL)
+- [ ] bigint / decimal numeric types
 
 ### Long-term
 
@@ -118,6 +69,62 @@ step (one per handler call), plus chunk_incref/decref per frame.
 - [ ] Public release
 
 ## Completed
+
+### 0.12.0 (2026-06-10)
+
+- [x] **JIT Stage 5 — inline the hot fast paths.** Buffer-INDEX_SET
+      and GET_NAME/SET name EnvIC fast paths emit as native templates
+      with helper fallback on guard failure, plus a
+      (env, binding_version, slot) write cache for the per-iteration
+      `__loop_iterations__` update. bench_dmg_shape 239→218 ms,
+      bench_idxset 29.7→24.6 ms; isolation probes 2.8–3.4×. Spec in
+      `docs/JIT_STAGE5_INLINE_IC.md`.
+- [x] **JIT Stage 5d — inline dict-dot fast paths.** LOCAL_DOT_GET/SET
+      cache-hit paths emit inline (baked hash, interned-key pointer
+      equality, in-place num mutate); helper fallback repopulates the
+      dict cache. Isolated dict-RMW loop −31% (65→45 ms).
+- [x] **JIT Stage 5e — tracked-num operands in arith/compare
+      templates.** ADD/SUB/MUL/DIV/MOD and all six comparisons accept
+      heap/tracked VAL_NUM operands (refcount ≥ 2; rc==1 routes to
+      interpreter so NUM_REUSE keeps in-place semantics). JIT
+      SET_LOCAL template gained the interpreter's exact in-place
+      branch (the swap path would free a Value `g_last_observer` can
+      still point at). Poisoned-counter loop −26% (141→105 ms);
+      bench_idxset −10% (24.6→22.2 ms).
+- [x] **JIT Stage 5f/5g — native VAL_FN calls + per-loop OSR slots.**
+      Chunks carry one OSR slot per hot loop header (`jit_osr[4]`) so
+      a setup loop can't pin the slot away from the main loop;
+      `jit_helper_call` pushes the callee frame and invokes a compiled
+      callee's thunk directly, with `-2` deep-bail sentinel. Plus
+      OP_DOT_SET coverage. bench_dmg_shape 212→156 ms (−27%); JIT now
+      ~33% faster than EIGS_JIT_OFF on it (previously near parity).
+- [x] **Stage 5h — DOT_SET immediate fast path + 2-way dict cache.**
+      DOT_SET mutates exclusive untracked num fields in place; the
+      dict field cache is 2-way set-associative (the DMG "pc"/"cycles"
+      pair collided in the direct map). dmg 156→118 ms; interpreter
+      (EIGS_JIT_OFF) 230→213 ms.
+- [x] **Stage 5i — per-chunk call-env recycling.** A returned call env
+      parks on its chunk (values nulled; param names/hash/version
+      kept) and the next call rebinds params in place — EnvICs stay
+      valid across calls. Guarded: single-threaded, non-captured,
+      fully-bound params, layout-exact count. env_new on
+      bench_dmg_shape: 500k → 9 per run; trivial-call probe −26%
+      (147→109 ms), recursive fib −17%.
+- [x] **Temporal-trace compile gate.** `g_trace_hist` /
+      `g_trace_obs_hist` set only when the program uses a temporal
+      query or `EIGS_TRACE` is set — no per-assign cost otherwise.
+
+### 0.11.5 → 0.11.8
+
+- [x] Cross-platform CI + sanitizer matrix
+- [x] HTTP server hardening (threaded accept, protocol hygiene)
+- [x] Execution trace tape + deterministic replay
+      (`EIGS_TRACE` / `EIGS_REPLAY`)
+- [x] Temporal interrogatives (`prev of`, `at`, `state_at` +
+      line-floor index)
+- [x] Debugger step-back
+- [x] Leak-clean suite under ASan (enforced in CI)
+- [x] Refcounted bytecode chunks
 
 ### 0.11.4 (2026-05-23)
 
