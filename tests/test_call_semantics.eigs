@@ -45,11 +45,16 @@ assert of [(one of []) == [], "1-param of []: preserves empty-list bind"]
 define hd(x is 99) as:
     return x
 assert of [(hd of []) == 99, "1-param defaulted of []: default fires"]
-# f of [] is argc=0; defaults only fire when argc >= first_default.
-# Here first_default=1 but argc=0, so the b-default doesn't fire either.
+# Issue #158: defaults fire for every unsupplied defaulted slot regardless
+# of how underfed the call is. Here first_default=1 and argc=0, but b's
+# default still fires; a (non-defaulted) stays null.
 define mpd2(a, b is 100) as:
     return [a, b]
-assert of [(mpd2 of []) == [null, null], "multi-param defaulted of []: a=null, b=null (argc<first_default)"]
+assert of [(mpd2 of []) == [null, 100], "underfed below first_default still fires defaults"]
+define mpd3(a, b, c is 1) as:
+    return [a, b, c]
+assert of [(mpd3 of 5) == [5, null, 1], "underfed mid-call still fires trailing default"]
+assert of [(mpd3 of []) == [null, null, 1], "underfed empty still fires trailing default"]
 
 # Assignment binds a reference: lists/dicts are shared, not copied
 a is [1, 2, 3]

@@ -199,15 +199,22 @@ unobservable. To get an independent copy, copy explicitly.
 - **Behavior change in 0.13.0 (issue #154):** `f of []` now lowers to
   a **zero-arg call** for every callee arity. On a multi-param
   function `g(a, b)` it binds `a = null, b = null` (matches the
-  contract's "missing parameters are `null`"); on `g(a, b is 100)` it
-  *also* binds `a = null, b = null` because defaults fire only when
-  `argc >= first_default` (here `argc=0 < 1 = first_default`), so the
-  `b`-default doesn't kick in. Prior to 0.13.0 the empty-list literal
-  was treated like any other single list argument and bound `a = [],
-  b = null`. Single-param non-defaulted callees are preserved by a
-  compile-time special case (`one of []` still binds `a = []` there)
-  so existing code that did `f of []` to pass an empty list to a
-  1-arg function keeps working.
+  contract's "missing parameters are `null`"); on `g(a, b is 100)`
+  the `b`-default fires and it binds `a = null, b = 100` (per #158,
+  see below). Prior to 0.13.0 the empty-list literal was treated like
+  any other single list argument and bound `a = [], b = null`.
+  Single-param non-defaulted callees are preserved by a compile-time
+  special case (`one of []` still binds `a = []` there) so existing
+  code that did `f of []` to pass an empty list to a 1-arg function
+  keeps working.
+- **Defaults fire whenever the slot is unsupplied (issue #158):**
+  An underfed call binds every supplied positional slot, then fires
+  the default expression for any defaulted slot the caller skipped —
+  even when `argc < first_default`. So `define f(a, b, c is 1); f of
+  5` binds `a = 5, b = null, c = 1`; `f of []` binds `a = null, b =
+  null, c = 1`. Prior to the fix, defaults only fired when `argc >=
+  first_default`, so an underfed call below that threshold silently
+  left the defaulted tail `null`.
 
 **Status:** Enforced — `tests/test_default_params.eigs`.
 

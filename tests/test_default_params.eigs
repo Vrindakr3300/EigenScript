@@ -96,6 +96,26 @@ define triple(a, b is 10, c is 100) as:
 t is spawn of [triple, 1, 2, 3]
 check of ["8c", thread_join of t, 6]
 
+# 9. Issue #158 — defaults must fire for every unsupplied defaulted
+#    slot, even when argc < first_default. Prior to the fix the gate
+#    required argc >= first_default, so an underfed call below that
+#    threshold silently left the defaulted tail null.
+define mid(a, b, c is 1) as:
+    return str of a + "|" + str of b + "|" + str of c
+
+check of ["9a", mid of 5, "5|null|1"]
+check of ["9b", mid of [], "null|null|1"]
+check of ["9c", mid of [5, 6], "5|6|1"]
+check of ["9d", mid of [5, 6, 9], "5|6|9"]
+
+# Two trailing defaults, both underfed.
+define mid2(a, b, c is 7, d is 9) as:
+    return str of a + "|" + str of b + "|" + str of c + "|" + str of d
+
+check of ["9e", mid2 of 5, "5|null|7|9"]
+check of ["9f", mid2 of [], "null|null|7|9"]
+check of ["9g", mid2 of [5, 6, 8], "5|6|8|9"]
+
 if passed == checks:
     print of "All tests passed"
 else:

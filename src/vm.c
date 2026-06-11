@@ -1393,7 +1393,6 @@ int jit_helper_call(EigsChunk *caller_chunk, int argc, int resume_off) {
         call_env = env_new(fn_val->data.fn.closure);
         uint32_t *phashes = fn_val->data.fn.param_hashes;
         int can_default = (fn_chunk->first_default < param_count) &&
-                          (argc >= fn_chunk->first_default) &&
                           (argc < param_count);
         if (param_count > 1 && argc > 0) {
             int bound = param_count < argc ? param_count : argc;
@@ -2631,14 +2630,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             call_env = env_new(fn_val->data.fn.closure);
 
             uint32_t *phashes = fn_val->data.fn.param_hashes;
-            /* When this chunk has trailing defaults and the caller fed
-             * argc in [first_default, param_count], the body's
-             * OP_DEFAULT_PARAM prologue fills the unsent tail; we bind
-             * each tail slot here with a null placeholder so the env
-             * name hash entry exists (closures capturing the param
-             * resolve correctly; OP_SET_LOCAL writes into the slot). */
+            /* When this chunk has trailing defaults and the caller is
+             * underfed, bind null placeholders for every unsent slot
+             * in [argc, param_count); OP_DEFAULT_PARAM later fills the
+             * defaulted ones. Non-defaulted underfed slots stay null,
+             * matching the no-default underfed semantics. */
             int can_default = (fn_chunk->first_default < param_count) &&
-                              ((int)argc >= fn_chunk->first_default) &&
                               ((int)argc < param_count);
             if (param_count > 1 && argc > 0) {
                 int bound = param_count < (int)argc ? param_count : (int)argc;
@@ -4046,10 +4043,10 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             } else {
                 slot_decref(arg_s);
             }
-            /* DISPATCH always feeds argc=1; if the callee has defaults
-             * for slots [1..param_count), bind null placeholders so the
-             * body prologue can fill them. */
-            if (dpc > 1 && fn_chunk->first_default <= 1) {
+            /* DISPATCH always feeds argc=1; underfed tail slots
+             * [1..param_count) get null placeholders, then
+             * OP_DEFAULT_PARAM fills the defaulted ones. */
+            if (dpc > 1 && fn_chunk->first_default < dpc) {
                 uint32_t *phashes = fn->data.fn.param_hashes;
                 for (int i = 1; i < dpc; i++) {
                     uint32_t ph = phashes ? phashes[i]

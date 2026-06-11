@@ -391,13 +391,13 @@ else
 fi
 echo ""
 
-echo "[Call Semantics] (16 checks)"
+echo "[Call Semantics] (18 checks)"
 CS_OUTPUT=$(./eigenscript ../tests/test_call_semantics.eigs 2>&1)
-TOTAL=$((TOTAL + 16))
+TOTAL=$((TOTAL + 18))
 if echo "$CS_OUTPUT" | grep -q "All tests passed"; then
-    echo "  PASS: all 16 call-semantics/aliasing checks"; PASS=$((PASS + 16))
+    echo "  PASS: all 18 call-semantics/aliasing checks"; PASS=$((PASS + 18))
 else
-    echo "  FAIL: call-semantics"; FAIL=$((FAIL + 16))
+    echo "  FAIL: call-semantics"; FAIL=$((FAIL + 18))
     echo "$CS_OUTPUT" | grep -iE "ASSERT|error" | head -5
 fi
 echo ""
@@ -1739,15 +1739,15 @@ fi
 echo ""
 
 # [72] Default parameter values (0.13.0).
-echo "[72] Default Parameters (21 checks)"
+echo "[72] Default Parameters (28 checks)"
 DP_OUTPUT=$(./eigenscript ../tests/test_default_params.eigs 2>&1)
 if echo "$DP_OUTPUT" | grep -q "All tests passed"; then
-    TOTAL=$((TOTAL + 21))
-    PASS=$((PASS + 21))
-    echo "  PASS: all 21 default-param checks"
+    TOTAL=$((TOTAL + 28))
+    PASS=$((PASS + 28))
+    echo "  PASS: all 28 default-param checks"
 else
-    TOTAL=$((TOTAL + 21))
-    FAIL=$((FAIL + 21))
+    TOTAL=$((TOTAL + 28))
+    FAIL=$((FAIL + 28))
     echo "  FAIL: default-param tests"
     echo "$DP_OUTPUT" | grep -iE "MISMATCH|FAIL|error" | head -5
 fi

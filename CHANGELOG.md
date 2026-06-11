@@ -8,6 +8,26 @@ A language-features release.
 
 ### Fixes
 
+- **#158 — defaults fire for every unsupplied defaulted slot, regardless
+  of `argc`.** The OP_CALL binding logic in `src/vm.c` gated the
+  null-placeholder bind-then-OP_DEFAULT_PARAM tail on `(argc >=
+  first_default) && (argc < param_count)`. That meant an underfed call
+  *below* `first_default` skipped the entire defaulted tail — on
+  `define f(a, b, c is 1)`, `f of 5` bound `a=5, b=null, c=null`
+  instead of `a=5, b=null, c=1`. The DISPATCH path (single-arg method
+  call) had the analog: the `first_default <= 1` gate left slot 1+
+  unbound whenever `first_default > 1`. Fix: drop the lower-bound `argc
+  >= first_default` requirement at both `src/vm.c` binding sites and
+  the OP_DISPATCH path. Tail slots `[argc, param_count)` always get a
+  null placeholder when the chunk has defaults; OP_DEFAULT_PARAM then
+  fills the defaulted ones (non-defaulted underfed slots stay null,
+  matching the no-default underfed semantics). The #154 contract
+  callout that documented the now-fixed argc<first_default subtlety is
+  rewritten — the docs and behavior now agree. Regression in
+  `tests/test_default_params.eigs` (+7 checks 9a–9g: underfed-mid,
+  underfed-empty, two-default-trailing combinations) and
+  `tests/test_call_semantics.eigs` (the `mpd2 of []` shape flipped to
+  `[null, 100]`; added `mpd3` underfed scalar/empty checks).
 - **#157 — destructure pattern parser: specific errors, no silent fallthrough.**
   The 0.13.0 destructuring lookahead in `src/parser.c` filled a fixed
   `names_tmp[64]` buffer and silently `p->pos = saved`-restored the
