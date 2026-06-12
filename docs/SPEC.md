@@ -742,18 +742,19 @@ dict
 A user module is just a file next to your script:
 
 ```eigenscript
-write_text of ["/tmp/spec_shapes.eigs", "PI is 3.14159\ndefine area(r) as:\n    return PI * r * r\n"]
+write_text of ["spec_shapes.eigs", "PI is 3.14159\ndefine area(r) as:\n    return PI * r * r\n"]
 import spec_shapes
 print of spec_shapes.PI
 print of (spec_shapes.area of 2)
+rm of "spec_shapes.eigs"
 ```
 ```output
 3.14159
 12.56636
 ```
 
-(That example works because the spec runner executes from `/tmp`;
-in your project, `import shapes` next to `app.eigs` is the idiom.)
+(In a project, the idiom is simply `import shapes` with `shapes.eigs`
+sitting next to `app.eigs`.)
 
 `load_file of "path.eigs"` is the older, non-namespaced form: it
 executes a file directly **in the current scope**. The standard
