@@ -2,6 +2,42 @@
 
 All notable changes to EigenScript are documented here.
 
+## [Unreleased]
+
+### Runtime — closure-cycle collector
+
+- **The env↔fn closure-cycle leak is fixed** (docs/CLOSURE_CYCLE_GC.md).
+  Escaping closures — `define inner ... return inner`, counters,
+  per-iteration handler closures, method dicts — are now reclaimed, both
+  mid-run (registry-threshold collections triggered at closure-capture
+  time, zero cost on the dispatch hot paths) and at exit. A
+  100k-iteration closure-churn loop runs ~40% faster with peak RSS down
+  from ~124 MB to ~4 MB; long-running programs that build closures over
+  time no longer grow without bound.
+- **`Env` lifetime is an honest refcount.** `env_refcount` now counts
+  every owner: the creating frame or C caller, closures, child envs (the
+  `parent` link is an owned edge), and a chunk's parked recycled call
+  env. `env_free`'s captured-gated semantics are replaced by plain
+  `env_incref`/`env_decref`; loop-scope envs move the frame's ref
+  explicitly. This also fixes latent leaks on early `return` from inside
+  a loop scope and makes the env-recycling parent compare
+  dangling-pointer-free.
+- **Exit teardown reclaims global-scope value cycles** too (e.g. a list
+  appended to itself), via a pinned snapshot of global bindings before
+  the final collection. `import` module envs are released when the last
+  closure defined in them dies (previously leaked unconditionally).
+- The collector is conservative by construction: roots are derived from
+  refcounts (any uncounted holder makes a node a root), and an
+  accounting mismatch aborts the collection — the failure mode is a
+  leak, never a use-after-free. Disabled once `spawn` goes
+  multithreaded; spawned programs keep the previous behavior.
+- Suite: `tests/test_closure_cycles.eigs` (now 17 checks, incl. dict-
+  routed cycles and 500 discarded counters) is gated **strictly**
+  leak-clean under ASan — section [87] no longer tolerates a
+  LeakSanitizer exit. The suite-wide tolerated-leak tally drops 28 → 13;
+  every remaining report is byte-identical to the pre-collector
+  baseline (spawn-thread programs + pre-existing non-closure shapes).
+
 ## [0.13.0] — 2026-06-12
 
 A language-features release.

@@ -498,11 +498,11 @@ Value* call_eigs_fn(Value *fn, Value *arg) {
         /* Bytecode function */
         EigsChunk *chunk = (EigsChunk *)fn->data.fn.body;
         Value *result = vm_execute(chunk, call_env);
-        env_free(call_env);
+        env_decref(call_env);
         return result ? result : make_null();
     }
     /* AST-based function — should not happen after bytecode migration */
-    env_free(call_env);
+    env_decref(call_env);
     return make_null();
 }
 

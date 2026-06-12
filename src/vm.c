@@ -54,7 +54,9 @@ extern void list_append(Value *list, Value *item);
 extern void dict_set(Value *dict, const char *key, Value *val);
 extern Value* dict_get(Value *dict, const char *key);
 extern Env* env_new(Env *parent);
-extern void env_free(Env *env);
+extern void env_incref(Env *env);
+extern void env_decref(Env *env);
+extern void env_mark_captured(Env *env);
 extern void env_reserve_slots(Env *env, int total);
 extern void env_set_local(Env *env, const char *name, Value *val);
 extern void env_set_hashed(Env *env, const char *name, uint32_t h, Value *val);
@@ -108,7 +110,7 @@ _bind_store:
  * Post-5h profile: with everything else native or cached, the top
  * remaining DMG cost was the per-call env round-trip — env_new, one
  * env_hash_insert per param, binding_version++, env_reserve_slots, and
- * env_free, once per handler call. A function chunk's env layout is
+ * env_decref, once per handler call. A function chunk's env layout is
  * fixed (same param names → same slots → same hashes), so a dead call
  * env can be parked on the chunk and the next call rebinds the param
  * slots in place: no allocation, no hash work, no version bump — which
@@ -117,20 +119,22 @@ _bind_store:
  * Park requirements (vm_park_call_env):
  *   - single-threaded (chunks are shared across spawn threads);
  *   - frame->env == frame->fn_env (never park a loop-scope child);
- *   - not captured by a closure, env_refcount == 0;
+ *   - not captured by a closure, env_refcount == 1 (exactly the
+ *     frame's own ref — that ref transfers to the chunk);
  *   - count == max(param_count, local_count): a binding created
  *     mid-call (e.g. SET_NAME_LOCAL of a new name, __loop_exit__)
  *     must NOT resolve in the next invocation, and an underfed call
  *     (argc < param_count) leaves params unhashed — both park-reject.
  * Parked slots are dropped to slot_null (no value pinning) with
  * assign_counts zeroed; param names/hash/binding_version survive.
+ * The parked env keeps its owned parent ref, so the callee's closure
+ * env stays pinned (at most one extra retention per chunk) and the
+ * take-side parent compare can never see a recycled pointer.
  *
  * Take requirements (at the call sites): cache occupied, parent
- * matches the callee's closure env (pointer compare only — safe even
- * if the old parent was freed and recycled, since equality means the
- * chain goes through the live env the callee actually closes over),
- * and the call fully binds the params (argc >= param_count, or
- * param_count <= 1 where the single slot is always bound). */
+ * matches the callee's closure env, and the call fully binds the
+ * params (argc >= param_count, or param_count <= 1 where the single
+ * slot is always bound). */
 static inline void env_rebind_param_slot(Env *env, int slot, EigsSlot s) {
     /* Parked slot holds slot_null — no decref of the old value. Same
      * incref/arena-promotion contract as env_bind_fresh_param_slot. */
@@ -154,7 +158,9 @@ _rebind_store:
 static inline int vm_park_call_env(EigsChunk *chunk, Env *env) {
     if (g_vm_multithreaded) return 0;
     if (chunk->env_cache) return 0;          /* taken (recursion) */
-    if (env->captured || env->env_refcount > 0) return 0;
+    /* refcount must be exactly the frame's own ref — anything more means
+     * a closure, a surviving child env, or a C caller still holds it. */
+    if (env->captured || env->env_refcount != 1) return 0;
     int expected = chunk->local_count > chunk->param_count
                  ? chunk->local_count : chunk->param_count;
     if (env->count != expected) return 0;
@@ -1563,7 +1569,7 @@ void jit_helper_return(void) {
         /* Stage 5i: park for recycling when eligible. */
         if (frame->env != frame->fn_env ||
             !vm_park_call_env(frame->chunk, frame->env))
-            env_free(frame->env);
+            env_decref(frame->env);
     }
     g_loop_stall_count = frame->saved_stall_count;
     g_loop_iterations  = frame->saved_loop_iter;
@@ -1592,7 +1598,7 @@ void jit_helper_return_null(void) {
         /* Stage 5i: park for recycling when eligible. */
         if (frame->env != frame->fn_env ||
             !vm_park_call_env(frame->chunk, frame->env))
-            env_free(frame->env);
+            env_decref(frame->env);
     }
     g_loop_stall_count = frame->saved_stall_count;
     g_loop_iterations  = frame->saved_loop_iter;
@@ -2547,13 +2553,14 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             for (int i = 0; i < fn_chunk->param_count; i++)
                 params[i] = strdup(fn_chunk->local_names ? fn_chunk->local_names[i] : "");
         }
-        /* Mark env as captured so it survives after this frame returns.
+        /* Mark env as captured (registers it with the cycle collector;
+         * may trigger a collection — refcounts are consistent here).
          * The fn's ref on the env is taken inside make_fn — do NOT also
          * bump env_refcount here: that second, ownerless ref meant a
          * closure-defining call env could never drop to zero, leaking
          * the env and every heap binding in it on every call that
          * defined a closure. */
-        frame->env->captured = 1;
+        env_mark_captured(frame->env);
         Value *fn = make_fn(fn_chunk->name, params, fn_chunk->param_count,
                             frame->env);
         chunk_incref(fn_chunk);   /* the VAL_FN's ref; dropped in free_val */
@@ -2725,7 +2732,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->ip = ip;
             if (g_vm.frame_count >= VM_FRAMES_MAX) {
                 runtime_error(current_line, "call stack overflow");
-                env_free(call_env);
+                env_decref(call_env);
                 vm_push(make_null());
                 DISPATCH();
             }
@@ -2837,7 +2844,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
              * loop-scope child env), else free as before. */
             if (frame->env != frame->fn_env ||
                 !vm_park_call_env(frame->chunk, frame->env))
-                env_free(frame->env);
+                env_decref(frame->env);
         }
         /* Restore loop-stall globals saved on entry (scoped per call frame). */
         g_loop_stall_count = frame->saved_stall_count;
@@ -2868,7 +2875,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
              * loop-scope child env), else free as before. */
             if (frame->env != frame->fn_env ||
                 !vm_park_call_env(frame->chunk, frame->env))
-                env_free(frame->env);
+                env_decref(frame->env);
         }
         g_loop_stall_count = frame->saved_stall_count;
         g_loop_iterations  = frame->saved_loop_iter;
@@ -3421,19 +3428,29 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
     }
 
     CASE(LOOP_ENV_FRESH): {
-        /* Create a child env for this loop iteration. */
+        /* Create a child env for this loop iteration. The frame's owned
+         * ref moves to the child: env_new took a parent-link ref on the
+         * current env, so dropping the frame's ref (when it owned one)
+         * leaves the current env owned by the child. A borrowed env
+         * (owns_env == 0 base frames) keeps its caller's ref untouched. */
         Env *parent = frame->env;
         Env *loop_env = env_new(parent);
+        if (frame->owns_env) env_decref(parent);
         frame->env = loop_env;
+        frame->owns_env = 1;
         DISPATCH();
     }
 
     CASE(LOOP_ENV_END): {
-        /* Restore the parent env after loop body. Free the loop env
-         * unless it was captured by a closure. */
+        /* Restore the parent env after loop body: re-take an owned ref
+         * on the parent for the frame, then release the loop env (its
+         * destructor drops the parent-link ref — net zero on the parent;
+         * a captured loop env survives via its closures' refs). */
         Env *loop_env = frame->env;
-        frame->env = loop_env->parent;
-        env_free(loop_env);
+        Env *parent = loop_env->parent;
+        env_incref(parent);
+        frame->env = parent;
+        env_decref(loop_env);
         DISPATCH();
     }
 
@@ -3918,6 +3935,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             g_parse_errors = saved_errors;
             free_tokenlist(&tl);
             free(source);
+            env_decref(mod_env);
             runtime_error(current_line, "import: parse errors in '%s'", name);
             vm_push(make_null());
             DISPATCH();
@@ -3939,11 +3957,15 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         /* mod_env has bindings from module execution */
         Value *mod_dict = make_dict(mod_env->count);
         for (int mi = 0; mi < mod_env->count; mi++) {
-            if (mod_env->names[mi][0] == '_') continue;
+            if (!mod_env->names[mi] || mod_env->names[mi][0] == '_') continue;
             Value *mv = slot_to_value(mod_env->values[mi]);
             dict_set(mod_dict, mod_env->names[mi], mv);
             val_decref(mv);
         }
+        /* Drop the creator ref: the module env now lives exactly as long
+         * as the closures defined in it (their refs + the dict's refs on
+         * them); a fn-free module is reclaimed immediately. */
+        env_decref(mod_env);
         vm_push(mod_dict);
         DISPATCH();
     }
@@ -4110,7 +4132,7 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             frame->ip = ip;
             if (g_vm.frame_count >= VM_FRAMES_MAX) {
                 runtime_error(current_line, "call stack overflow");
-                env_free(call_env);
+                env_decref(call_env);
                 vm_push(make_null());
                 DISPATCH();
             }
@@ -4200,7 +4222,7 @@ vm_error_halt:
     while (g_vm.frame_count > base_frame) {
         CallFrame *f = &g_vm.frames[g_vm.frame_count - 1];
         while (g_vm.sp > f->bp) slot_decref(g_vm.stack[--g_vm.sp]);
-        if (f->owns_env) env_free(f->env);
+        if (f->owns_env) env_decref(f->env);
         g_loop_stall_count = f->saved_stall_count;
         g_loop_iterations  = f->saved_loop_iter;
         chunk_decref(f->chunk);   /* frame's ref */

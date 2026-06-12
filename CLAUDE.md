@@ -18,13 +18,15 @@ make jit-smoke  # standalone emitter tests (jit_smoke.c stubs all helpers)
 
 - The suite must pass **both** release and ASan with leaks on:
   `make asan && cd tests && ASAN_OPTIONS=detect_leaks=1 bash run_all_tests.sh`
-  CI enforces `detect_leaks=1`. Known limit: a fn bound by `define`
-  inside the env it captures is an env↔fn refcount cycle the runtime
-  can't reclaim, so closure-heavy tests exit nonzero on a LeakSanitizer
-  report after fully correct output. The runner's `rc_ok` tolerates
-  exactly that case and tallies it in the final summary ("NOTE: N test
-  program(s)..."); any other nonzero exit — crash, assert, UBSan — fails.
-  Watch that tally: a jump means a new leak.
+  CI enforces `detect_leaks=1`. The env↔fn closure cycle is reclaimed by
+  the cycle collector (docs/CLOSURE_CYCLE_GC.md); section [87]
+  (test_closure_cycles.eigs) is gated **strictly** leak-clean — a
+  LeakSanitizer exit there is a collector regression. The runner's
+  `rc_ok` still tolerates LeakSanitizer exits elsewhere and tallies them
+  ("NOTE: N test program(s)..."): currently 13, all spawn-thread
+  programs (collector off once multithreaded) plus pre-existing
+  non-closure shapes. Any other nonzero exit — crash, assert, UBSan —
+  fails. Watch that tally: a jump means a new leak.
 - `make asan` overwrites `src/eigenscript` — rebuild with `make`
   before timing anything.
 - Benchmarks: `tests/bench_perf.eigs` (micro), `tests/bench_dmg_shape.eigs`
@@ -58,7 +60,20 @@ make jit-smoke  # standalone emitter tests (jit_smoke.c stubs all helpers)
   run_all_tests.sh): marker-grep alone used to let a crash *after*
   correct output pass. New .eigs sections should use `check_eigs_suite`
   (rc + marker). The one tolerated nonzero exit is a LeakSanitizer
-  report (known closure-cycle leaks — see the ASan bullet above).
+  report (spawn-thread programs + known non-closure shapes — see the
+  ASan bullet above; section [87] deliberately opts out of that
+  tolerance).
+- **Env refcounts are honest and the cycle collector depends on it**:
+  every owner of an `Env` — frame/creator, closure (`make_fn`), child
+  env (`parent` is an owned edge), parked `chunk->env_cache` — holds a
+  counted ref via `env_incref`/`env_decref`. Never stash a bare `Env*`
+  that outlives its creator. The collector's `GC_FOR_EACH_CHILD` walker
+  and `gc_clear_node` (eigenscript.c) must move in lockstep with the
+  ownership model: a new owning edge out of Value/Env/Chunk goes into
+  both, and only *counted* edges may be traversed (an uncounted edge
+  trips the accounting abort and collection silently stops working).
+  Conservative direction: missing an edge leaks; inventing one frees
+  live memory.
 - **New JIT helpers need stubs in `src/jit_smoke.c`** or `make
   jit-smoke` fails to link.
 - **JIT emitter invariants** (`src/jit.c`): the scanner and the
@@ -121,9 +136,16 @@ make jit-smoke  # standalone emitter tests (jit_smoke.c stubs all helpers)
   /dev/null — `test_terminal.eigs` blocks forever reading a pipe that
   never EOFs (e.g. backgrounded runs).
 
-## Current state: 0.13.0 released; next up
+## Current state: 0.13.0 released + closure-cycle collector; next up
 
-0.13.0 is cut (CHANGELOG.md [0.13.0] is the full record). Highlights on
+0.13.0 is cut (CHANGELOG.md [0.13.0] is the full record). Landed since,
+unreleased: the **closure-cycle collector** — honest `Env` refcounts
+(creator/frame + closures + parent links + parked env_cache all
+counted; `env_free` → `env_incref`/`env_decref`) plus a registry-driven
+mark-sweep over captured envs (docs/CLOSURE_CYCLE_GC.md is the as-built
+record, including the maintainer invariants). Escaping closures are
+reclaimed mid-run and at exit; closure churn is ~40% faster with flat
+RSS; disabled once spawn() goes multithreaded. 0.13.0 highlights on
 top of the language-features run (destructuring, slicing, negative
 indexing, default params, streaming subprocess I/O, recv_timeout,
 multi-arg spawn) and the twelve post-merge fixes (#148–#159):
@@ -156,15 +178,12 @@ multi-arg spawn) and the twelve post-merge fixes (#148–#159):
   cannot push tags, and GITHUB_TOKEN-pushed tags don't retrigger
   workflows — hence the dispatch path.
 
-Suite: ~1830 checks; must pass release **and** ASan with
-detect_leaks=1 (the leak tally — currently 28 — is the gate; a jump
-means a new leak).
+Suite: ~1832 checks; must pass release **and** ASan with
+detect_leaks=1 (the leak tally — currently 13, spawn-thread programs +
+pre-existing non-closure shapes — is the gate; a jump means a new
+leak, and section [87] must stay strictly leak-clean).
 
 Open items, in rough priority:
-- **Closure-cycle collector** — the env↔fn cycle accumulates (~12
-  allocs per escaping closure). Design + staging in
-  docs/CLOSURE_CYCLE_GC.md; it's a dedicated reviewed project (every
-  shortcut is a use-after-free; see the doc before attempting).
 - **`make lsp` fails on macOS runners** (skipped cleanly by the suite;
   add the compile check to the macOS CI leg to surface the error).
 - Windows port (runtime is POSIX-only), package/dependency story,

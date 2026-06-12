@@ -716,7 +716,7 @@ static void handle_request(int fd) {
                     EigsChunk *auth_chunk = compile_ast(auth_ast, auth_env);
                     Value *auth_result = vm_execute(auth_chunk, auth_env);
                     chunk_free(auth_chunk);
-                    env_free(auth_env);
+                    env_decref(auth_env);
                     char *auth_str = value_to_string(auth_result);
                     if (auth_str[0] != '\0') {
                         send_response(fd, 401, "Unauthorized", "application/json",
@@ -735,7 +735,7 @@ static void handle_request(int fd) {
                 Value *result = vm_execute(req_chunk, req_env);
                 chunk_free(req_chunk);
                 char *result_str = value_to_string(result);
-                env_free(req_env);
+                env_decref(req_env);
 
                 const char *ct = "application/json";
                 if (result_str[0] != '{' && result_str[0] != '[')

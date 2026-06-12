@@ -13,11 +13,13 @@ TOTAL=0
 LEAKED=0
 
 # Exit-code gate for .eigs test programs. rc=0 passes. A nonzero rc whose
-# output carries a LeakSanitizer report is tolerated with a warning tally:
-# closure-defining call envs sit in an env<->fn refcount cycle the runtime
-# cannot reclaim (see docs/TEST_COVERAGE_ANALYSIS.md), so under
-# ASAN_OPTIONS=detect_leaks=1 those tests exit nonzero after fully correct
-# output. Everything else nonzero — crashes, asserts, UBSan — fails.
+# output carries a LeakSanitizer report is tolerated with a warning tally.
+# The env<->fn closure cycles are reclaimed by the cycle collector now
+# (docs/CLOSURE_CYCLE_GC.md — section [87] gates those shapes strictly);
+# the residual tolerated reports are spawn()-thread programs (the
+# collector is disabled once multithreaded) and a handful of pre-existing
+# non-closure leak shapes. Everything else nonzero — crashes, asserts,
+# UBSan — fails.
 rc_ok() {
     [ "$1" = "0" ] && return 0
     if echo "$2" | grep -q "LeakSanitizer: detected memory leaks"; then
@@ -1946,8 +1948,20 @@ echo ""
 # see docs/CLOSURE_CYCLE_GC.md). Locks that the shapes compute correctly
 # and that the non-leaking invariants (self-ref containers, non-escaping
 # recursion) hold. Tolerated leak-exit under ASan (counted by rc_ok).
-echo "[87] Closure Cycle Shapes (14 checks)"
-check_eigs_suite "all 14 closure-cycle checks" test_closure_cycles.eigs "All tests passed" 14
+echo "[87] Closure Cycle Shapes (17 checks)"
+# STRICT exit gate (no rc_ok leak tolerance): the cycle collector must
+# keep every shape in this file ASan-clean. A LeakSanitizer exit here is
+# a collector regression, not a tolerated known leak.
+TOTAL=$((TOTAL + 17))
+CC_OUTPUT=$(./eigenscript ../tests/test_closure_cycles.eigs </dev/null 2>&1); CC_OUTPUT_RC=$?
+if [ "$CC_OUTPUT_RC" = "0" ] && echo "$CC_OUTPUT" | grep -q "All tests passed"; then
+    PASS=$((PASS + 17))
+    echo "  PASS: all 17 closure-cycle checks (leak-clean)"
+else
+    FAIL=$((FAIL + 17))
+    echo "  FAIL: closure-cycle checks (rc=$CC_OUTPUT_RC — must be leak-clean)"
+    echo "$CC_OUTPUT" | grep -iE "FAIL|LeakSanitizer|assert|error" | head -5
+fi
 echo ""
 
 # [86] Corpus builder — build_corpus + the tok_base_string detokenizer
@@ -2022,7 +2036,8 @@ echo "============================================"
 echo "  RESULTS: $PASS/$TOTAL passed, $FAIL failed"
 if [ "$LEAKED" -gt 0 ]; then
     echo "  NOTE: $LEAKED test program(s) exited nonzero on LeakSanitizer"
-    echo "  reports (known closure-cycle env leaks; counted as passes)."
+    echo "  reports (spawn-thread programs + known non-closure leak"
+    echo "  shapes; counted as passes — closure cycles are collected)."
 fi
 echo "============================================"
 

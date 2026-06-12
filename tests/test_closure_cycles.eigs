@@ -1,10 +1,10 @@
 # test_closure_cycles.eigs — functional correctness of every closure /
-# value cycle shape. The env<->fn cycles here are a KNOWN, accumulating
-# memory leak (see docs/CLOSURE_CYCLE_GC.md) the runtime cannot yet
-# reclaim; this test locks that the shapes keep computing the RIGHT
-# VALUES, and that the leaking vs. non-leaking boundary doesn't shift
-# toward use-after-free. Under ASan it is one of the tolerated
-# leak-exits tallied by run_all_tests.sh's rc_ok.
+# value cycle shape, all reclaimed by the cycle collector
+# (docs/CLOSURE_CYCLE_GC.md). This test locks two things: the shapes
+# keep computing the RIGHT VALUES, and every one of them is leak-clean.
+# run_all_tests.sh section [87] gates this file STRICTLY — a
+# LeakSanitizer exit here is a collector regression, not a tolerated
+# known leak.
 #
 # NB: a no-parameter `define` has an implicit parameter `n` — never name
 # a captured mutable variable `n` or the implicit param shadows it.
@@ -44,14 +44,41 @@ c2 is make_counter of null
 assert_eq of [c2 of null, 1, "second counter independent"]
 assert_eq of [c1 of null, 3, "first counter unaffected by second"]
 
-# --- Many distinct closures (the accumulating case) still compute right ---
+# --- Many distinct closures (the formerly-accumulating case) ---
+# 500 discarded counter closures: enough to cross the collector's
+# capture threshold several times, so mid-run collection (not just the
+# exit sweep) is exercised. Values must stay right across collections.
 total is 0
 i is 0
-loop while i < 50:
+loop while i < 500:
     ctr is make_counter of null
     total is total + (ctr of null) + (ctr of null)
     i is i + 1
-assert_eq of [total, 150, "50 independent counters each yield 1+2"]
+assert_eq of [total, 1500, "500 independent counters each yield 1+2"]
+
+# --- Cycle through a captured container: env -> dict -> fn -> env ---
+# The method closure lives inside a dict bound in the env it captures,
+# so the cycle runs through a VAL_DICT node, not just env slots.
+define make_obj as:
+    state is {"count": 0}
+    define bump as:
+        state.count is state.count + 1
+        return state.count
+    state.bump is bump
+    return state
+o is make_obj of null
+b is o.bump
+assert_eq of [b of null, 1, "dict-cycle method first call"]
+assert_eq of [b of null, 2, "dict-cycle method second call"]
+
+# Discarded per-iteration: the dict-routed cycles must be collected
+# mid-run just like the plain counter cycles.
+j is 0
+loop while j < 200:
+    obj is make_obj of null
+    m is obj.bump
+    j is j + (m of null)
+assert_eq of [j, 200, "200 discarded dict-cycle objects each bump once"]
 
 # --- Dispatch table of closures (created once — the safe, bounded form) ---
 define build_table as:

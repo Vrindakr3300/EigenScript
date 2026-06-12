@@ -1,14 +1,17 @@
-# Closure-cycle reclamation — design note
+# Closure-cycle reclamation
 
-Status: **known limitation, not yet fixed.** This note records the
-investigation behind that decision so the eventual fix is de-risked.
+Status: **implemented.** The env↔fn cycle is reclaimed by a cycle
+collector built on honest `Env` refcounts. This note records the
+original investigation (kept below — it explains *why* the design looks
+the way it does), the as-built design, and the invariants maintainers
+must preserve.
 
-## The leak
+## The leak (historical)
 
 A closure captures its entire defining `Env`; that env, in turn, holds a
 reference to the closure (the `define`/lambda binding lives *in* the env
-the closure captures). The two keep each other's refcount above zero, so
-neither is ever reclaimed:
+the closure captures). The two kept each other's refcount above zero, so
+neither was ever reclaimed:
 
 ```
 define outer as:
@@ -19,36 +22,20 @@ define outer as:
 f is outer of null
 ```
 
-It **accumulates** — it is not a one-shot exit-time blip. Measured under
+It **accumulated** — measured before the collector under
 `ASAN_OPTIONS=detect_leaks=1`:
 
-| program | leaked allocations |
-|---|---|
-| 1 escaping closure | ~12 (the env arrays, the fn, the captured tracked-num, bound strings) |
-| 500 closures kept in a list | 5,553 |
-| 500 closures created & discarded in a loop | 6,004 |
+| program | leaked allocations (before) | now |
+|---|---|---|
+| 1 escaping closure | ~12 | 0 |
+| 500 closures kept in a list | 5,553 | 0 |
+| 500 closures created & discarded in a loop | 6,004 | 0 (collected mid-run) |
 
-So any long-running program that builds closures over time grows
-without bound. The dispatch-table pattern (`table is [op0, op1, …]`)
-is safe **only because** those closures are created once at startup;
-build them per-iteration and they leak.
+Beyond the leak itself, the unbounded growth cost time: a 100k-iteration
+closure-churn loop ran ~40% faster after the collector (0.075s vs 0.12s)
+with peak RSS dropping from ~124 MB to ~4 MB.
 
-### What does *not* leak (the precise invariant)
-
-The cycle must involve a **captured `Env`**. Empirically:
-
-| shape | leaks? |
-|---|---|
-| direct closure cycle (`define inner` returned) | yes |
-| list/dict of closures returned (`return [h1, h2]`) | yes — still the env↔fn cycle; the container is just another holder of the fn |
-| self-referential list (`append of [a, a]`) | no |
-| self-referential dict (`d.self is d`) | no |
-| mutual recursion that does **not** escape (`return is_even of 4`) | no |
-
-Pure value→value cycles (a list containing itself) are reclaimed by the
-existing teardown; only `Env`-involving cycles persist.
-
-## Why the cheap fixes are wrong (each introduces UAF)
+## Why the cheap fixes were wrong (still true)
 
 The cycle is two owning edges: `E → fn` (the binding) and `fn → E` (the
 closure's `env_refcount`). Breaking *either* edge unconditionally is
@@ -64,65 +51,125 @@ unsafe:
   outlives its frame; with the edge weakened, `E` is freed while the
   live, returned fn still points into it.
 
-Both directions are individually load-bearing, so neither edge can be
-weakened without escape analysis the runtime doesn't have at that point.
+Both directions are individually load-bearing, so the fix had to be a
+real collector, not an edge-weakening patch.
 
-## Why a collector is a real project here (not a patch)
+## The as-built design
 
-A correct cycle collector needs either per-object incoming-reference
-counts (trial deletion / CPython-style) **or** a complete root set
-(mark-sweep). This runtime gives neither for free:
+Two stages, exactly as the original investigation recommended.
 
-- **`Env` has no uniform refcount.** `env_refcount` is incremented in
-  exactly one place — `make_fn`, for closures. Child envs reference
-  their parent via `Env::parent` with *no* count; active call frames
-  reference their env with *no* count. So an env's true incoming-ref
-  total = closures (counted) + child envs (uncounted) + live frames
-  (uncounted). Trial deletion can't compute an env's external refcount
-  locally. Fixing this means reworking env lifetime into a real
-  refcount — on the hottest path in the VM (per-call `env_new`/
-  `env_free`, the env-recycling freelist, the JIT's `%r12` `fn_env`
-  cache).
+### Stage 1 — honest `Env` refcounts
 
-- **Mark-sweep needs an all-objects registry** to know the universe to
-  sweep — intrusive next/prev links added at every `env_new` and every
-  value constructor, including the `make_num` freelist fast path. Plus a
-  **complete root set** enumerated at a safe point: the whole VM operand
-  stack, every active frame's `env` and `fn_env`, `g_last_observer`,
-  `g_builtin_call_env`, the trace tape, module-slot-promoted values, the
-  env/num freelists, and JIT-parked envs (`chunk->env_cache`). A single
-  missed root is a silent use-after-free in *every* program.
+`env_refcount` is a true owner count. The owners:
 
-Either path is a large change whose failure mode is memory corruption,
-not a leak. A subtly-wrong collector is strictly worse than the current
-tolerated, tallied leak. So this is scoped as a dedicated, reviewed
-effort — not a drive-by patch.
+1. **Creator** — the call frame (`owns_env`) or the C caller
+   (`thread_entry`, `call_eigs_fn`, the `dispatch` builtin, ext_http
+   handlers, `OP_IMPORT`'s module env). `env_new` returns with
+   refcount 1; the creator's release is `env_decref`.
+2. **Closures** — `make_fn` increfs; `free_value(VAL_FN)` decrefs.
+3. **Child envs** — `Env::parent` is an owned edge: `env_new` increfs
+   the parent, the destructor decrefs it. Loop envs
+   (`OP_LOOP_ENV_FRESH`/`END`) move the frame's ref explicitly: FRESH
+   transfers the frame's ref into the child's parent edge (and flips
+   `owns_env` to 1 for borrowed base-frame envs); END re-takes a frame
+   ref on the parent before releasing the child.
+4. **Parked recycled call envs** — `chunk->env_cache` holds the single
+   ref (transferred from the returning frame; `vm_park_call_env`
+   requires `env_refcount == 1` exactly). The parked env keeps its owned
+   parent ref, so the take-side `parent == closure` compare can never
+   see a recycled pointer.
 
-## Recommended approach when it is taken on
+`env_free`'s conditional, captured-gated semantics are gone; every
+release site is a plain `env_decref`. `env_destroy_final` remains only
+as a force-destroy escape hatch (no current callers in main).
 
-1. **Unify `Env` lifetime into a real refcount first**, as its own
-   reviewed change: `parent` links and frame usage incref/decref like
-   closures do. Validate alone against the full ASan/UBSan suite and the
-   JIT (the env-recycling and `%r12` cache paths are the danger).
-2. **Then** add localized trial deletion (Bacon–Rajan synchronous
-   recycler) rooted at captured envs, triggered when a closure releases
-   its env and the env survives. Conservative by construction: free a
-   subgraph only when *every* node's external refcount is provably zero;
-   when in doubt, do nothing (leak — safe), never free.
-3. Restrict collection to `g_vm_multithreaded == 0` initially (spawned
-   programs keep the current behavior — their cross-thread roots aren't
-   locally visible).
-4. Gate on: every shape in `tests/test_closure_cycles.eigs` going
-   ASan-clean, the full suite leak tally dropping to 0 (so the gate can
-   become hard `detect_leaks=1` with no tolerance), and `make fuzz`.
+### Stage 2 — the collector (`gc_collect_cycles`, eigenscript.c)
 
-## Current mitigation
+- **Registry.** `OP_CLOSURE` calls `env_mark_captured`, which links the
+  env into a per-thread intrusive list (`gc_next`/`gc_prev`/
+  `in_gc_list` on `Env`). `g_global_env` is never registered. The env
+  destructor and `env_destroy_final` unlink.
+- **Trigger.** Registration is the only way the candidate universe
+  grows, so the threshold check lives there — zero cost on the
+  dispatch/call hot paths. Threshold: collect when the registry reaches
+  `max(64, 2 × live-after-last-collect)`. One more collection runs at
+  exit (below).
+- **Universe.** Everything reachable from registered envs over **owned
+  edges only**: env value slots, `env->parent`, `fn->closure`,
+  `fn->chunk` (the OP_CLOSURE ref), `chunk->functions[]`,
+  `chunk->env_cache`, list items, dict values. Three node kinds: values
+  (LIST/DICT/FN — everything else is a leaf), envs, chunks. Chunks are
+  on real cycles: `fn → chunk → env_cache → parent → E → fn` is exactly
+  the shape a recycled call env creates. `g_global_env` is a stop node —
+  it is permanently rooted by its creator ref, and traversing into it
+  would drag the entire heap into every collection.
+- **Roots without root enumeration.** For each node, count the
+  references arriving from inside the universe. Any node whose refcount
+  exceeds that count has an external holder — a VM stack slot, a frame's
+  env ref, a C caller's ref, the trace tape, a route table — *every one
+  of which is itself a counted ref*, so no VM-state walking is needed
+  and a "missed root" is impossible by construction. If accounting ever
+  finds more internal references than refcount (an uncounted edge got
+  traversed — a bug), the whole collection aborts: the failure mode is a
+  leak, never a free.
+- **Sweep.** Mark from roots; unmarked nodes are cyclic garbage. Pin
+  them (+1 each), clear their outgoing edges with ordinary decrefs, then
+  unpin — each node frees through its normal destructor
+  (`free_value`/`env_decref`/`chunk_decref`), so observer-alias
+  clearing (`g_last_observer`) and freelist recycling behave as usual.
+- **Exit.** `gc_collect_at_exit(global)` (main.c, both REPL and script
+  paths): snapshot the global scope's container values with one pinning
+  ref apiece, `env_clear(global)`, collect with the pins accounted
+  (root iff `rc > internal + pinned`), release the pins, then
+  `env_decref(global)` drops the creator ref. The snapshot is what
+  reclaims pure value→value cycles bound at global scope (a list
+  appended to itself) that are unreachable from the captured-env
+  registry.
+- **Threads.** `builtin_spawn` calls `gc_disable_for_threads()` before
+  flipping `g_vm_multithreaded`: the registry is drained on the main
+  thread and registration stops. Spawned programs keep the old leak
+  behavior (their leaks stay *visible* to LSan — drained envs are
+  unreachable at exit, nothing is masked). Cross-thread refcounts stay
+  correct (atomic); only the collector is off.
 
-`tests/run_all_tests.sh`'s `rc_ok` tolerates exactly one nonzero-exit
-shape — output containing `LeakSanitizer: detected memory leaks` — and
-tallies it in the final summary. Crashes, asserts, and UBSan still fail.
-`tests/test_closure_cycles.eigs` pins the **functional** correctness of
-every cycle shape (the values stay right even though memory isn't
-reclaimed) and the clean-case invariants (self-referential containers
-and non-escaping recursion must stay leak-clean) so a regression toward
-UAF or a wider leak is caught.
+### Maintainer invariants (violations are UAF or silent leaks)
+
+- **Every owning edge into an `Env` must go through
+  `env_incref`/`env_decref`.** A new uncounted holder (a global Env
+  pointer that outlives its creator, a cache that stashes an env) breaks
+  the root derivation in the *free* direction. If you must hold an env,
+  take a ref.
+- **`GC_FOR_EACH_CHILD` and `gc_clear_node` move in lockstep** with the
+  runtime's ownership model. A new owning edge out of Value/Env/Chunk
+  (a new container type, a new chunk field that holds values or envs)
+  must be added to both — or deliberately left untraversed, which is
+  safe (the target counts as externally rooted and leaks) but should be
+  a recorded decision.
+- **Only traverse counted edges.** Adding a borrowed/uncounted pointer
+  to the walker makes `internal > rc` possible; the sanity abort
+  catches it at runtime, but that means collection silently stops
+  working.
+- **The frame's env ref follows `frame->env`.** LOOP_ENV_FRESH/END are
+  a ref *move*, not a leak-fix opportunity; returning mid-loop relies on
+  the child's parent chain cascading the release up to `fn_env`.
+- `tests/test_closure_cycles.eigs` is gated **strictly** by
+  run_all_tests.sh section [87]: any LeakSanitizer exit there fails the
+  suite (rc_ok's leak tolerance does not apply). Keep it that way.
+
+## What still leaks (known, tolerated)
+
+- **Spawned-thread programs** — the collector is disabled at first
+  `spawn`. Cross-thread collection needs a stop-the-world handshake or
+  per-thread heaps; out of scope.
+- **Mid-run pure value cycles in function scopes** (a self-referential
+  list built and discarded inside a function, never touching a captured
+  env). These never enter the registry. They were leak-equivalent before
+  the collector; the exit snapshot only covers global bindings.
+- A **parked recycled call env pins its parent** (the callee's closure
+  env) until the chunk dies or the cycle through the chunk is collected
+  — at most one retained env per chunk, released at chunk death.
+
+The suite's tolerated-leak tally (the `NOTE:` line in run_all_tests.sh)
+dropped from 28 to 13 with the collector; the remainder are the classes
+above plus a handful of pre-existing non-closure shapes, all
+byte-identical to the pre-collector baseline.
