@@ -41,8 +41,14 @@ A language-features release.
 - **Docs site** — `.github/workflows/pages.yml` publishes `docs/` via
   GitHub Pages (Jekyll, relative links resolved; the workflow provisions
   Pages itself on first run). Requires a public repo or paid plan.
-- `VERSION` bumped to 0.13.0; pushing the `v0.13.0` tag triggers the
-  release workflow (build, full suite, binary upload).
+- `VERSION` bumped to 0.13.0. Releases: push a `v*` tag **or** dispatch
+  the Release workflow — it creates the tag itself (version defaults to
+  the VERSION file) and builds in the same run, since environments
+  exist that can't push tags and GITHUB_TOKEN-pushed tags don't
+  retrigger workflows.
+- Doc-example checker runs each example with cwd = its own script dir
+  (the macOS Python tempdir is /var/folders/..., not /tmp — examples
+  must not assume either).
 
 ### Fix — buffer index-assignment kept only the integer part
 

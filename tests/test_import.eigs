@@ -51,6 +51,13 @@ assert_eq of [tmp_user_module.scaled of 6, 42, "user module function works"]
 assert_eq of [tmp_user_module.FACTOR, 7, "user module constant"]
 rm of "../tests/tmp_user_module.eigs"
 
+# Names starting with _ are module-private: omitted from the dict.
+write_text of ["../tests/tmp_priv_module.eigs", "_secret is 1\nvisible is 2\n"]
+import tmp_priv_module
+assert_eq of [has_key of [tmp_priv_module, "visible"], 1, "public name exported"]
+assert_eq of [has_key of [tmp_priv_module, "_secret"], 0, "_name stays private"]
+rm of "../tests/tmp_priv_module.eigs"
+
 # Missing module raises a catchable error naming both tried paths.
 import_err is ""
 try:

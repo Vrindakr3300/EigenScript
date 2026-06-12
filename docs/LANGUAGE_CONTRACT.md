@@ -51,11 +51,37 @@ To build text from mixed types, use an f-string (`f"n={count}"`) or
 **Promise:** A runtime error (undefined variable, bad index, calling a
 non-function, type-mismatched operator, bad builtin argument, stack
 overflow) is recoverable with `try`/`catch`. If uncaught, it is **fatal**:
-execution stops and the process exits non-zero. Programs never continue
-past an unrecovered error or report success on failure. Warnings (e.g.
+execution stops, the process exits non-zero, and a stack trace (every
+frame from the failure to the top level, innermost first) is printed to
+stderr after the error line. Programs never continue past an
+unrecovered error or report success on failure. Warnings (e.g.
 division by zero, which yields 0) are not errors and do not stop execution.
 
-**Status:** Enforced — `run_all_tests.sh` EM14–EM18, `tests/test_trycatch.eigs`.
+**What `catch` binds:** a runtime error binds its message **string**; a
+`throw`n value binds **unchanged** — `throw of {"kind": ...}` gives the
+handler that dict (thrown strings bind as strings). Re-throwing a
+structured value preserves it; a runtime error raised while a
+structured value is in flight supersedes it.
+
+**Status:** Enforced — `run_all_tests.sh` EM14–EM18,
+`tests/test_trycatch.eigs` (incl. structured-throw checks),
+`examples/errors/uncaught_with_trace.eigs`.
+
+## Modules
+
+**Promise:** `import name` executes the module once and binds its
+top-level definitions as a **dict named `name`** — nothing enters the
+importing scope besides that one binding, and module names starting
+with `_` are private (omitted from the dict). Resolution order:
+`lib/name.eigs` (the standard library) first, then `name.eigs`
+script-relative and the other standard locations; the not-found error
+names both tried paths. `load_file of "path.eigs"` is the
+non-namespaced form: it executes the file directly in the current
+scope.
+
+**Status:** Enforced — `tests/test_import.eigs` (stdlib + user modules,
+namespacing, `_` privacy, missing-module error), docs/SPEC.md Modules
+examples (executed by the suite).
 
 ## Numbers
 

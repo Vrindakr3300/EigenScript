@@ -121,71 +121,55 @@ make jit-smoke  # standalone emitter tests (jit_smoke.c stubs all helpers)
   /dev/null — `test_terminal.eigs` blocks forever reading a pipe that
   never EOFs (e.g. backgrounded runs).
 
-## Current focus: 0.13.0 language features (+ perf carryover)
+## Current state: 0.13.0 released; next up
 
-0.12.0 perf is shipped. JIT Stage 5 (a–i) is the full matrix:
-inline fast paths (INDEX_SET, EnvIC name get/set, dict-dot via 2-way
-inline cache, tracked-num arith/compare operands), native VAL_FN
-calls inside thunks, per-loop OSR slots (`jit_osr[4]`), the DOT_SET
-in-place write, and per-chunk call-env recycling (5i). Cumulative:
-`bench_dmg_shape` 239 → ~118 ms (2.0×); the JIT beats `EIGS_JIT_OFF`
-by ~45% on it. Design record: CHANGELOG.md (Stages 5–5i) +
-`docs/JIT_STAGE5_INLINE_IC.md` (spec + as-built deltas).
+0.13.0 is cut (CHANGELOG.md [0.13.0] is the full record). Highlights on
+top of the language-features run (destructuring, slicing, negative
+indexing, default params, streaming subprocess I/O, recv_timeout,
+multi-arg spawn) and the twelve post-merge fixes (#148–#159):
 
-0.13.0 has shipped a run of language features (CHANGELOG.md
-[0.13.0] for the full record): destructuring assignment, streaming
-subprocess I/O (`proc_spawn` / `proc_write` / `proc_read_line` /
-`proc_read` / `proc_close` / `proc_wait`), negative indexing,
-slicing (`a[start:end]` half-open with defaults + negative bounds +
-strict bounds-check, lists/strings/buffers), default parameter
-values, non-blocking channel recv (`recv_timeout of [ch, ms]` plus
-suite coverage for the pre-existing `try_recv`), `spawn` with
-multiple positional args, and finite-count `audio_play_loop` (gfx).
-Tidepool downstream: GAP-001 / GAP-002 finite / GAP-005 / GAP-006
-all closed; GAP-002 infinite loop and GAP-003 per-channel volume
-still open.
+- **Structured errors**: `throw` preserves the thrown value (catch
+  binds dicts/lists unchanged; runtime errors bind message strings);
+  uncaught errors print a stack trace (`vm_print_stack_trace`, frame
+  lines from the chunk line tables). `g_error_value` is the stash —
+  cleared by runtime_error, consumed by CHECK_ERROR's catch-bind,
+  released in main/thread_entry on the uncaught path.
+- **Modules**: `import name` namespaces (dict binding, `_` names
+  private) and falls back from `lib/name.eigs` to script-relative
+  `name.eigs` for user modules. `load_file` stays the non-namespaced
+  form.
+- **Buffer stores keep the full double** — all four INDEX_SET arms and
+  the JIT inline store used to truncate to int, diverging from buf_set.
+- **Executable docs**: docs/SPEC.md + docs/COMPARISON.md example/output
+  pairs are run by `tests/test_doc_examples.py` (suite [89]) and must
+  match byte-for-byte. **A semantics change must update the spec in the
+  same PR or CI fails.** `examples/errors/` expect-error headers are
+  enforced the same way ([90]). Doc examples must not assume the temp
+  dir is /tmp (macOS: /var/folders/...) — the checker runs each example
+  with cwd = its own script dir.
+- **Tooling**: editors/vscode + editors/vim grammars; GitHub Pages docs
+  site (pages.yml; STDLIB's `{{...}}` examples are raw-wrapped for
+  Liquid); LSP emits real diagnostics via `eigs_record_first_error`.
+- **Releases**: push a `v*` tag *or* dispatch the Release workflow
+  (Actions → Release → Run workflow), which creates the tag itself and
+  builds in the same run. Note: this remote environment's git proxy
+  cannot push tags, and GITHUB_TOKEN-pushed tags don't retrigger
+  workflows — hence the dispatch path.
 
-A post-merge review of the 0.13.0 run filed issues #148–#159 (all
-repro'd against HEAD; suites still pass because none are crashes).
-Twelve fixed so far: **#155** (`call_argc` uninitialized on vm_run
-base frames; spawn/sort_by/dispatch/http defaults clobbered explicit
-args), **#156** (pre-pass walkers didn't know AST_SLICE /
-AST_LIST_PATTERN_ASSIGN; closure capture and module globals silently
-broke), **#148** (proc_* / exec_capture / recv* now fail loudly under
-`EIGS_REPLAY` — boundary documented in `docs/TRACE.md`), **#149**
-(`FD_CLOEXEC` on every pipe end in proc_spawn / exec_capture so the
-fds don't leak into subsequent children), **#150** (exec_capture
-child resets `SIGPIPE` to `SIG_DFL` so `yes | head -1` and similar
-inherited-`SIG_IGN` hang patterns drain instead of hanging), **#151**
-(`recv_timeout` clamps ms before the `(long)` cast — NaN/+inf/huge
-no longer produce UB or spurious deadlines; channel condvars now use
-`CLOCK_MONOTONIC`), **#152** (`audio_play_loop` rejects NaN /
-out-of-range / >10000 loops before the `(int)` cast, plus a 256 MiB
-byte-budget gate so a modest loop count over a multi-second clip
-can't queue gigabytes into SDL in one call), **#153** (docs: contract
-spells out `f of [x]` non-spread + default-params footgun; behavior
-unchanged, the rule below in this CLAUDE.md is now also in
-LANGUAGE_CONTRACT.md), **#154** (docs: 0.13.0's `f of []` argc=0
-lowering silently changed multi-param `g of []` from `a=[], b=null`
-to `a=null, b=null` — change acknowledged in the contract, defaulted-
-multi-param `argc<first_default` edge also pinned down), **#157**
-(destructure pattern parser bracket-counts the lookahead and emits
-pattern-specific errors instead of silently restoring on >64 names,
-trailing comma, or non-ident targets), **#158** (OP_CALL/OP_DISPATCH
-gate that left underfed-below-first_default tails unfilled — defaults
-now fire for every unsupplied defaulted slot regardless of argc; the
-#154 docs subtlety is gone), **#159** (new `proc_read_buf` returns a
-VAL_BUFFER so an embedded NUL in child output survives; `proc_read`
-documented text-only; `proc_read_line` returns the partial line on
-mid-stream error instead of dropping it; `proc_write` returns the
-partial byte count on error so retrying callers don't double-send).
-All twelve post-merge issues closed; 0.13.0 ready to tag.
+Suite: ~1830 checks; must pass release **and** ASan with
+detect_leaks=1 (the leak tally — currently 28 — is the gate; a jump
+means a new leak).
 
-Perf carryover from 0.12.0 (ROADMAP.md): NaN-boxing for *container*
-storage (list items / dict values are still `Value**`; stack and env
-slots are already EigsSlot), extending GET_LOCAL/SET_LOCAL to all
-locals (currently restricted; broadening unlocks JIT inline ICs on
-every local), and per-call env churn (`env_new` / `env_free` per
-call — likely the top DMG cost post-5i for non-recyclable
-callsites). Re-profile before picking: every stage last cycle moved
-the profile shape.
+Open items, in rough priority:
+- **Closure-cycle collector** — the env↔fn cycle accumulates (~12
+  allocs per escaping closure). Design + staging in
+  docs/CLOSURE_CYCLE_GC.md; it's a dedicated reviewed project (every
+  shortcut is a use-after-free; see the doc before attempting).
+- **`make lsp` fails on macOS runners** (skipped cleanly by the suite;
+  add the compile check to the macOS CI leg to surface the error).
+- Windows port (runtime is POSIX-only), package/dependency story,
+  ARM64 JIT (Apple Silicon runs interpreter-only).
+- Perf carryover from 0.12.0 (ROADMAP.md): NaN-boxing for *container*
+  storage, extending GET_LOCAL/SET_LOCAL to all locals, per-call env
+  churn. Re-profile before picking: every stage last cycle moved the
+  profile shape.
