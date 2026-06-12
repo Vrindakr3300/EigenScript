@@ -1,0 +1,101 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "EigenScript",
+  "scopeName": "source.eigenscript",
+  "fileTypes": ["eigs"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#fstrings" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#definition" },
+    { "include": "#keywords" },
+    { "include": "#interrogatives" },
+    { "include": "#predicates" },
+    { "include": "#constants" },
+    { "include": "#call" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.eigenscript"
+    },
+    "strings": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.eigenscript",
+      "patterns": [
+        { "match": "\\\\[ntr\"\\\\]", "name": "constant.character.escape.eigenscript" }
+      ]
+    },
+    "fstrings": {
+      "begin": "f\"",
+      "end": "\"",
+      "name": "string.quoted.double.interpolated.eigenscript",
+      "patterns": [
+        { "match": "\\\\[ntr\"\\\\]", "name": "constant.character.escape.eigenscript" },
+        {
+          "begin": "\\{",
+          "end": "\\}",
+          "name": "meta.embedded.expression.eigenscript",
+          "patterns": [
+            { "include": "#numbers" },
+            { "include": "#keywords" },
+            { "include": "#operators" },
+            { "match": "[A-Za-z_][A-Za-z0-9_]*", "name": "variable.other.eigenscript" }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "match": "\\b[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?\\b",
+      "name": "constant.numeric.eigenscript"
+    },
+    "definition": {
+      "match": "\\b(define)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.function.eigenscript" },
+        "2": { "name": "entity.name.function.eigenscript" }
+      }
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(if|elif|else|loop|while|for|in|return|try|catch|break|continue|match|case|import)\\b",
+          "name": "keyword.control.eigenscript"
+        },
+        {
+          "match": "\\b(define|as|local|unobserved)\\b",
+          "name": "storage.type.eigenscript"
+        },
+        {
+          "match": "\\b(is|of|and|or|not|at)\\b",
+          "name": "keyword.operator.word.eigenscript"
+        }
+      ]
+    },
+    "interrogatives": {
+      "match": "\\b(what|who|when|where|why|how|prev|state_at)\\b",
+      "name": "support.function.interrogative.eigenscript"
+    },
+    "predicates": {
+      "match": "\\b(converged|stable|improving|oscillating|diverging|equilibrium)\\b",
+      "name": "constant.language.predicate.eigenscript"
+    },
+    "constants": {
+      "match": "\\bnull\\b",
+      "name": "constant.language.null.eigenscript"
+    },
+    "call": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s+(?=of\\b)",
+      "captures": {
+        "1": { "name": "entity.name.function.call.eigenscript" }
+      }
+    },
+    "operators": {
+      "match": "\\|>|=>|==|!=|<=|>=|<<=|>>=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|<<|>>|[+\\-*/%<>&|^~]",
+      "name": "keyword.operator.eigenscript"
+    }
+  }
+}

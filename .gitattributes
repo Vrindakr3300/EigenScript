@@ -1,21 +1,4 @@
-# Enforce consistent line endings
-* text=auto
-
-# Source files
-*.c text eol=lf
-*.h text eol=lf
-*.eigs text eol=lf linguist-detectable linguist-language=EigenScript
-
-# Scripts
-*.sh text eol=lf
-
-# Documentation
-*.md text eol=lf
-*.yml text eol=lf
-
-# Binary files
-*.png binary
-*.bin binary
-
-# Ensure Makefile uses tabs
-Makefile text eol=lf
+# GitHub (Linguist) has no EigenScript grammar yet; Python's highlighter is
+# the closest visual match (# comments, indentation blocks, strings,
+# numbers). Remove once a real grammar is upstreamed to github/linguist.
+*.eigs linguist-language=Python

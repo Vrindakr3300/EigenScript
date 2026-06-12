@@ -458,6 +458,7 @@ print of (sm_can_send of [sm, "stop"]) # 1
 
 ### lib/template.eigs — String Templating
 
+{% raw %}
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `render` | `render of [template, vars]` | Interpolate `{{key}}` |
@@ -473,6 +474,7 @@ vars is [["name", "World"], ["version", "0.5"]]
 msg is render of ["{{name}} is running v{{version}}", vars]
 print of msg   # "World is running v0.5"
 ```
+{% endraw %}
 
 ### lib/eigen.eigs — Meta-Circular Interpreter
 
