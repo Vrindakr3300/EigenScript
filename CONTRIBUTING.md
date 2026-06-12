@@ -21,6 +21,19 @@ Requires only `gcc` — no external dependencies.
 4. Run the test suite: `cd tests && bash run_all_tests.sh`
 5. Open a pull request
 
+Two gates worth knowing before you push:
+
+- **The suite must also pass under sanitizers** (CI enforces it):
+  `make asan && cd tests && ASAN_OPTIONS=detect_leaks=1 bash run_all_tests.sh`.
+  The final summary prints a tolerated-leak tally (known closure-cycle
+  leaks, see `docs/CLOSURE_CYCLE_GC.md`) — if your change makes that
+  number jump, you've introduced a leak.
+- **The spec is executable.** Every example in `docs/SPEC.md` and
+  `docs/COMPARISON.md` runs in CI and must match its output block
+  byte-for-byte. If you change language semantics, update the spec in
+  the same PR or CI fails — that's by design. Same for the expected
+  messages in `examples/errors/`.
+
 ## Code Style
 
 - **C source** (`src/`): 4-space indent, no tabs. Keep functions short. Every builtin gets a signature comment.

@@ -193,8 +193,20 @@ catch err:
     print of f"Caught: {err}"
 ```
 
-Errors inside a `try` block are caught and bound to the variable after `catch`.
-Without a `try` block, errors print to stderr and return null.
+Errors inside a `try` block are caught and bound to the variable after
+`catch`: runtime errors bind their message string; a `throw`n value
+binds **unchanged**, so errors can carry data:
+
+```eigenscript
+try:
+    throw of {"kind": "validation", "field": "age"}
+catch e:
+    print of e.kind    # "validation"
+```
+
+Without a `try` block, an error is fatal: it prints to stderr with a
+stack trace (every frame from the failure to the top level) and the
+program exits non-zero.
 
 Use `throw` to raise errors from user code:
 
@@ -325,7 +337,23 @@ eval of code
 Evaluated code runs in the caller's current scope. At top level this is the
 global scope; inside a function, new names stay in that function's scope.
 
-## Modules (load_file)
+## Modules (import / load_file)
+
+`import name` loads a module into a **namespace** — a dict named
+`name` holding the module's top-level definitions. It resolves
+`lib/name.eigs` (the standard library) first, then `name.eigs`
+relative to your script. Nothing leaks into the global scope; names
+starting with `_` stay private to the module.
+
+```eigenscript
+import math
+result is math.clamp of [15, 0, 10]    # 10
+import shapes                          # your shapes.eigs, next to the script
+a is shapes.area of 2
+```
+
+`load_file` is the non-namespaced form — it executes a file directly
+in the current scope:
 
 ```eigenscript
 load_file of "lib/math.eigs"

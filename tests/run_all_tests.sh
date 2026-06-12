@@ -973,15 +973,15 @@ fi
 echo ""
 
 # [36] Import system
-echo "[36/36] Import System (17 checks)"
+echo "[36/36] Import System (19 checks)"
 IM_OUTPUT=$(./eigenscript ../tests/test_import.eigs 2>&1); IM_OUTPUT_RC=$?
 if rc_ok "$IM_OUTPUT_RC" "$IM_OUTPUT" && echo "$IM_OUTPUT" | grep -q "All tests passed"; then
-    TOTAL=$((TOTAL + 17))
-    PASS=$((PASS + 17))
-    echo "  PASS: all 17 import checks"
+    TOTAL=$((TOTAL + 19))
+    PASS=$((PASS + 19))
+    echo "  PASS: all 19 import checks"
 else
-    TOTAL=$((TOTAL + 17))
-    FAIL=$((FAIL + 17))
+    TOTAL=$((TOTAL + 19))
+    FAIL=$((FAIL + 19))
     echo "  FAIL: import tests"
     echo "$IM_OUTPUT" | grep -i "FAIL\|assert\|error" | head -5
 fi

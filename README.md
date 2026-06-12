@@ -266,7 +266,7 @@ eigenscript examples/stem/greenhouse_controller.eigs # closed-loop STEM controll
 
 ```bash
 cd tests
-./run_all_tests.sh    # 1790+ checks (minimal build; full build adds HTTP/DB/model suites)
+./run_all_tests.sh    # 1,800+ checks (minimal build; full build adds HTTP/DB/model suites)
 ```
 
 ## Documentation
@@ -306,7 +306,7 @@ Full map: **[docs/README.md](docs/README.md)**. Highlights:
 
 ```bash
 make                  # build
-make test             # build and run 1257 tests
+make test             # build and run the full suite (1,800+ checks)
 make gfx              # build with SDL2 graphics (UI toolkit, games)
 make install          # install to ~/.local/bin
 make clean            # remove build artifacts

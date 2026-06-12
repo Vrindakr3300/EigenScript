@@ -33,6 +33,13 @@ link to sections freely.
 | [TEST_COVERAGE_ANALYSIS.md](TEST_COVERAGE_ANALYSIS.md) | The coverage program: findings → fixes → residual gaps, with measured numbers. |
 | [GAP_ANALYSIS.md](GAP_ANALYSIS.md) | Downstream feature-gap tracking. |
 
+## Editor support
+
+[`editors/vscode/`](../editors/vscode/) (TextMate grammar + language
+config) and [`editors/vim/`](../editors/vim/) (syntax + ftdetect);
+`make lsp` builds the language server (`src/eigenlsp` — diagnostics,
+completion, hover, definition, references over stdio).
+
 ## Examples
 
 - [`examples/`](../examples/) — 50+ runnable programs, smoke-tested by
