@@ -201,10 +201,25 @@ malloc/free churn in arithmetic-heavy loops.
 1024 entries) and reused by `env_new`, avoiding allocation in tight
 function-call loops.
 
-**Closure environments.** Environments captured by closures
-(`env->captured = 1`) track a reference count (`env_refcount`, atomic).
-When the last closure referencing an env is freed, the env becomes
-eligible for cleanup.
+**Environment lifetime.** Every `Env` carries an honest reference count
+(`env_refcount`, atomic once spawn() goes multithreaded). The owners are:
+the creating frame or C caller, each closure capturing the env
+(`make_fn`), each child env (the `parent` link is an owned reference),
+and a chunk's parked recycled call env (`env_cache`). `env_decref`
+destroys at zero — there is no special-cased teardown path.
+
+**Cycle collector.** An env that binds a closure capturing it forms an
+`env<->fn` reference cycle that plain counts cannot reclaim. Captured
+envs register in a per-thread list; when the registry crosses an
+adaptive threshold (and once at exit), `gc_collect_cycles` walks the
+subgraph reachable from registered envs over owned edges (env slots,
+`parent`, `fn->closure`, list/dict elements, `fn->chunk->env_cache`),
+counts in-subgraph references per node, and treats any node whose
+refcount exceeds that count as externally rooted. Unmarked remainder is
+cyclic garbage: pinned, edge-cleared, then released through the normal
+destructors. Conservative by construction — any accounting mismatch
+aborts the collection (leaking instead of freeing). Disabled once
+spawn() goes multithreaded. See `docs/CLOSURE_CYCLE_GC.md`.
 
 ## Extensions
 

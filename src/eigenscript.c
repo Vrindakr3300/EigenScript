@@ -5,6 +5,8 @@
  */
 
 #include "eigenscript.h"
+#include "vm.h"   /* EigsChunk layout: the cycle collector traverses
+                   * fn -> chunk -> env_cache / functions[] edges */
 #include <pthread.h>
 #if EIGENSCRIPT_EXT_HTTP
 #include "ext_http_internal.h"
@@ -355,17 +357,7 @@ void free_value(Value *v) {
             {
                 Env *clo = v->data.fn.closure;
                 v->data.fn.closure = NULL;  /* break cycle before decrement */
-                if (clo) {
-                    int newrc;
-                    if (__builtin_expect(g_vm_multithreaded, 0))
-                        newrc = __atomic_sub_fetch(&clo->env_refcount, 1, __ATOMIC_ACQ_REL);
-                    else
-                        newrc = --clo->env_refcount;
-                    if (newrc <= 0 && clo->captured) {
-                        clo->captured = 0;
-                        env_free(clo);
-                    }
-                }
+                env_decref(clo);
             }
             break;
         case VAL_BUFFER:
@@ -609,12 +601,7 @@ Value* make_fn(const char *name, char **params, int param_count, Env *closure) {
     v->data.fn.body = NULL;
     v->data.fn.body_count = 0;
     v->data.fn.closure = closure;
-    if (closure) {
-        if (__builtin_expect(g_vm_multithreaded, 0))
-            __atomic_add_fetch(&closure->env_refcount, 1, __ATOMIC_RELAXED);
-        else
-            closure->env_refcount++;
-    }
+    env_incref(closure);   /* the fn's owned ref on its captured env */
     v->refcount = 1;
     v->arena = 0;
     return v;
@@ -998,7 +985,7 @@ Env* env_new(Env *parent) {
         g_env_freelist = e->parent;
         g_env_freelist_count--;
         e->count = 0;
-        /* Generation already bumped in env_free's freelist branch.
+        /* Generation already bumped in env_decref's freelist branch.
          * Hash slots from the prior occupant are dormant by virtue of
          * generations[i] != current generation. */
     } else {
@@ -1010,10 +997,19 @@ Env* env_new(Env *parent) {
         env_hash_init(&e->hash, ENV_HASH_INIT_CAP);
     }
     e->parent = parent;
+    if (parent) env_incref(parent);   /* the parent link is an owned ref */
     e->heap_allocated = 1;
     e->captured = 0;
-    e->env_refcount = 0;
+    e->env_refcount = 1;              /* creator's ref (frame or C caller) */
     return e;
+}
+
+void env_incref(Env *env) {
+    if (!env) return;
+    if (__builtin_expect(g_vm_multithreaded, 0))
+        __atomic_add_fetch(&env->env_refcount, 1, __ATOMIC_RELAXED);
+    else
+        env->env_refcount++;
 }
 
 void env_set_hashed(Env *env, const char *name, uint32_t h, Value *val) {
@@ -1299,17 +1295,25 @@ void env_set_local_owned(Env *env, const char *name, Value *val) {
     val_decref(val);
 }
 
-void env_free(Env *env) {
+/* Unlink an env from the captured-env registry (defined with the cycle
+ * collector below). Safe to call on unregistered envs. */
+static void gc_unregister_env(Env *env);
+
+void env_decref(Env *env) {
     if (!env || !env->heap_allocated) return;
-    if (env->captured) {
-        int rc = __builtin_expect(g_vm_multithreaded, 0)
-            ? __atomic_load_n(&env->env_refcount, __ATOMIC_ACQUIRE)
-            : env->env_refcount;
-        if (rc > 0) return;
-    }
+    int newrc;
+    if (__builtin_expect(g_vm_multithreaded, 0))
+        newrc = __atomic_sub_fetch(&env->env_refcount, 1, __ATOMIC_ACQ_REL);
+    else
+        newrc = --env->env_refcount;
+    if (newrc > 0) return;
+    /* Destructor: drop bindings, drop the parent link's owned ref,
+     * recycle or free the struct. */
+    gc_unregister_env(env);
     for (int i = 0; i < env->count; i++) {
         slot_decref(env->values[i]);
     }
+    Env *parent = env->parent;
     if (env->capacity <= ENV_FREELIST_MAX_BINDINGS &&
         g_env_freelist_count < ENV_FREELIST_CAP) {
         env->count = 0;
@@ -1326,32 +1330,35 @@ void env_free(Env *env) {
         env->parent = g_env_freelist;
         g_env_freelist = env;
         g_env_freelist_count++;
-        return;
+    } else {
+        free(env->names);
+        free(env->values);
+        free(env->assign_counts);
+        free(env->hash.hashes);
+        free(env->hash.indices);
+        free(env->hash.generations);
+        free(env);
     }
-    free(env->names);
-    free(env->values);
-    free(env->assign_counts);
-    free(env->hash.hashes);
-    free(env->hash.indices);
-    free(env->hash.generations);
-    free(env);
+    env_decref(parent);   /* after the struct is gone: chains release iteratively */
 }
 
 /* Shutdown-only teardown for the global env.
  *
- * env_free is refcount-honest: it no-ops while closures still hold the
- * env (env_refcount > 0). At process exit that politeness leaks the
- * whole global scope whenever a script defined a function, because the
- * fn value lives *in* the env that it captures — a cycle nothing else
- * breaks. Force the issue: detach the slot array first so reentrant
- * env_free calls (a dying closure decrementing env_refcount mid-loop)
- * see an empty env, pin env_refcount high so those calls cannot free
- * the struct under us, then decref every binding and free the arrays
- * unconditionally. Only call this when nothing will touch the env
- * again — i.e. immediately before exit, after trace_shutdown has
- * dropped its own value refs. */
+ * Honest refcounts mean closures still hold the env (env_refcount > 0)
+ * at process exit, leaking the whole global scope whenever a script
+ * defined a function — the fn value lives *in* the env that it captures,
+ * a cycle the plain counts can't break. Force the issue: detach the slot
+ * array first so reentrant env_decref calls (a dying closure decrementing
+ * env_refcount mid-loop) see an empty env, pin env_refcount high so those
+ * calls cannot free the struct under us, then decref every binding and
+ * free the arrays unconditionally. Only call this when nothing will touch
+ * the env again — i.e. immediately before exit, after trace_shutdown has
+ * dropped its own value refs. (main.c's normal teardown now uses
+ * env_clear + gc_collect_cycles + env_decref instead; this remains for
+ * paths that must hard-destroy an env regardless of live references.) */
 void env_destroy_final(Env *env) {
     if (!env || !env->heap_allocated) return;
+    gc_unregister_env(env);
     EigsSlot *vals = env->values;
     int count = env->count;
     env->values = NULL;
@@ -1367,6 +1374,443 @@ void env_destroy_final(Env *env) {
     free(env->hash.indices);
     free(env->hash.generations);
     free(env);
+}
+
+/* ================================================================
+ * CLOSURE-CYCLE COLLECTOR  (docs/CLOSURE_CYCLE_GC.md)
+ *
+ * The env<->fn cycle (an env binding a closure that captures it) keeps
+ * both refcounts above zero forever. With env lifetime now an honest
+ * refcount — creator/frame, closures, child envs via parent, parked
+ * env_cache all counted — cyclic garbage is detectable locally:
+ *
+ *   1. U := every object reachable from the registered captured envs
+ *      through OWNED edges only (env slots, env->parent, fn->closure,
+ *      list items, dict values). g_global_env is a stop node: it holds
+ *      the creator ref for the whole process lifetime, so it is always
+ *      externally rooted and traversing into it would just drag the
+ *      entire heap into every collection.
+ *   2. internal[n] := number of edges into n from inside U.
+ *   3. roots := nodes with refcount > internal — some reference exists
+ *      that we did not traverse (VM stack slot, a frame's env ref, a C
+ *      caller's ref, the trace tape, a parked env's parent link, ...).
+ *      Every such holder owns a counted ref, so it shows up here without
+ *      any root-set enumeration.
+ *   4. Mark from the roots within U; unmarked nodes are unreachable
+ *      cyclic garbage. Pin them, clear their outgoing edges (normal
+ *      decrefs), then unpin — each node frees through its ordinary
+ *      destructor path.
+ *
+ * Conservative by construction: if internal counts ever exceed a
+ * refcount (an uncounted edge was traversed — accounting bug), the
+ * whole collection aborts and the memory leaks instead. Collection is
+ * disabled once spawn() goes multithreaded: cross-thread roots are
+ * still counted refs (so nothing would be freed wrongly), but registry
+ * list maintenance is not thread-safe, so registration stops and the
+ * registry is drained up front.
+ * ================================================================ */
+
+static __thread Env *g_gc_envs = NULL;     /* captured-env registry head */
+static __thread int g_gc_captured_live = 0;
+#define GC_THRESHOLD_MIN 64
+static __thread int g_gc_threshold = GC_THRESHOLD_MIN;
+static __thread int g_gc_enabled = 1;
+static __thread int g_in_gc = 0;
+
+static void gc_unregister_env(Env *env) {
+    if (!env->in_gc_list) return;
+    env->in_gc_list = 0;
+    if (env->gc_prev) env->gc_prev->gc_next = env->gc_next;
+    else g_gc_envs = env->gc_next;
+    if (env->gc_next) env->gc_next->gc_prev = env->gc_prev;
+    env->gc_next = NULL;
+    env->gc_prev = NULL;
+    g_gc_captured_live--;
+}
+
+void gc_disable_for_threads(void) {
+    while (g_gc_envs) gc_unregister_env(g_gc_envs);
+    g_gc_enabled = 0;
+}
+
+void env_mark_captured(Env *env) {
+    if (!env) return;
+    env->captured = 1;
+    if (!g_gc_enabled || g_vm_multithreaded || g_in_gc ||
+        env->in_gc_list || env == g_global_env)
+        return;
+    env->in_gc_list = 1;
+    env->gc_prev = NULL;
+    env->gc_next = g_gc_envs;
+    if (g_gc_envs) g_gc_envs->gc_prev = env;
+    g_gc_envs = env;
+    g_gc_captured_live++;
+    /* Capture events are the only way the candidate universe grows, so
+     * this is the (off-hot-path) collection trigger. */
+    if (__builtin_expect(g_gc_captured_live >= g_gc_threshold, 0))
+        gc_collect_cycles();
+}
+
+/* ---- Collection universe: pointer -> node-index hash + node arrays ----
+ * Node kinds: values (containers/fns), envs, and bytecode chunks. Chunks
+ * are on the cycle when a fn's chunk parks a recycled call env whose
+ * owned parent ref points back into the fn's captured env
+ * (fn -> chunk -> env_cache -> parent -> env -> fn). */
+#define GC_KIND_VAL   0
+#define GC_KIND_ENV   1
+#define GC_KIND_CHUNK 2
+typedef struct {
+    void    **objs;
+    uint8_t  *kind;
+    int32_t  *internal;
+    int32_t  *pinned;    /* refs held by the collector's own seed pins
+                          * (exit-time snapshot of global bindings) */
+    uint8_t  *mark;
+    int       count, cap;
+    int      *table;     /* open addressing, holds node index or -1 */
+    int       mask;      /* table size - 1 (power of two) */
+} GcU;
+
+static uint32_t gc_ptr_hash(void *p) {
+    uintptr_t x = (uintptr_t)p;
+    x ^= x >> 16; x *= 0x45d9f3bU; x ^= x >> 13;
+    return (uint32_t)x;
+}
+
+static int gcu_find(GcU *u, void *obj) {
+    uint32_t i = gc_ptr_hash(obj) & u->mask;
+    while (u->table[i] != -1) {
+        if (u->objs[u->table[i]] == obj) return u->table[i];
+        i = (i + 1) & u->mask;
+    }
+    return -1;
+}
+
+static void gcu_rehash(GcU *u, int new_size) {
+    free(u->table);
+    u->table = xmalloc_array(new_size, sizeof(int));
+    for (int i = 0; i < new_size; i++) u->table[i] = -1;
+    u->mask = new_size - 1;
+    for (int n = 0; n < u->count; n++) {
+        uint32_t i = gc_ptr_hash(u->objs[n]) & u->mask;
+        while (u->table[i] != -1) i = (i + 1) & u->mask;
+        u->table[i] = n;
+    }
+}
+
+/* Add obj to U if absent. Returns 1 when newly added. */
+static int gcu_add(GcU *u, void *obj, int kind) {
+    if (gcu_find(u, obj) >= 0) return 0;
+    if (u->count >= u->cap) {
+        u->cap = u->cap ? u->cap * 2 : 256;
+        u->objs     = xrealloc_array(u->objs, u->cap, sizeof(void *));
+        u->kind     = xrealloc_array(u->kind, u->cap, sizeof(uint8_t));
+        u->internal = xrealloc_array(u->internal, u->cap, sizeof(int32_t));
+        u->pinned   = xrealloc_array(u->pinned, u->cap, sizeof(int32_t));
+        u->mark     = xrealloc_array(u->mark, u->cap, sizeof(uint8_t));
+    }
+    int n = u->count++;
+    u->objs[n] = obj;
+    u->kind[n] = (uint8_t)kind;
+    u->internal[n] = 0;
+    u->pinned[n] = 0;
+    u->mark[n] = 0;
+    if (u->count * 4 > (u->mask + 1) * 3)
+        gcu_rehash(u, (u->mask + 1) * 2);
+    uint32_t i = gc_ptr_hash(obj) & u->mask;
+    while (u->table[i] != -1) i = (i + 1) & u->mask;
+    u->table[i] = n;
+    return 1;
+}
+
+/* Only these value types can hold references (and so participate in an
+ * env-involving cycle). Everything else is a leaf: dropped by ordinary
+ * decrefs when its garbage owner is cleared. */
+static int gc_value_is_node(Value *v) {
+    return v && !v->arena &&
+           (v->type == VAL_LIST || v->type == VAL_DICT || v->type == VAL_FN);
+}
+
+/* An env child edge worth traversing: real, heap, and not the global
+ * stop node. */
+static int gc_env_is_node(Env *e) {
+    return e && e->heap_allocated && e != g_global_env;
+}
+
+/* Invoke BODY for every OWNED edge out of node n. Each edge reported
+ * here corresponds to exactly one counted reference; reporting anything
+ * uncounted here would corrupt the root derivation (the abort check
+ * below catches that as internal > refcount). Chunk edges: a VAL_FN owns
+ * one ref on its compiled chunk (taken in OP_CLOSURE); a chunk owns one
+ * creator ref per nested functions[] entry and one ref on its parked
+ * env_cache. Chunk constants are literal leaves (never containers/fns)
+ * and are not traversed. */
+#define GC_FOR_EACH_CHILD(u, n, CHILD_OBJ, CHILD_KIND, BODY)                  \
+    do {                                                                      \
+        if ((u)->kind[n] == GC_KIND_ENV) {                                    \
+            Env *_e = (Env *)(u)->objs[n];                                    \
+            if (gc_env_is_node(_e->parent)) {                                 \
+                void *CHILD_OBJ = _e->parent;                                 \
+                int CHILD_KIND = GC_KIND_ENV; BODY                            \
+            }                                                                 \
+            for (int _i = 0; _i < _e->count; _i++) {                          \
+                EigsSlot _s = _e->values[_i];                                 \
+                if (slot_is_ptr(_s)) {                                        \
+                    Value *_v = slot_as_ptr(_s);                              \
+                    if (gc_value_is_node(_v)) {                               \
+                        void *CHILD_OBJ = _v;                                 \
+                        int CHILD_KIND = GC_KIND_VAL; BODY                    \
+                    }                                                         \
+                }                                                             \
+            }                                                                 \
+        } else if ((u)->kind[n] == GC_KIND_CHUNK) {                           \
+            EigsChunk *_c = (EigsChunk *)(u)->objs[n];                        \
+            for (int _i = 0; _i < _c->fn_count; _i++) {                       \
+                if (_c->functions[_i]) {                                      \
+                    void *CHILD_OBJ = _c->functions[_i];                      \
+                    int CHILD_KIND = GC_KIND_CHUNK; BODY                      \
+                }                                                             \
+            }                                                                 \
+            if (gc_env_is_node(_c->env_cache)) {                              \
+                void *CHILD_OBJ = _c->env_cache;                              \
+                int CHILD_KIND = GC_KIND_ENV; BODY                            \
+            }                                                                 \
+        } else {                                                              \
+            Value *_v = (Value *)(u)->objs[n];                                \
+            switch (_v->type) {                                               \
+            case VAL_FN:                                                      \
+                if (gc_env_is_node(_v->data.fn.closure)) {                    \
+                    void *CHILD_OBJ = _v->data.fn.closure;                    \
+                    int CHILD_KIND = GC_KIND_ENV; BODY                        \
+                }                                                             \
+                if (_v->data.fn.body_count == -1 && _v->data.fn.body) {       \
+                    void *CHILD_OBJ = (EigsChunk *)_v->data.fn.body;          \
+                    int CHILD_KIND = GC_KIND_CHUNK; BODY                      \
+                }                                                             \
+                break;                                                        \
+            case VAL_LIST:                                                    \
+                for (int _i = 0; _i < _v->data.list.count; _i++) {            \
+                    Value *_c2 = _v->data.list.items[_i];                     \
+                    if (gc_value_is_node(_c2)) {                              \
+                        void *CHILD_OBJ = _c2;                                \
+                        int CHILD_KIND = GC_KIND_VAL; BODY                    \
+                    }                                                         \
+                }                                                             \
+                break;                                                        \
+            case VAL_DICT:                                                    \
+                for (int _i = 0; _i < _v->data.dict.count; _i++) {            \
+                    Value *_c2 = _v->data.dict.vals[_i];                      \
+                    if (gc_value_is_node(_c2)) {                              \
+                        void *CHILD_OBJ = _c2;                                \
+                        int CHILD_KIND = GC_KIND_VAL; BODY                    \
+                    }                                                         \
+                }                                                             \
+                break;                                                        \
+            default: break;                                                   \
+            }                                                                 \
+        }                                                                     \
+    } while (0)
+
+/* Clear every outgoing edge of a garbage node (exactly the edges
+ * GC_FOR_EACH_CHILD reports, plus leaf refs) so the cycle is broken;
+ * the node itself stays allocated (pinned) until the unpin pass. */
+static void gc_clear_node(void *obj, int kind) {
+    if (kind == GC_KIND_ENV) {
+        Env *e = obj;
+        for (int i = 0; i < e->count; i++) {
+            EigsSlot s = e->values[i];
+            e->values[i] = slot_null();
+            slot_decref(s);
+        }
+        e->count = 0;
+        e->binding_version++;
+        if (++e->hash.generation == 0) {
+            memset(e->hash.generations, 0,
+                   (e->hash.mask + 1) * sizeof(uint32_t));
+            e->hash.generation = 1;
+        }
+        Env *p = e->parent;
+        e->parent = NULL;
+        env_decref(p);
+    } else if (kind == GC_KIND_CHUNK) {
+        EigsChunk *c = obj;
+        for (int i = 0; i < c->fn_count; i++) {
+            EigsChunk *fc = c->functions[i];
+            c->functions[i] = NULL;     /* chunk_decref(NULL) no-ops later */
+            chunk_decref(fc);
+        }
+        Env *cached = c->env_cache;
+        c->env_cache = NULL;
+        env_decref(cached);
+    } else {
+        Value *v = obj;
+        switch (v->type) {
+        case VAL_FN: {
+            Env *clo = v->data.fn.closure;
+            v->data.fn.closure = NULL;
+            env_decref(clo);
+            break;
+        }
+        case VAL_LIST:
+            for (int i = 0; i < v->data.list.count; i++)
+                val_decref(v->data.list.items[i]);
+            v->data.list.count = 0;
+            break;
+        case VAL_DICT:
+            for (int i = 0; i < v->data.dict.count; i++)
+                val_decref(v->data.dict.vals[i]);
+            v->data.dict.count = 0;
+            break;
+        default: break;
+        }
+    }
+}
+
+/* Core collection. seeds (may be NULL) are extra value-node roots the
+ * caller holds exactly one pinning ref on apiece (exit-time snapshot of
+ * the global scope); their pins are accounted so a seed kept alive only
+ * by its pin + in-universe edges still counts as garbage. */
+static void gc_collect_impl(Value **seeds, int seed_count) {
+    if (g_in_gc || g_vm_multithreaded) return;
+    if (!g_gc_envs && seed_count == 0) {
+        g_gc_threshold = GC_THRESHOLD_MIN;
+        return;
+    }
+    g_in_gc = 1;
+
+    GcU u = {0};
+    u.table = xmalloc_array(512, sizeof(int));
+    for (int i = 0; i < 512; i++) u.table[i] = -1;
+    u.mask = 511;
+
+    /* 1. Build U: registered envs + everything reachable via owned edges.
+     * u.count grows during the scan — the node array is the worklist. */
+    for (Env *e = g_gc_envs; e; e = e->gc_next)
+        gcu_add(&u, e, GC_KIND_ENV);
+    for (int s = 0; s < seed_count; s++) {
+        gcu_add(&u, seeds[s], GC_KIND_VAL);
+        u.pinned[gcu_find(&u, seeds[s])]++;
+    }
+    for (int n = 0; n < u.count; n++) {
+        GC_FOR_EACH_CHILD(&u, n, child, child_kind, {
+            gcu_add(&u, child, child_kind);
+        });
+    }
+
+    /* 2. Internal reference counts (edges from inside U). */
+    for (int n = 0; n < u.count; n++) {
+        GC_FOR_EACH_CHILD(&u, n, child, child_kind, {
+            (void)child_kind;
+            int ci = gcu_find(&u, child);
+            if (ci >= 0) u.internal[ci]++;
+        });
+    }
+
+    /* 3. Roots: refcount > internal + collector pins. Sanity: accounted
+     * refs exceeding the refcount means an uncounted edge got traversed —
+     * abort the whole collection (leak, never free). */
+    int *stack = xmalloc_array(u.count ? u.count : 1, sizeof(int));
+    int sp = 0, bad = 0;
+    for (int n = 0; n < u.count; n++) {
+        int rc = u.kind[n] == GC_KIND_ENV   ? ((Env *)u.objs[n])->env_refcount
+               : u.kind[n] == GC_KIND_CHUNK ? ((EigsChunk *)u.objs[n])->refcount
+                                            : ((Value *)u.objs[n])->refcount;
+        int accounted = u.internal[n] + u.pinned[n];
+        if (accounted > rc) { bad = 1; break; }
+        if (rc > accounted) {
+            u.mark[n] = 1;
+            stack[sp++] = n;
+        }
+    }
+    if (bad) {
+        if (getenv("EIGS_GC_DEBUG"))
+            fprintf(stderr, "[gc] accounting mismatch — collection aborted\n");
+        free(stack);
+        free(u.table); free(u.objs); free(u.kind);
+        free(u.internal); free(u.pinned); free(u.mark);
+        g_gc_threshold = g_gc_captured_live * 2;
+        if (g_gc_threshold < GC_THRESHOLD_MIN) g_gc_threshold = GC_THRESHOLD_MIN;
+        g_in_gc = 0;
+        return;
+    }
+
+    /* 4. Mark everything reachable from the roots within U. */
+    while (sp > 0) {
+        int n = stack[--sp];
+        GC_FOR_EACH_CHILD(&u, n, child, child_kind, {
+            (void)child_kind;
+            int ci = gcu_find(&u, child);
+            if (ci >= 0 && !u.mark[ci]) {
+                u.mark[ci] = 1;
+                stack[sp++] = ci;
+            }
+        });
+    }
+    free(stack);
+
+    /* 5-7. Unmarked nodes are cyclic garbage: pin, clear edges, unpin.
+     * Single-threaded by construction, so plain ++ pins are fine. */
+    int garbage = 0;
+    for (int n = 0; n < u.count; n++) {
+        if (u.mark[n]) continue;
+        garbage++;
+        if      (u.kind[n] == GC_KIND_ENV)   ((Env *)u.objs[n])->env_refcount++;
+        else if (u.kind[n] == GC_KIND_CHUNK) ((EigsChunk *)u.objs[n])->refcount++;
+        else                                 ((Value *)u.objs[n])->refcount++;
+    }
+    if (garbage) {
+        for (int n = 0; n < u.count; n++)
+            if (!u.mark[n]) gc_clear_node(u.objs[n], u.kind[n]);
+        for (int n = 0; n < u.count; n++) {
+            if (u.mark[n]) continue;
+            if      (u.kind[n] == GC_KIND_ENV)   env_decref((Env *)u.objs[n]);
+            else if (u.kind[n] == GC_KIND_CHUNK) chunk_decref((EigsChunk *)u.objs[n]);
+            else                                 val_decref((Value *)u.objs[n]);
+        }
+    }
+    if (getenv("EIGS_GC_DEBUG"))
+        fprintf(stderr, "[gc] universe %d, freed %d, live captured %d\n",
+                u.count, garbage, g_gc_captured_live);
+
+    free(u.table); free(u.objs); free(u.kind);
+    free(u.internal); free(u.pinned); free(u.mark);
+    g_gc_threshold = g_gc_captured_live * 2;
+    if (g_gc_threshold < GC_THRESHOLD_MIN) g_gc_threshold = GC_THRESHOLD_MIN;
+    g_in_gc = 0;
+}
+
+void gc_collect_cycles(void) {
+    gc_collect_impl(NULL, 0);
+}
+
+/* Exit-time collection. Pure value->value cycles bound at global scope
+ * (e.g. a list appended to itself) are unreachable from the captured-env
+ * registry, so snapshot the global scope's container values first (one
+ * pinning ref each), drop the global bindings, collect with the pins
+ * accounted, then release the pins — a snapshot value kept alive only by
+ * its own cycle dies here; anything else just loses our temporary ref. */
+void gc_collect_at_exit(Env *global) {
+    Value **seeds = NULL;
+    int seed_count = 0, seed_cap = 0;
+    if (global && !g_vm_multithreaded) {
+        for (int i = 0; i < global->count; i++) {
+            EigsSlot s = global->values[i];
+            if (!slot_is_ptr(s)) continue;
+            Value *v = slot_as_ptr(s);
+            if (!gc_value_is_node(v)) continue;
+            if (seed_count >= seed_cap) {
+                seed_cap = seed_cap ? seed_cap * 2 : 64;
+                seeds = xrealloc_array(seeds, seed_cap, sizeof(Value *));
+            }
+            val_incref(v);
+            seeds[seed_count++] = v;
+        }
+    }
+    if (global) env_clear(global);
+    gc_collect_impl(seeds, seed_count);
+    for (int i = 0; i < seed_count; i++)
+        val_decref(seeds[i]);
+    free(seeds);
 }
 
 void env_reserve_slots(Env *env, int total) {

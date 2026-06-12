@@ -3384,7 +3384,7 @@ static void *thread_entry(void *arg) {
         }
         h->result = result;
         if (result) val_incref(result);
-        env_free(call_env);
+        env_decref(call_env);
     } else if (fn->type == VAL_BUILTIN) {
         /* Builtins take a single Value*; pass args[0] for 1-arg form,
          * or a list of all args for N-arg form (consistent with how
@@ -3455,7 +3455,11 @@ Value* builtin_spawn(Value *arg) {
         return make_null();
     }
     /* Flip refcounts to atomic mode before any new thread can observe
-     * a Value. pthread_create supplies the full barrier. */
+     * a Value. pthread_create supplies the full barrier. The cycle
+     * collector is disabled first (registry list maintenance is not
+     * thread-safe once envs can die on other threads); spawned programs
+     * keep the pre-collector leak behavior. */
+    gc_disable_for_threads();
     g_vm_multithreaded = 1;
     pthread_create(&h->tid, NULL, thread_entry, h);
     Value *d = make_dict(8);
@@ -4178,11 +4182,11 @@ Value* builtin_dispatch(Value *arg) {
             if (fn_chunk->local_count > fn->data.fn.param_count)
                 env_reserve_slots(call_env, fn_chunk->local_count);
             Value *result = vm_execute(fn_chunk, call_env);
-            env_free(call_env);
+            env_decref(call_env);
             return result ? result : make_null();
         }
         /* AST-based function — should not happen after bytecode migration */
-        env_free(call_env);
+        env_decref(call_env);
         return make_null();
     }
 

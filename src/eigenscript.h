@@ -169,7 +169,7 @@ typedef union { double d; uint64_t u; } EigsSlot;
 #endif
 
 /* Hash index for O(1) variable lookup.  Sits alongside the linear
- * names/values arrays so iteration order and env_free are unchanged. */
+ * names/values arrays so iteration order and env_decref are unchanged. */
 #define ENV_HASH_INIT_CAP 32  /* must be power of 2 */
 
 typedef struct {
@@ -186,12 +186,20 @@ struct Env {
     int *assign_counts; /* per-slot assignment counter for 'when is' */
     int count;
     int capacity;
-    Env *parent;
+    Env *parent;        /* lexical parent; an OWNED reference (env_incref'd
+                         * by env_new, dropped by env_decref's destructor) */
     int heap_allocated;
     int captured;
-    int env_refcount;   /* number of closures referencing this env */
+    int env_refcount;   /* honest owner count: creator/frame + closures
+                         * (make_fn) + child envs (parent link) + a chunk's
+                         * parked env_cache. 0 -> destroyed. */
     uint32_t binding_version; /* bumped on every new-binding add or env recycle;
                                * used by VM inline caches to detect shadowing */
+    /* Cycle-collector registry of captured envs (intrusive list; see
+     * gc_collect_cycles in eigenscript.c and docs/CLOSURE_CYCLE_GC.md). */
+    Env *gc_next;
+    Env *gc_prev;
+    unsigned char in_gc_list;
     EnvHash hash;
 };
 
@@ -395,8 +403,30 @@ Env *env_resolve_chain(Env *start, const char *name, uint32_t h,
                        int *out_slot, int *out_depth);
 void dict_set_hashed(Value *dict, const char *key, uint32_t h, Value *val);
 Value* dict_get_hashed(Value *dict, const char *key, uint32_t h);
-void env_free(Env *env);
+/* Env lifetime is a real refcount: env_new returns with refcount 1 (the
+ * creator's ref — adopted by the call frame or the C caller) and an owned
+ * ref on its parent. env_decref destroys at 0: drops every binding, drops
+ * the parent ref, recycles or frees the struct. */
+void env_incref(Env *env);
+void env_decref(Env *env);
 void env_destroy_final(Env *env);
+/* Mark an env captured by a closure and register it with the cycle
+ * collector (no-op registration for g_global_env and once spawn() has
+ * gone multithreaded). May trigger a collection when the registry has
+ * grown past the adaptive threshold. */
+void env_mark_captured(Env *env);
+/* Reclaim env<->fn reference cycles among captured envs. Safe at any
+ * point where refcounts are consistent; conservative — when accounting
+ * doesn't prove a subgraph dead it leaks instead of freeing. No-op when
+ * multithreaded. */
+void gc_collect_cycles(void);
+/* Exit-time teardown of the global scope: drops every global binding,
+ * then collects both env<->fn cycles and pure value cycles that were
+ * rooted at global scope. Follow with env_decref(global). */
+void gc_collect_at_exit(Env *global);
+/* Called by spawn() before going multithreaded: empties the registry and
+ * disables future registration (cross-thread roots aren't visible). */
+void gc_disable_for_threads(void);
 void env_set_local_owned(Env *env, const char *name, Value *val);
 void env_clear(Env *env);
 /* Reserve env slots up to `total` (used at function call to pre-allocate

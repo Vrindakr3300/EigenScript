@@ -223,7 +223,13 @@ int main(int argc, char **argv) {
 
         eigenscript_repl(global);
         trace_shutdown();
-        env_destroy_final(global);
+        /* Drop the global scope's bindings (closures defined at top level
+         * die here), then collect the env<->fn cycles those closures left
+         * behind, then release the creator ref — with honest env
+         * refcounts this reclaims the whole graph (docs/CLOSURE_CYCLE_GC.md).
+         * Spawned-thread leftovers keep the tolerated-leak behavior. */
+        gc_collect_at_exit(global);
+        env_decref(global);
         g_global_env = NULL;
         arena_destroy();
         return 0;
@@ -300,9 +306,13 @@ int main(int argc, char **argv) {
     /* Teardown order matters: the trace prev-table holds refs to values
      * whose death can touch their closure env, so it must drain before
      * the global env is destroyed. The atexit-registered trace_shutdown
-     * then no-ops. */
+     * then no-ops. Then: drop the global scope's bindings, collect the
+     * env<->fn cycles left behind by escaped closures, and release the
+     * creator ref (docs/CLOSURE_CYCLE_GC.md). Spawned-thread leftovers
+     * keep the tolerated-leak behavior. */
     trace_shutdown();
-    env_destroy_final(global);
+    gc_collect_at_exit(global);
+    env_decref(global);
     g_global_env = NULL;
     arena_destroy();
     return exit_code;
