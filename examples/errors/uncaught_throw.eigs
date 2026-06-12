@@ -1,0 +1,10 @@
+# ERROR DEMO — a thrown error with no enclosing try halts the program
+# with a nonzero exit code.
+# expect-error: invalid input
+define validate(v) as:
+    if v < 0:
+        throw of "invalid input"
+    return v
+ok is validate of (5)
+bad is validate of (0 - 1)
+print of "never reached"

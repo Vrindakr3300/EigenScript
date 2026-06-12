@@ -1,0 +1,4 @@
+# ERROR DEMO — reading a name that was never assigned.
+# Variables must be assigned before use; there is no implicit null.
+# expect-error: Error line 4: undefined variable 'total'
+print of total

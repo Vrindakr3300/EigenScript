@@ -1,0 +1,4 @@
+# ERROR DEMO — unexpected character.
+# The lexer rejects characters outside the language's token set.
+# expect-error: Syntax error line 4: unexpected character '@'
+x is @

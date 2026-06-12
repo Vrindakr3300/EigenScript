@@ -1,0 +1,5 @@
+# ERROR DEMO — applying `of` to a non-function.
+# Only fn and builtin values are callable.
+# expect-error: Error line 5: cannot call num
+x is 5
+y is x of 10
