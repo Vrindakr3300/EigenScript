@@ -6,6 +6,38 @@ All notable changes to EigenScript are documented here.
 
 A language-features release.
 
+### Fix — buffer index-assignment kept only the integer part
+
+`b[i] is 1.5` stored `1.0` while `buf_set of [b, i, 1.5]` stored `1.5`:
+all four interpreter INDEX_SET arms carried an `(int)` cast on the
+stored value, and the JIT's inline buffer store round-tripped through
+`cvttsd2si`/`cvtsi2sd` — even though `buffer.data` is `double*` and
+nothing documents truncation. Found while writing the executable spec
+(its buffer example produced the wrong output). Index-assignment now
+stores the full double in the interpreter and the JIT alike, agreeing
+with `buf_set`. Regression checks in `test_builtin_indirect.eigs`
+(fraction kept, agrees with buf_set, negative fractions) and
+`test_jit_paths.eigs` (fractional stores through the hot inline path).
+
+### Docs — executable spec, comparison guide, error corpus
+
+The "AI-legibility" round: documentation a human or a model can trust
+because the suite executes it.
+
+- **`docs/SPEC.md`** — canonical spec: every construct with a runnable
+  example and its exact output. 38 example/output pairs are executed by
+  the new `tests/test_doc_examples.py` (suite section [89]) and must
+  match byte-for-byte, so the spec cannot drift from the
+  implementation.
+- **`docs/COMPARISON.md`** — EigenScript next to Python/JS/Rust/Lisp
+  with a porting checklist and before/after transformations; the
+  EigenScript halves are suite-verified the same way (11 pairs).
+- **`examples/errors/`** — nine programs that fail on purpose, each
+  declaring its expected message in an `# expect-error:` header,
+  enforced by `tests/test_error_examples.sh` (section [90]).
+- **`docs/README.md`** — documentation map; README points at it and at
+  the spec.
+
 ### LSP — parse-error diagnostics now actually appear
 
 The language server advertised `publishDiagnostics` but never sent a

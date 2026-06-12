@@ -266,17 +266,29 @@ eigenscript examples/stem/greenhouse_controller.eigs # closed-loop STEM controll
 
 ```bash
 cd tests
-./run_all_tests.sh    # 1257/1257 (minimal build; full build adds HTTP/DB/model suites)
+./run_all_tests.sh    # 1790+ checks (minimal build; full build adds HTTP/DB/model suites)
 ```
 
 ## Documentation
 
-- [docs/SYNTAX.md](docs/SYNTAX.md) — language reference
+Full map: **[docs/README.md](docs/README.md)**. Highlights:
+
+- [docs/SPEC.md](docs/SPEC.md) — **canonical, executable spec**: every
+  construct with a runnable example and exact output, verified by the
+  test suite on every commit (the spec cannot drift from the
+  implementation)
+- [docs/COMPARISON.md](docs/COMPARISON.md) — EigenScript next to
+  Python/JS/Rust/Lisp, with a porting checklist (also suite-verified)
+- [docs/SYNTAX.md](docs/SYNTAX.md) — tutorial-style language guide
 - [docs/GRAMMAR.md](docs/GRAMMAR.md) — formal EBNF grammar
+- [docs/LANGUAGE_CONTRACT.md](docs/LANGUAGE_CONTRACT.md) — edge-case promises
 - [docs/BUILTINS.md](docs/BUILTINS.md) — 150+ builtin functions (130 core + 20 extensions)
 - [docs/STDLIB.md](docs/STDLIB.md) — standard library guide
 - [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) — error format and exit codes
 - [docs/TRACE.md](docs/TRACE.md) — execution trace, deterministic replay, temporal interrogatives
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — lexer → parser → bytecode VM → JIT internals
+- [examples/errors/](examples/errors/) — programs that fail on purpose,
+  each with its expected error message (suite-verified)
 
 ## Build from Source
 

@@ -1,0 +1,3 @@
+# ERROR DEMO — string literal missing its closing quote.
+# expect-error: Syntax error line 3: unterminated string
+x is "abc
