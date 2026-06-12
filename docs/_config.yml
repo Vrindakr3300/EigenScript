@@ -1,0 +1,17 @@
+# GitHub Pages (Jekyll) configuration for the documentation site.
+# Built by .github/workflows/pages.yml from this docs/ directory.
+title: EigenScript
+description: >-
+  A standalone programming language with native observer semantics —
+  ask your running program about its own state and history.
+theme: jekyll-theme-cayman
+
+# Make the repo-relative .md links in these documents work on the
+# rendered site (SPEC.md -> SPEC.html etc.).
+plugins:
+  - jekyll-relative-links
+relative_links:
+  enabled: true
+  collections: true
+include:
+  - README.md

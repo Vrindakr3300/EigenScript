@@ -2,9 +2,24 @@
 
 All notable changes to EigenScript are documented here.
 
-## [0.13.0] — unreleased
+## [0.13.0] — 2026-06-12
 
 A language-features release.
+
+### Tooling — editor support and published docs
+
+- **`editors/vscode/`** — VS Code extension: TextMate grammar (keywords,
+  interrogatives, predicates, f-string interpolation, definitions and
+  call sites, `|>`/`=>`), comment toggling, bracket/auto-indent rules.
+  Symlink into `~/.vscode/extensions/` or package with vsce.
+- **`editors/vim/`** — Vim/Neovim syntax + ftdetect for `.eigs`.
+- **`.gitattributes`** maps `.eigs` to Python highlighting on github.com
+  until a Linguist grammar is upstreamed.
+- **Docs site** — `.github/workflows/pages.yml` publishes `docs/` via
+  GitHub Pages (Jekyll, relative links resolved; the workflow provisions
+  Pages itself on first run). Requires a public repo or paid plan.
+- `VERSION` bumped to 0.13.0; pushing the `v0.13.0` tag triggers the
+  release workflow (build, full suite, binary upload).
 
 ### Fix — buffer index-assignment kept only the integer part
 

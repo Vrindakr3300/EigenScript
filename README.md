@@ -290,6 +290,18 @@ Full map: **[docs/README.md](docs/README.md)**. Highlights:
 - [examples/errors/](examples/errors/) — programs that fail on purpose,
   each with its expected error message (suite-verified)
 
+## Editor Support
+
+- **VS Code**: [`editors/vscode/`](editors/vscode/) — syntax
+  highlighting, f-string interpolation, bracket/indent rules. Symlink it
+  into `~/.vscode/extensions/` or package with `vsce`.
+- **Vim / Neovim**: [`editors/vim/`](editors/vim/) — copy into
+  `~/.vim/` or `~/.config/nvim/`.
+- **Any LSP client**: `make lsp` builds `src/eigenlsp` (diagnostics,
+  completion, hover, definition, references over stdio).
+- On github.com, `.eigs` files render with Python highlighting (closest
+  match) until a Linguist grammar is upstreamed.
+
 ## Build from Source
 
 ```bash
