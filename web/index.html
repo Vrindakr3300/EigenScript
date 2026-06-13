@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EigenScript Playground</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>EigenScript Playground</h1>
+    <span class="version" id="version">loading…</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/InauguralSystems/EigenScript">github</a>
+    <a href="https://github.com/InauguralSystems/EigenScript/blob/main/docs/SPEC.md">spec</a>
+  </header>
+
+  <main>
+    <section class="editor-pane">
+      <div class="pane-header">
+        <label for="examples">examples:</label>
+        <select id="examples">
+          <option value="hello">hello world</option>
+          <option value="defaults">default params</option>
+          <option value="observer">observer/temporal</option>
+          <option value="listcomp">list comprehension</option>
+          <option value="closure">closure counter</option>
+        </select>
+        <span class="spacer"></span>
+        <button id="run">run (ctrl+enter)</button>
+      </div>
+      <textarea id="source" spellcheck="false" autofocus></textarea>
+    </section>
+
+    <section class="output-pane">
+      <div class="pane-header">
+        <span>output</span>
+        <span class="spacer"></span>
+        <span id="status">ready</span>
+      </div>
+      <pre id="output"></pre>
+    </section>
+  </main>
+
+  <footer>
+    <span>WASM interpreter-only build (no JIT, no networking, no subprocess).</span>
+  </footer>
+
+  <script src="eigs.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

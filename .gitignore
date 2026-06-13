@@ -1,6 +1,7 @@
 # Build artifacts
 src/eigenscript
 src/eigenscript-full
+web/dist/
 *.o
 *.a
 *.so

@@ -60,7 +60,12 @@ int jit_cache_seal(EigsJitCache *jc) {
     if (!jc) return -1;
     if (jc->sealed) return 0;
     if (mprotect(jc->base, jc->capacity, PROT_READ | PROT_EXEC) != 0) return -1;
+#if !defined(__wasm__)
+    /* clang's wasm backend doesn't implement llvm.clear_cache; the WASM
+     * build is interpreter-only (see the __x86_64__ gate below) so this
+     * cache never holds emitted code. */
     __builtin___clear_cache((char *)jc->base, (char *)jc->base + jc->capacity);
+#endif
     jc->sealed = 1;
     return 0;
 }

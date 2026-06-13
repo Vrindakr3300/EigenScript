@@ -219,9 +219,13 @@ portability, and the ecosystem story):
    upstream a Linguist grammar (editors/vscode has the TextMate
    grammar ready; Linguist has usage-volume requirements, so this
    waits on adoption — `.gitattributes` maps `.eigs` to Python as the
-   stopgap). A browser playground via a WASM interpreter-only build
-   (JIT compiled out — the build flags already support that shape) is
-   the highest-leverage adoption item when the time comes.
+   stopgap). **Browser playground**: `web/build.sh` (emcc) produces
+   `web/dist/eigs.{js,wasm}` for an interpreter-only WASM module
+   driven by `web/{index.html,app.js,style.css}`; JIT is arch-gated
+   in `src/jit.c` (`__x86_64__`) so wasm32 compiles cleanly. Needs
+   `-sSTACK_SIZE=4194304` (default 64KB overflows the C compiler's
+   recursive `compile_node` on nested defines). Not yet deployed —
+   Pages workflow + landing-page link still TODO.
 - Perf carryover from 0.12.0 (ROADMAP.md): NaN-boxing for *container*
   storage, extending GET_LOCAL/SET_LOCAL to all locals, per-call env
   churn. Re-profile before picking: every stage last cycle moved the
