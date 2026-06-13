@@ -756,6 +756,24 @@ rm of "spec_shapes.eigs"
 (In a project, the idiom is simply `import shapes` with `shapes.eigs`
 sitting next to `app.eigs`.)
 
+A module's body executes **once** per program. Repeated `import name`s
+(directly, or transitively through a diamond like `a → c, b → c`) bind
+the same dict and reuse the same module state — top-level side effects
+fire on the first import only. The cache is keyed on the canonicalized
+absolute path of the resolved file.
+
+```eigenscript
+write_text of ["spec_cached.eigs", "print of \"side effect\"\nn is 1\n"]
+import spec_cached
+import spec_cached
+print of spec_cached.n
+rm of "spec_cached.eigs"
+```
+```output
+side effect
+1
+```
+
 `load_file of "path.eigs"` is the older, non-namespaced form: it
 executes a file directly **in the current scope**. The standard
 library's helper modules (`lib/test.eigs`'s `assert_eq`, ...) are

@@ -3916,6 +3916,23 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             }
         }
 
+        /* Module cache: canonicalize to absolute path so two different
+         * importers (different cwds, different relative paths) hash to
+         * the same entry. A miss re-executes; a hit binds the same dict
+         * (shared mutable state — by design, mirrors Python/JS). */
+        char abs_path[8192];
+        if (!realpath(path_buf, abs_path)) {
+            /* realpath shouldn't fail here (we just resolved + access'd
+             * the file) but fall back to the resolved path so the cache
+             * still functions when it does. */
+            snprintf(abs_path, sizeof(abs_path), "%s", path_buf);
+        }
+        Value *cached_dict = NULL;
+        if (eigs_module_cache_get(abs_path, &cached_dict)) {
+            vm_push(cached_dict);
+            DISPATCH();
+        }
+
         long src_size = 0;
         char *source = read_file_util(path_buf, &src_size);
         if (!source) {
@@ -3960,9 +3977,12 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
             dict_set(mod_dict, mod_env->names[mi], mv);
             val_decref(mv);
         }
-        /* Drop the creator ref: the module env now lives exactly as long
-         * as the closures defined in it (their refs + the dict's refs on
-         * them); a fn-free module is reclaimed immediately. */
+        /* Cache before dropping the creator ref — the cache takes its
+         * own ref on both dict and env, so the module env stays alive
+         * (a fn-free module would otherwise be reclaimed immediately,
+         * which is fine, but caching the env keeps observer-trace
+         * identity stable across re-imports). */
+        eigs_module_cache_put(abs_path, mod_dict, mod_env);
         env_decref(mod_env);
         vm_push(mod_dict);
         DISPATCH();

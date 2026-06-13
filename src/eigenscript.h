@@ -507,6 +507,21 @@ extern __thread Value *g_last_observer;
 extern char g_script_dir[4096];
 extern char g_exe_dir[4096];
 
+/* ---- Module cache (Phase 0a of the package design) ---- */
+/* Hit: out_dict gets a new counted ref (caller decrefs). Miss: out_dict
+ * is NULL and the caller must execute + put. Keyed on the *absolute*
+ * resolved path. */
+int  eigs_module_cache_get(const char *abs_path, Value **out_dict);
+/* Adds (incref'ing dict and env, strdup'ing path). No-op if path already
+ * cached — first writer wins, since two concurrent inserts of the same
+ * module would be a bug anyway. */
+void eigs_module_cache_put(const char *abs_path, Value *dict, Env *env);
+/* Releases all cached refs. Called from gc_collect_at_exit before the
+ * global env's container snapshot, so cached module dicts/envs are
+ * dropped first and any pure-value cycle they hold goes through the
+ * usual snapshot collection. */
+void eigs_module_cache_clear(void);
+
 /* ---- Observer thresholds (tunable via set_observer_thresholds) ---- */
 extern __thread double g_obs_dh_zero;   /* |dH| < this → "zero change" (default 0.001) */
 extern __thread double g_obs_dh_small;  /* |dH| < this → "small change" (default 0.01)  */

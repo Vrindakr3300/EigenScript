@@ -2032,6 +2032,28 @@ else
 fi
 echo ""
 
+echo "[91] Module Cache (3 checks)"
+# Phase 0a of the package design: repeat imports of the same resolved
+# path share one dict + Env (no body re-execution). modcache_fixture.eigs
+# prints FIXTURE_RAN at top level exactly once; test_module_cache.eigs
+# imports it twice and verifies bindings + cached fns still work.
+MC_OUTPUT=$(./eigenscript "../tests/test_module_cache.eigs" </dev/null 2>&1); MC_RC=$?
+MC_RUNS=$(echo "$MC_OUTPUT" | grep -c "^FIXTURE_RAN$" || true)
+if rc_ok "$MC_RC" "$MC_OUTPUT" \
+   && [ "$MC_RUNS" = "1" ] \
+   && echo "$MC_OUTPUT" | grep -q "PASS: greeting bound" \
+   && echo "$MC_OUTPUT" | grep -q "PASS: fn from cached module works"; then
+    TOTAL=$((TOTAL + 3))
+    PASS=$((PASS + 3))
+    echo "  PASS: module cache: body runs once + bindings + fns"
+else
+    TOTAL=$((TOTAL + 3))
+    FAIL=$((FAIL + 3))
+    echo "  FAIL: module cache (rc=$MC_RC, fixture_runs=$MC_RUNS)"
+    echo "$MC_OUTPUT" | head -10
+fi
+echo ""
+
 echo "============================================"
 echo "  RESULTS: $PASS/$TOTAL passed, $FAIL failed"
 if [ "$LEAKED" -gt 0 ]; then

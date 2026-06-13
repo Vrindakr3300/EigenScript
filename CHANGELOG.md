@@ -4,6 +4,23 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Modules — import cache (package design Phase 0a)
+
+- **`import` now caches the resolved module.** The first import of a
+  module executes its body; subsequent imports of the same resolved
+  absolute path bind the same dict and reuse the same module Env. A
+  side-effecting top-level statement (e.g. `print of "init"`) runs
+  exactly once across all importers; diamond dependencies (`a → c`,
+  `b → c`) share one instance of `c`'s state. Cache is keyed on the
+  `realpath`-canonicalized resolved path so different relative routes
+  to the same file hit the same entry. Cleared in `gc_collect_at_exit`
+  before the global-scope snapshot.
+- **Observable behavior change.** Programs that relied on per-import
+  re-execution of side-effecting modules will see one execution
+  instead. The dict shape, member names, and binding semantics are
+  unchanged. This is the runtime prerequisite for the package design
+  (docs/PACKAGE_DESIGN.md) and is documented in SPEC.md — Modules.
+
 ### Runtime — small perf wins (issue #174)
 
 - **Compiler dedups `OP_LINE` per basic block.** The compiler stamped a

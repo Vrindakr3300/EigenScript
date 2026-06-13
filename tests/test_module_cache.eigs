@@ -1,0 +1,19 @@
+# Module cache (Phase 0a). The fixture prints "FIXTURE_RAN" at top
+# level and exports `greeting` and `add`. Two imports of the same
+# module should run the body exactly once and bind the same dict; a
+# function from the cached module must still work.
+import modcache_fixture
+import modcache_fixture
+
+# Members carry across the second import.
+if modcache_fixture.greeting == "hello":
+    print of "PASS: greeting bound"
+else:
+    print of "FAIL: greeting bound"
+
+if (modcache_fixture.add of [2, 3]) == 5:
+    print of "PASS: fn from cached module works"
+else:
+    print of "FAIL: fn from cached module works"
+
+print of "module cache: all passed"

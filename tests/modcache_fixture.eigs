@@ -1,0 +1,5 @@
+_run_marker is "FIXTURE_RAN"
+print of _run_marker
+greeting is "hello"
+define add(a, b) as:
+    return a + b

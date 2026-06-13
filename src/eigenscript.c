@@ -1783,6 +1783,67 @@ void gc_collect_cycles(void) {
     gc_collect_impl(NULL, 0);
 }
 
+/* ---- Module cache (Phase 0a) ----------------------------------------
+ * Linear scan; modules-per-program is small (single digits to dozens).
+ * Cache owns: strdup'd path, one ref on the dict, one ref on mod_env.
+ * Multi-thread: not guarded — `import` from inside a spawned thread
+ * isn't a documented use case, and the population pattern is "main
+ * thread imports at startup". If that changes, wrap in a mutex. */
+typedef struct {
+    char *path;
+    Value *dict;
+    Env *env;
+} EigsModuleCacheEntry;
+
+static EigsModuleCacheEntry *g_module_cache = NULL;
+static size_t g_module_cache_count = 0;
+static size_t g_module_cache_cap = 0;
+
+int eigs_module_cache_get(const char *abs_path, Value **out_dict) {
+    if (out_dict) *out_dict = NULL;
+    if (!abs_path) return 0;
+    for (size_t i = 0; i < g_module_cache_count; i++) {
+        if (strcmp(g_module_cache[i].path, abs_path) == 0) {
+            if (out_dict) {
+                *out_dict = g_module_cache[i].dict;
+                val_incref(*out_dict);
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void eigs_module_cache_put(const char *abs_path, Value *dict, Env *env) {
+    if (!abs_path || !dict) return;
+    for (size_t i = 0; i < g_module_cache_count; i++) {
+        if (strcmp(g_module_cache[i].path, abs_path) == 0) return;
+    }
+    if (g_module_cache_count == g_module_cache_cap) {
+        size_t newcap = g_module_cache_cap ? g_module_cache_cap * 2 : 8;
+        g_module_cache = xrealloc_array(g_module_cache, newcap,
+                                         sizeof(EigsModuleCacheEntry));
+        g_module_cache_cap = newcap;
+    }
+    EigsModuleCacheEntry *e = &g_module_cache[g_module_cache_count++];
+    e->path = strdup(abs_path);
+    e->dict = dict;
+    val_incref(dict);
+    e->env = env;
+    if (env) env_incref(env);
+}
+
+void eigs_module_cache_clear(void) {
+    for (size_t i = 0; i < g_module_cache_count; i++) {
+        free(g_module_cache[i].path);
+        val_decref(g_module_cache[i].dict);
+        if (g_module_cache[i].env) env_decref(g_module_cache[i].env);
+    }
+    free(g_module_cache);
+    g_module_cache = NULL;
+    g_module_cache_count = g_module_cache_cap = 0;
+}
+
 /* Exit-time collection. Pure value->value cycles bound at global scope
  * (e.g. a list appended to itself) are unreachable from the captured-env
  * registry, so snapshot the global scope's container values first (one
@@ -1790,6 +1851,10 @@ void gc_collect_cycles(void) {
  * accounted, then release the pins — a snapshot value kept alive only by
  * its own cycle dies here; anything else just loses our temporary ref. */
 void gc_collect_at_exit(Env *global) {
+    /* Drop module-cache refs first: a module's dict + env can hold
+     * closures that close over global bindings, so releasing the cache
+     * before snapshotting globals exposes those for collection. */
+    eigs_module_cache_clear();
     Value **seeds = NULL;
     int seed_count = 0, seed_cap = 0;
     if (global && !g_vm_multithreaded) {
