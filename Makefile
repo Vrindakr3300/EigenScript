@@ -1,7 +1,16 @@
 VERSION := $(shell cat VERSION)
 CC      := gcc
 CFLAGS  := -Wall -Wextra -O2 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE
+
+# RELRO/BIND_NOW are ELF concepts; macOS's ld64 rejects -z, and PIE is
+# already the default there. Without this split every Makefile link target
+# (notably `make lsp`) fails on macOS even though build.sh works.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+LDFLAGS := -lm -lpthread
+else
 LDFLAGS := -pie -Wl,-z,relro,-z,now -lm -lpthread
+endif
 
 SRC_DIR := src
 SOURCES := $(SRC_DIR)/eigenscript.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/builtins.c $(SRC_DIR)/builtins_tensor.c $(SRC_DIR)/hash.c $(SRC_DIR)/arena.c $(SRC_DIR)/strbuf.c $(SRC_DIR)/ext_store.c $(SRC_DIR)/fmt.c $(SRC_DIR)/lint.c $(SRC_DIR)/chunk.c $(SRC_DIR)/compiler.c $(SRC_DIR)/vm.c $(SRC_DIR)/jit.c $(SRC_DIR)/trace.c $(SRC_DIR)/main.c

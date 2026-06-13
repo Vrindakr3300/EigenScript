@@ -21,8 +21,10 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  tag:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,31 +52,80 @@ jobs:
             git push origin "$TAG"
           fi
 
-      - name: Install GCC
+  # One leg per released platform. Linux additionally ships the `full`
+  # variant (http+model+db); macOS ships the minimal build only — the
+  # arm64 binary is interpreter-only until the ARM64 JIT exists. Every
+  # leg runs the entire suite against the exact binary it uploads.
+  # macos-15-intel is GitHub's hosted Intel runner (the macos-13
+  # replacement); macos-latest is Apple Silicon.
+  build:
+    name: build (${{ matrix.label }})
+    needs: tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x86_64
+          - os: macos-15-intel
+            label: macos-x86_64
+          - os: macos-latest
+            label: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+
+      - name: Install GCC (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y gcc
 
       - name: Build minimal binary
         run: |
           ./build.sh
-          mv src/eigenscript eigenscript-linux-x86_64
-          chmod +x eigenscript-linux-x86_64
+          cp src/eigenscript eigenscript-${{ matrix.label }}
+          chmod +x eigenscript-${{ matrix.label }}
 
-      - name: Build full binary
+      - name: Build full binary (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y libpq-dev
           ./build.sh full
-          mv src/eigenscript eigenscript-full-linux-x86_64
-          chmod +x eigenscript-full-linux-x86_64
+          mv src/eigenscript eigenscript-full-${{ matrix.label }}
+          chmod +x eigenscript-full-${{ matrix.label }}
 
-      - name: Run tests
+      - name: Run tests against the release binary
         run: |
-          cp eigenscript-linux-x86_64 src/eigenscript
+          cp eigenscript-${{ matrix.label }} src/eigenscript
           cd tests && bash run_all_tests.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.label }}
+          path: eigenscript-*${{ matrix.label }}
+          if-no-files-found: error
+
+  release:
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+
+      # Verifiable with `sha256sum -c CHECKSUMS` (Linux) or
+      # `shasum -a 256 -c CHECKSUMS` (macOS).
+      - name: Generate CHECKSUMS
+        run: |
+          sha256sum eigenscript-* > CHECKSUMS
+          cat CHECKSUMS
 
       - name: Upload binaries to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ needs.tag.outputs.tag }}
           files: |
-            eigenscript-linux-x86_64
-            eigenscript-full-linux-x86_64
+            eigenscript-*
+            CHECKSUMS

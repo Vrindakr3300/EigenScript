@@ -187,23 +187,24 @@ Open items, in rough priority (current goal: be a *good MIT-licensed
 language* — the legal/hygiene side is done; the gaps are distribution,
 portability, and the ecosystem story):
 
-1. **Distribution** — highest value-per-effort, no runtime changes:
-   macOS release binaries (x86_64 + arm64; arm64 is interpreter-only
-   until the ARM64 JIT exists) added to the Release workflow, then a
-   Homebrew tap/formula. Follow-ons: Docker image, AUR, asdf/mise
-   plugin. Release assets already carry sha256 digests; a CHECKSUMS
-   file / artifact attestation is the next trust step.
+1. **Distribution** — the Release workflow now builds macOS binaries
+   (macos-15-intel runner for x86_64, macos-latest for arm64;
+   arm64 is interpreter-only until the ARM64 JIT exists) and a
+   CHECKSUMS file, each leg suite-tested against its own binary —
+   **unverified until the next release run; watch it**. Next: a
+   Homebrew tap/formula (needs a separate tap repo). Follow-ons:
+   Docker image, AUR, asdf/mise plugin, artifact attestation.
 2. **Package/dependency story** for EigenScript code itself: `import`
    resolves lib/ + script-relative only — no third-party dependency
    mechanism, no versioning, no lockfile convention. The biggest gap
    between "neat project" and "usable language"; needs a design pass
    before code.
-3. **Stability contract**: pre-1.0 with no stated compat policy. Write
-   the paragraph (SPEC.md or README): what's frozen, what may break
-   before 1.0, how deprecations work. The executable spec (suite [89])
-   is already the enforcement mechanism.
-4. **`make lsp` fails on macOS runners** (skipped cleanly by the suite;
-   add the compile check to the macOS CI leg to surface the error).
+3. ~~Stability contract~~ — done: README "Stability" section (spec =
+   the surface; patch never breaks documented behavior, minor may
+   with a CHANGELOG entry; everything off-spec explicitly unstable).
+4. ~~`make lsp` fails on macOS~~ — root cause fixed (GNU-ld-only
+   `-z relro`/`-z now` now Linux-gated in the Makefile) and the macOS
+   CI leg compile-checks the LSP.
 5. **Windows port** (runtime is POSIX-only) and **ARM64 JIT** (Apple
    Silicon runs interpreter-only) — the two real porting projects.
 6. **Trust/identity follow-ons**: OSS-Fuzz enrollment (fuzz harness

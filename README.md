@@ -290,6 +290,20 @@ Full map: **[docs/README.md](docs/README.md)**. Highlights:
 - [examples/errors/](examples/errors/) — programs that fail on purpose,
   each with its expected error message (suite-verified)
 
+## Stability
+
+EigenScript is pre-1.0. The compatibility surface is exactly what
+[docs/SPEC.md](docs/SPEC.md) documents: every construct there carries a
+runnable example whose output CI verifies on every commit, so a change
+in documented behavior cannot land without rewriting the spec in the
+same PR. Within the 0.x series, patch releases (0.x.**y**) never change
+documented behavior; minor releases (0.**x**) may, and any such break
+is listed in [CHANGELOG.md](CHANGELOG.md) under the release that made
+it. Anything *not* in the spec — observer internals, bytecode layout,
+JIT behavior, trace-tape format, extension builtins (`http`/`model`/
+`db`/`gfx`) — may change in any release. At 1.0 the documented surface
+freezes and semantic versioning applies from then on.
+
 ## Editor Support
 
 - **VS Code**: [`editors/vscode/`](editors/vscode/) — syntax
