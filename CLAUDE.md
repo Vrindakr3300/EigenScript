@@ -136,19 +136,20 @@ make jit-smoke  # standalone emitter tests (jit_smoke.c stubs all helpers)
   /dev/null — `test_terminal.eigs` blocks forever reading a pipe that
   never EOFs (e.g. backgrounded runs).
 
-## Current state: 0.13.0 released + closure-cycle collector; next up
+## Current state: 0.14.0 released; next up
 
-0.13.0 is cut (CHANGELOG.md [0.13.0] is the full record). Landed since,
-unreleased: the **closure-cycle collector** — honest `Env` refcounts
-(creator/frame + closures + parent links + parked env_cache all
-counted; `env_free` → `env_incref`/`env_decref`) plus a registry-driven
-mark-sweep over captured envs (docs/CLOSURE_CYCLE_GC.md is the as-built
-record, including the maintainer invariants). Escaping closures are
-reclaimed mid-run and at exit; closure churn is ~40% faster with flat
-RSS; disabled once spawn() goes multithreaded. 0.13.0 highlights on
-top of the language-features run (destructuring, slicing, negative
-indexing, default params, streaming subprocess I/O, recv_timeout,
-multi-arg spawn) and the twelve post-merge fixes (#148–#159):
+0.14.0 is cut (CHANGELOG.md [0.14.0] is the full record). It rolls up
+the closure-cycle collector, the package ecosystem Phase 0–2 (`--pkg`
+tool + `eigs_modules/` resolver + sibling repos), runtime perf wins
+(OP_LINE dedup, single-alloc strcat, ITER_NEXT buffer fast path),
+macOS x86_64 + arm64 distribution, the stability contract, and a
+trust/identity stack: OpenSSF Best Practices passing badge, CodeQL
+workflow, Scorecard 7.5/10, Sigstore signed releases (first release
+to ship attestations), OSS-Fuzz PR awaiting review. 0.13.0 highlights
+remain in scope on top of the language-features run (destructuring,
+slicing, negative indexing, default params, streaming subprocess I/O,
+recv_timeout, multi-arg spawn) and the twelve post-merge fixes
+(#148–#159):
 
 - **Structured errors**: `throw` preserves the thrown value (catch
   binds dicts/lists unchanged; runtime errors bind message strings);
@@ -187,25 +188,28 @@ Open items, in rough priority (current goal: be a *good MIT-licensed
 language* — the legal/hygiene side is done; the gaps are distribution,
 portability, and the ecosystem story):
 
-1. **Distribution** — the Release workflow now builds macOS binaries
-   (macos-15-intel runner for x86_64, macos-latest for arm64;
-   arm64 is interpreter-only until the ARM64 JIT exists) and a
-   CHECKSUMS file, each leg suite-tested against its own binary —
-   **unverified until the next release run; watch it**. **Homebrew
-   tap** lives at github.com/InauguralSystems/homebrew-eigenscript —
-   from-source formula pinned to v0.13.0, with an `inreplace` to drop
-   the GNU-ld-only `-z relro`/`-z now` LDFLAGS from v0.13.0's Makefile
-   (the gating fix is in main but landed after the tag; the inreplace
-   stops matching on the next release, forcing a bump). Follow-ons:
-   Docker image, AUR, asdf/mise plugin, artifact attestation.
-2. **Package/dependency story** — design pass done
-   (docs/PACKAGE_DESIGN.md: vendored `eigs_modules/`, git-pinned
-   `eigs.json` + lockfile, `--pkg` tool in EigenScript, no code
-   execution at install). Blocked on the open questions at its bottom
-   (manifest format, resolver precedence, flat-vs-nested) — maintainer
-   answers, then Phase 0 (module cache + per-file resolution base +
-   resolver step) is implementable. Note: `import` currently
-   re-executes per import-site; the cache is a behavior change.
+1. **Distribution** — macOS binaries (macos-15-intel x86_64,
+   macos-latest arm64; arm64 is interpreter-only until the ARM64 JIT
+   exists) and a CHECKSUMS file ship from v0.13.0; v0.14.0 additionally
+   signs every binary with Sigstore build provenance
+   (`actions/attest-build-provenance` in release.yml, bundle uploaded
+   as `attestation.sigstore.json`; verify with `gh attestation verify
+   eigenscript-<label> --repo InauguralSystems/EigenScript`).
+   **Homebrew tap** lives at github.com/InauguralSystems/homebrew-eigenscript —
+   the v0.13.0 formula's `inreplace` to drop the GNU-ld-only
+   `-z relro`/`-z now` LDFLAGS no longer matches as of v0.14.0, so the
+   tap must bump and remove the workaround. Follow-ons: Docker image,
+   AUR, asdf/mise plugin.
+2. **Package/dependency story** — **Phase 0–2 landed in v0.14.0**:
+   import cache + per-file resolution base + `eigs_modules/<name>/<name>.eigs`
+   resolver (Phase 0), `--pkg` tool with `add`/`install`/`verify`/`update`
+   subcommands and `eigs.json` + `eigs.lock.json` manifest/lockfile
+   (Phase 1a–c), plus sibling repos InauguralSystems/eigs-package-template
+   and InauguralSystems/awesome-eigenscript and a CONTRIBUTING
+   "Publishing a Package" section (Phase 2). Next phases (not yet
+   designed): semver resolution / version ranges, registry/discovery
+   beyond the awesome-list, transitive dep handling beyond the current
+   flat `eigs_modules/`.
 3. ~~Stability contract~~ — done: README "Stability" section (spec =
    the surface; patch never breaks documented behavior, minor may
    with a CHANGELOG entry; everything off-spec explicitly unstable).
@@ -218,13 +222,17 @@ portability, and the ecosystem story):
    google/oss-fuzz#15720 submitted 2026-06-13 from the
    InauguralSystems org fork, CLA signed, all checks green except
    trial-build (NEUTRAL, non-blocking); awaiting human maintainer
-   review. OpenSSF Best Practices passing badge earned 2026-06-13
-   (project 13187, 100% — https://www.bestpractices.dev/projects/13187);
-   silver 13%, gold 22%, gaps are governance/DCO/vuln-response
-   process families, not core security work. CodeQL static analysis
-   workflow live at `.github/workflows/codeql.yml`
-   (security-and-quality query pack, every push + PR + weekly cron).
-   Remaining trust/identity item: upstream a Linguist grammar
+   review. OpenSSF Best Practices passing badge (project 13187, 100%
+   — https://www.bestpractices.dev/projects/13187); silver 13%, gold
+   22%, gaps are governance/DCO/vuln-response process families.
+   OpenSSF Scorecard 7.5/10 (`.github/workflows/scorecard.yml`),
+   10/10 on twelve checks; remaining gaps are Code-Review
+   (structurally solo), Branch-Protection (would block direct push),
+   Signed-Releases (lifts to 10/10 once a v0.14.0+ release is in the
+   last-5 release window). CodeQL static analysis at
+   `.github/workflows/codeql.yml`. Signed releases via Sigstore now
+   live (see Distribution item). Remaining trust/identity item:
+   upstream a Linguist grammar
    (editors/vscode has the TextMate grammar ready; Linguist has
    usage-volume requirements, so this waits on adoption —
    `.gitattributes` maps `.eigs` to Python as the stopgap).

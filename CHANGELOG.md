@@ -2,9 +2,9 @@
 
 All notable changes to EigenScript are documented here.
 
-## [Unreleased]
+## [0.14.0] — 2026-06-13
 
-### Trust/identity — OpenSSF passing badge, CodeQL workflow, OSS-Fuzz enrollment in flight
+### Trust/identity — OpenSSF badge, CodeQL, Scorecard 7.5/10, signed releases, OSS-Fuzz in flight
 
 - **OpenSSF Best Practices passing badge earned** (project 13187,
   100% at 2026-06-13 09:27 UTC —
@@ -17,6 +17,26 @@ All notable changes to EigenScript are documented here.
   weekly cron — added to satisfy `static_analysis` and to surface
   alerts in the repo's Security tab. Triage the same cadence as
   ASan/leak-tally failures.
+- **OpenSSF Scorecard 7.5/10** (`.github/workflows/scorecard.yml`):
+  10/10 on twelve checks including SAST, CI-Tests, Fuzzing,
+  Dependency-Update-Tool, Pinned-Dependencies, Token-Permissions,
+  Maintained, Security-Policy, License, Vulnerabilities,
+  Dangerous-Workflow, Binary-Artifacts. Workflow hardening: every
+  third-party action is pinned to its commit SHA (Dependabot config
+  added for weekly bumps); top-level workflow tokens default to
+  read-only with `contents: write` / `pages: write` / `id-token: write`
+  scoped to the jobs that need them. Remaining gaps are structural
+  (solo Code-Review, Branch-Protection vs. direct-push workflow) or
+  bump only at Gold-tier Best Practices.
+- **Signed releases via Sigstore build provenance**
+  (`actions/attest-build-provenance` in `release.yml`). Every release
+  binary — `eigenscript-{linux,macos}-{x86_64,arm64}` and the Linux
+  `eigenscript-full` variant — gets a keyless attestation written to
+  the GitHub attestations API, plus an `attestation.sigstore.json`
+  bundle uploaded alongside the binaries for offline verification.
+  Per-binary verification: `gh attestation verify eigenscript-<label>
+  --repo InauguralSystems/EigenScript`. This is the first EigenScript
+  release to ship signed artifacts.
 - **OSS-Fuzz enrollment**: PR google/oss-fuzz#15720 submitted from the
   InauguralSystems org fork with the CLA signed; all checks green
   except trial-build (NEUTRAL, non-blocking). The libFuzzer harness
@@ -170,6 +190,12 @@ All notable changes to EigenScript are documented here.
   `malloc → make_str (strdup) → free` — two allocations and a copy per
   `+`. Now it `xmalloc`s the joined buffer directly and hands it to
   `make_str_owned`. Bench: `strcat 2k` 9.6 → 8.79 ms (~8% n=5 median).
+- **`ITER_NEXT` buffer fast path skips the `make_num` round-trip.**
+  When the for-loop's iterable is a buffer (homogeneous doubles), the
+  yielded element now flows through the stack as an immediate-num slot
+  via `vm_push_slot(slot_from_num(...))` instead of allocating a fresh
+  `VAL_NUM` per iteration. Bench: `for in range of 50000` 25.1 → 22.1
+  ms (~12% n=5 median, T3200). The list-iterable path is unchanged.
 
 ### Runtime — closure-cycle collector
 
