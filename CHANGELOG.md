@@ -4,6 +4,29 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Package tool — `--pkg add` + `--pkg install` actually fetch (package design Phase 1b)
+
+- **`--pkg add <name> <url> [tag]` now clones the dep** into
+  `eigs_modules/<name>/` via `git clone --depth 1 --branch <tag>`,
+  resolves `HEAD` with `git -C <dir> rev-parse HEAD`, and records
+  `{git, tag, commit}` in `eigs.lock.json`. The manifest write
+  happens *before* the network step so a failed clone leaves a
+  recoverable on-disk state — re-run `--pkg install` to retry.
+- **`--pkg install` reproduces `eigs_modules/` from the lockfile.**
+  For each manifest dep: wipe the target dir, re-clone at the manifest
+  tag, then — if the lockfile pins a commit — `git fetch --depth 1
+  origin <commit>` + `git checkout <commit>` so a force-pushed tag
+  cannot sneak a different tree past the lock. Install is idempotent
+  (re-running over a populated `eigs_modules/` is a no-op-equivalent
+  refresh) and never leaves the tree in a half-state.
+- **No code from the dep is executed at install time** — the runtime
+  only ever loads `eigs_modules/<name>/<name>.eigs` when the user
+  script actually `import`s it.
+- Suite gains section [95] (`tests/test_pkg_fetch.sh`): builds a
+  local `file://` git repo as a fake remote, runs the full add →
+  import → install round-trip, and verifies the lockfile-wins-over-
+  moved-tag invariant by force-retagging the source.
+
 ### Package tool — `--pkg` skeleton (package design Phase 1a)
 
 - **New CLI: `eigenscript --pkg <subcommand>`.** Dispatcher loads

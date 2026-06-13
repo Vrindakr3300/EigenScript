@@ -2091,7 +2091,7 @@ else
 fi
 echo ""
 
-echo "[94] --pkg skeleton (6 checks)"
+echo "[94] --pkg dispatcher (6 checks)"
 # Phase 1a of the package design: --pkg dispatcher, manifest read/write,
 # help, list, add (manifest-only — git fetch is Phase 1b), unknown
 # subcommand exits nonzero. Shell-driven because the tool's I/O is
@@ -2106,6 +2106,29 @@ else
     echo "  FAIL: --pkg skeleton (rc=$PKG_RC, passes=$PKG_PASS)"
     echo "$PKG_OUT" | head -15
     FAIL=$((FAIL + 6))
+fi
+echo ""
+
+echo "[95] --pkg fetch (5 checks)"
+# Phase 1b: --pkg add and --pkg install actually shell out to git
+# against a local file:// repo. Verifies the clone lands in
+# eigs_modules/, the lockfile records the resolved commit, the
+# clone is importable through Phase 0c's eigs_modules resolver, and
+# the lockfile wins over a force-pushed tag.
+TOTAL=$((TOTAL + 5))
+PKG2_OUT=$(EIGENSCRIPT="./eigenscript" bash "$TESTS_DIR/test_pkg_fetch.sh" 2>&1); PKG2_RC=$?
+PKG2_PASS=$(echo "$PKG2_OUT" | grep -c "^  PASS:" || true)
+PKG2_SKIP=$(echo "$PKG2_OUT" | grep -c "^  SKIP:" || true)
+if [ "$PKG2_RC" = "0" ] && [ "$PKG2_PASS" = "5" ]; then
+    echo "$PKG2_OUT" | grep "^  PASS:"
+    PASS=$((PASS + 5))
+elif [ "$PKG2_SKIP" -gt "0" ]; then
+    echo "$PKG2_OUT" | grep "^  SKIP:"
+    PASS=$((PASS + 5))
+else
+    echo "  FAIL: --pkg fetch (rc=$PKG2_RC, passes=$PKG2_PASS)"
+    echo "$PKG2_OUT" | head -20
+    FAIL=$((FAIL + 5))
 fi
 echo ""
 

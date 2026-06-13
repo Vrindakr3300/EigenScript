@@ -25,6 +25,42 @@
 
 MANIFEST_PATH is "eigs.json"
 LOCKFILE_PATH is "eigs.lock.json"
+MODULES_DIR is "eigs_modules"
+
+# ---- git helpers -----------------------------------------------------
+
+# Returns 1 on success, 0 on failure. Streams git's stderr+stdout to
+# stdout on failure so the user sees what went wrong.
+define run_git(arg_list) as:
+    cmd is concat of [["git"], arg_list]
+    result is exec_capture of cmd
+    if result[0] != 0:
+        print of "git command failed:"
+        print of "  " + (join of [cmd, " "])
+        print of result[1]
+        return 0
+    return 1
+
+# Resolved commit SHA at HEAD of the given working tree, or "" on
+# failure. We strip the trailing newline git rev-parse always prints.
+define git_head_commit(work_dir) as:
+    result is exec_capture of ["git", "-C", work_dir, "rev-parse", "HEAD"]
+    if result[0] != 0:
+        return ""
+    s is result[1]
+    n is len of s
+    loop while n > 0:
+        last is s[n - 1]
+        if last == "\n" or last == "\r":
+            n is n - 1
+        else:
+            break
+    return s[0:n]
+
+# Remove a directory tree. exec_capture's exit code is ignored — if the
+# tree wasn't there, that's still the desired post-state.
+define rmtree(path) as:
+    exec_capture of ["rm", "-rf", path]
 
 # ---- Manifest helpers ------------------------------------------------
 
@@ -91,8 +127,23 @@ define cmd_list() as:
         print of f"  {name}  {git_url}  {tag}{marker}"
     return 0
 
-# Manifest-only add: record the dep + tag, don't fetch yet. Phase 1b
-# wires the git clone + commit resolution + content hash in.
+# Clone <git_url> at <tag> into eigs_modules/<name>. Recreates the
+# target dir to keep `add` idempotent — a re-add against the same
+# name picks up the new url/tag instead of mixing trees. Returns the
+# resolved commit SHA on success, "" on failure.
+define fetch_dep(name, git_url, tag) as:
+    mkdir of MODULES_DIR
+    target is MODULES_DIR + "/" + name
+    rmtree of target
+    ok is run_git of ["clone", "--depth", "1", "--branch", tag, git_url, target]
+    if ok == 0:
+        return ""
+    commit is git_head_commit of target
+    if commit == "":
+        print of f"could not resolve HEAD commit for {name}"
+        return ""
+    return commit
+
 define cmd_add(arg_list) as:
     if (len of arg_list) < 2:
         print of "Usage: eigenscript --pkg add <name> <git-url> [tag]"
@@ -103,17 +154,84 @@ define cmd_add(arg_list) as:
     if (len of arg_list) >= 3:
         tag is arg_list[2]
 
+    # Write manifest first — the source-of-truth update is what makes
+    # `add` recoverable if the network step fails (re-run `install`).
     manifest is read_manifest of null
     if (has_key of [manifest, "deps"]) == 0:
         manifest.deps is {}
     manifest.deps[name] is {"git": git_url, "tag": tag}
     write_manifest of manifest
-    print of f"Added {name} -> {git_url} @ {tag}"
-    print of "(run --pkg install to fetch — not yet implemented in Phase 1a)"
+
+    commit is fetch_dep of [name, git_url, tag]
+    if commit == "":
+        throw of f"fetch failed for {name}"
+
+    lock is read_lockfile of null
+    lock[name] is {"git": git_url, "tag": tag, "commit": commit}
+    write_lockfile of lock
+
+    print of f"Added {name} -> {git_url} @ {tag} ({commit[0:8]})"
     return 0
 
+# Reproduce eigs_modules/ from manifest + lockfile. For each dep:
+#  - if the lockfile pins a commit, re-clone at the manifest tag and
+#    `git checkout` the pinned commit (so a force-pushed tag can't
+#    sneak a different tree past the lockfile);
+#  - otherwise, fall back to the manifest tag and record the resolved
+#    commit so subsequent installs are reproducible.
+# Existing eigs_modules/<name> are wiped before re-clone — install is
+# idempotent and never leaves the tree in a half-state.
 define cmd_install() as:
-    print of "install: not yet implemented (Phase 1b)"
+    manifest is read_manifest of null
+    deps is manifest.deps
+    names is keys of deps
+    n is len of names
+    if n == 0:
+        print of "No dependencies in eigs.json — nothing to install."
+        return 0
+
+    lock is read_lockfile of null
+    installed is 0
+    for i in range of n:
+        name is names[i]
+        spec is deps[name]
+        git_url is spec.git
+        tag is spec.tag
+
+        target is MODULES_DIR + "/" + name
+        rmtree of target
+        mkdir of MODULES_DIR
+
+        # Clone with depth 1 at the tag, then if we have a locked
+        # commit, fetch that specific commit and check it out.
+        ok is run_git of ["clone", "--depth", "1", "--branch", tag, git_url, target]
+        if ok == 0:
+            throw of f"install failed: clone for {name} failed"
+
+        locked_commit is ""
+        if (has_key of [lock, name]) == 1:
+            locked_entry is lock[name]
+            if (has_key of [locked_entry, "commit"]) == 1:
+                locked_commit is locked_entry.commit
+
+        if locked_commit != "":
+            # Re-fetch the exact pinned commit. A tag move would
+            # otherwise be invisible.
+            ok2 is run_git of ["-C", target, "fetch", "--depth", "1", "origin", locked_commit]
+            if ok2 == 0:
+                throw of f"install failed: fetch of locked commit for {name} failed"
+            ok3 is run_git of ["-C", target, "checkout", locked_commit]
+            if ok3 == 0:
+                throw of f"install failed: checkout of locked commit for {name} failed"
+
+        current is git_head_commit of target
+        if locked_commit == "":
+            lock[name] is {"git": git_url, "tag": tag, "commit": current}
+        installed is installed + 1
+        print of f"  installed {name} @ {current[0:8]}"
+
+    write_lockfile of lock
+    print of f"Installed {installed} package(s)."
     return 0
 
 define cmd_verify() as:
