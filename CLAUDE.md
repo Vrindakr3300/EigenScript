@@ -194,11 +194,14 @@ portability, and the ecosystem story):
    **unverified until the next release run; watch it**. Next: a
    Homebrew tap/formula (needs a separate tap repo). Follow-ons:
    Docker image, AUR, asdf/mise plugin, artifact attestation.
-2. **Package/dependency story** for EigenScript code itself: `import`
-   resolves lib/ + script-relative only — no third-party dependency
-   mechanism, no versioning, no lockfile convention. The biggest gap
-   between "neat project" and "usable language"; needs a design pass
-   before code.
+2. **Package/dependency story** — design pass done
+   (docs/PACKAGE_DESIGN.md: vendored `eigs_modules/`, git-pinned
+   `eigs.json` + lockfile, `--pkg` tool in EigenScript, no code
+   execution at install). Blocked on the open questions at its bottom
+   (manifest format, resolver precedence, flat-vs-nested) — maintainer
+   answers, then Phase 0 (module cache + per-file resolution base +
+   resolver step) is implementable. Note: `import` currently
+   re-executes per import-site; the cache is a behavior change.
 3. ~~Stability contract~~ — done: README "Stability" section (spec =
    the surface; patch never breaks documented behavior, minor may
    with a CHANGELOG entry; everything off-spec explicitly unstable).

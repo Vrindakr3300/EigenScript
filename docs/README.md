@@ -32,6 +32,7 @@ link to sections freely.
 | [CLOSURE_CYCLE_GC.md](CLOSURE_CYCLE_GC.md) | The closure-cycle collector: honest env refcounts, the registry/mark-sweep design as built, maintainer invariants, and what still leaks. |
 | [TEST_COVERAGE_ANALYSIS.md](TEST_COVERAGE_ANALYSIS.md) | The coverage program: findings → fixes → residual gaps, with measured numbers. |
 | [GAP_ANALYSIS.md](GAP_ANALYSIS.md) | Downstream feature-gap tracking. |
+| [PACKAGE_DESIGN.md](PACKAGE_DESIGN.md) | **Proposal** (not implemented): the package/dependency design — vendored `eigs_modules/`, git-pinned manifest + lockfile, `--pkg` tool. |
 
 ## Editor support
 

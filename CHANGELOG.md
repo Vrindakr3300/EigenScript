@@ -54,6 +54,10 @@ All notable changes to EigenScript are documented here.
   (docs/SPEC.md) is the pre-1.0 compatibility surface — patch releases
   never change documented behavior, minor releases may with a CHANGELOG
   entry, and everything outside the spec is explicitly unstable.
+- docs/PACKAGE_DESIGN.md: the package/dependency **design proposal**
+  (vendored `eigs_modules/`, git-pinned manifest + lockfile, `--pkg`
+  tool, install executes nothing). Nothing implemented; open questions
+  listed for decision.
 
 ## [0.13.0] — 2026-06-12
 
