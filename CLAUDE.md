@@ -214,12 +214,21 @@ portability, and the ecosystem story):
    CI leg compile-checks the LSP.
 5. **Windows port** (runtime is POSIX-only) and **ARM64 JIT** (Apple
    Silicon runs interpreter-only) — the two real porting projects.
-6. **Trust/identity follow-ons**: OSS-Fuzz enrollment (fuzz harness
-   already exists — natural fit), OpenSSF Best Practices badge,
-   upstream a Linguist grammar (editors/vscode has the TextMate
-   grammar ready; Linguist has usage-volume requirements, so this
-   waits on adoption — `.gitattributes` maps `.eigs` to Python as the
-   stopgap). **Browser playground**: `web/build.sh` (emcc) produces
+6. **Trust/identity follow-ons**: OSS-Fuzz enrollment — PR
+   google/oss-fuzz#15720 submitted 2026-06-13 from the
+   InauguralSystems org fork, CLA signed, all checks green except
+   trial-build (NEUTRAL, non-blocking); awaiting human maintainer
+   review. OpenSSF Best Practices passing badge earned 2026-06-13
+   (project 13187, 100% — https://www.bestpractices.dev/projects/13187);
+   silver 13%, gold 22%, gaps are governance/DCO/vuln-response
+   process families, not core security work. CodeQL static analysis
+   workflow live at `.github/workflows/codeql.yml`
+   (security-and-quality query pack, every push + PR + weekly cron).
+   Remaining trust/identity item: upstream a Linguist grammar
+   (editors/vscode has the TextMate grammar ready; Linguist has
+   usage-volume requirements, so this waits on adoption —
+   `.gitattributes` maps `.eigs` to Python as the stopgap).
+   **Browser playground**: `web/build.sh` (emcc) produces
    `web/dist/eigs.{js,wasm}` for an interpreter-only WASM module
    driven by `web/{index.html,app.js,style.css}`; JIT is arch-gated
    in `src/jit.c` (`__x86_64__`) so wasm32 compiles cleanly. Needs

@@ -4,6 +4,28 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Trust/identity — OpenSSF passing badge, CodeQL workflow, OSS-Fuzz enrollment in flight
+
+- **OpenSSF Best Practices passing badge earned** (project 13187,
+  100% at 2026-06-13 09:27 UTC —
+  https://www.bestpractices.dev/projects/13187). Badge embed lives in
+  the README alongside CI/Release/License/Stars. Silver sits at 13%
+  and gold at 22%; the gaps are governance/DCO/vulnerability-response
+  process families, not core security work.
+- **CodeQL workflow** (`.github/workflows/codeql.yml`) runs the
+  `security-and-quality` query pack on every push, every PR, and a
+  weekly cron — added to satisfy `static_analysis` and to surface
+  alerts in the repo's Security tab. Triage the same cadence as
+  ASan/leak-tally failures.
+- **OSS-Fuzz enrollment**: PR google/oss-fuzz#15720 submitted from the
+  InauguralSystems org fork with the CLA signed; all checks green
+  except trial-build (NEUTRAL, non-blocking). The libFuzzer harness
+  (`fuzz/fuzz_eigenscript.c`) was rewritten to drive the current
+  bytecode pipeline (the AST-interpreter-era harness had bitrotted),
+  paired with a keyword/punctuation/builtin dictionary
+  (`fuzz/eigenscript.dict`) and a `make fuzz-libfuzzer` target
+  (`clang -fsanitize=fuzzer,address,undefined`).
+
 ### Package ecosystem — CONTRIBUTING section + awesome-eigenscript (package design Phase 2)
 
 - **CONTRIBUTING.md gains a "Publishing a Package" section.** Covers
