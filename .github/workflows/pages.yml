@@ -48,8 +48,9 @@ jobs:
         run: bash web/build.sh
       - name: Stage playground under _site/playground
         run: |
-          mkdir -p _site/playground
-          cp -v web/dist/* _site/playground/
+          sudo mkdir -p _site/playground
+          sudo cp -v web/dist/* _site/playground/
+          sudo chown -R "$(id -u):$(id -g)" _site/playground
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
 
