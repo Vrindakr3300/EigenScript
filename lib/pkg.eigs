@@ -57,6 +57,35 @@ define git_head_commit(work_dir) as:
             break
     return s[0:n]
 
+# Tree hash of HEAD — content-addressed identifier for the tree git
+# checked out. Independent of commit metadata (author, date, message),
+# so two clones of the same tree from different paths produce the same
+# value. Returns "" on failure.
+define git_tree_hash(work_dir) as:
+    result is exec_capture of ["git", "-C", work_dir, "rev-parse", "HEAD^{tree}"]
+    if result[0] != 0:
+        return ""
+    s is result[1]
+    n is len of s
+    loop while n > 0:
+        last is s[n - 1]
+        if last == "\n" or last == "\r":
+            n is n - 1
+        else:
+            break
+    return s[0:n]
+
+# Returns 1 if the working tree at <work_dir> matches HEAD exactly
+# (no unstaged edits, no untracked files), 0 if it's been tampered
+# with, and 0 if git itself failed.
+define git_worktree_clean(work_dir) as:
+    result is exec_capture of ["git", "-C", work_dir, "status", "--porcelain"]
+    if result[0] != 0:
+        return 0
+    if result[1] == "":
+        return 1
+    return 0
+
 # Remove a directory tree. exec_capture's exit code is ignored — if the
 # tree wasn't there, that's still the desired post-state.
 define rmtree(path) as:
@@ -122,27 +151,31 @@ define cmd_list() as:
             tag is spec.tag
         marker is ""
         if (has_key of [lock, name]) == 1:
-            short_commit is (text of lock[name].commit)[0:8]
+            short_commit is lock[name].commit[0:8]
             marker is "  [locked @ " + short_commit + "]"
         print of f"  {name}  {git_url}  {tag}{marker}"
     return 0
 
 # Clone <git_url> at <tag> into eigs_modules/<name>. Recreates the
 # target dir to keep `add` idempotent — a re-add against the same
-# name picks up the new url/tag instead of mixing trees. Returns the
-# resolved commit SHA on success, "" on failure.
+# name picks up the new url/tag instead of mixing trees. Returns
+# {"commit": sha, "tree": tree_sha} on success, {} on failure.
 define fetch_dep(name, git_url, tag) as:
     mkdir of MODULES_DIR
     target is MODULES_DIR + "/" + name
     rmtree of target
     ok is run_git of ["clone", "--depth", "1", "--branch", tag, git_url, target]
     if ok == 0:
-        return ""
+        return {}
     commit is git_head_commit of target
     if commit == "":
         print of f"could not resolve HEAD commit for {name}"
-        return ""
-    return commit
+        return {}
+    tree is git_tree_hash of target
+    if tree == "":
+        print of f"could not resolve tree hash for {name}"
+        return {}
+    return {"commit": commit, "tree": tree}
 
 define cmd_add(arg_list) as:
     if (len of arg_list) < 2:
@@ -162,15 +195,16 @@ define cmd_add(arg_list) as:
     manifest.deps[name] is {"git": git_url, "tag": tag}
     write_manifest of manifest
 
-    commit is fetch_dep of [name, git_url, tag]
-    if commit == "":
+    fetched is fetch_dep of [name, git_url, tag]
+    if (len of (keys of fetched)) == 0:
         throw of f"fetch failed for {name}"
 
     lock is read_lockfile of null
-    lock[name] is {"git": git_url, "tag": tag, "commit": commit}
+    lock[name] is {"git": git_url, "tag": tag,
+                   "commit": fetched.commit, "tree": fetched.tree}
     write_lockfile of lock
 
-    print of f"Added {name} -> {git_url} @ {tag} ({commit[0:8]})"
+    print of f"Added {name} -> {git_url} @ {tag} ({fetched.commit[0:8]})"
     return 0
 
 # Reproduce eigs_modules/ from manifest + lockfile. For each dep:
@@ -225,8 +259,16 @@ define cmd_install() as:
                 throw of f"install failed: checkout of locked commit for {name} failed"
 
         current is git_head_commit of target
+        current_tree is git_tree_hash of target
         if locked_commit == "":
-            lock[name] is {"git": git_url, "tag": tag, "commit": current}
+            lock[name] is {"git": git_url, "tag": tag,
+                           "commit": current, "tree": current_tree}
+        else:
+            # Refresh the tree hash too — older lockfiles (pre-1c) may
+            # not have one, so backfill on first install after upgrade.
+            entry is lock[name]
+            entry.tree is current_tree
+            lock[name] is entry
         installed is installed + 1
         print of f"  installed {name} @ {current[0:8]}"
 
@@ -234,12 +276,111 @@ define cmd_install() as:
     print of f"Installed {installed} package(s)."
     return 0
 
+# Re-hash every checked-out tree under eigs_modules/ against the
+# lockfile and report mismatches. Three failure modes per package:
+#   - missing checkout (eigs_modules/<name>/ not present),
+#   - drifted commit (HEAD != locked commit),
+#   - drifted tree (working tree edited, or pre-1c lock has no tree).
+# Exits nonzero (via throw) if any package fails.
 define cmd_verify() as:
-    print of "verify: not yet implemented (Phase 1c)"
+    manifest is read_manifest of null
+    deps is manifest.deps
+    names is keys of deps
+    n is len of names
+    if n == 0:
+        print of "No dependencies in eigs.json — nothing to verify."
+        return 0
+
+    lock is read_lockfile of null
+    failed is 0
+    for i in range of n:
+        name is names[i]
+        target is MODULES_DIR + "/" + name
+        if (has_key of [lock, name]) == 0:
+            print of f"  MISSING LOCK: {name} (run --pkg install)"
+            failed is failed + 1
+            continue
+        entry is lock[name]
+
+        # Module dir present?
+        head is git_head_commit of target
+        if head == "":
+            print of f"  MISSING: {name} (run --pkg install)"
+            failed is failed + 1
+            continue
+
+        # Commit pinned by lockfile?
+        if head != entry.commit:
+            print of f"  COMMIT DRIFT: {name} HEAD={head[0:8]} locked={entry.commit[0:8]}"
+            failed is failed + 1
+            continue
+
+        # Working tree clean?
+        if (git_worktree_clean of target) == 0:
+            print of f"  TREE DRIFT: {name} working tree was edited"
+            failed is failed + 1
+            continue
+
+        # Tree hash matches (catches case where lockfile pre-dates 1c)?
+        if (has_key of [entry, "tree"]) == 1:
+            current_tree is git_tree_hash of target
+            if current_tree != entry.tree:
+                print of f"  TREE HASH DRIFT: {name} tree={current_tree[0:8]} locked={entry.tree[0:8]}"
+                failed is failed + 1
+                continue
+        print of f"  ok  {name}  {entry.commit[0:8]}"
+
+    if failed != 0:
+        throw of f"verify failed for {failed} package(s)"
+    print of f"Verified {n} package(s)."
     return 0
 
+# Re-resolve the manifest tag to its current HEAD, overwriting the
+# lockfile entry. With no arg, updates every dep; with a name, just
+# that one. The manifest is unchanged — only the lockfile moves.
 define cmd_update(arg_list) as:
-    print of "update: not yet implemented (Phase 1c)"
+    manifest is read_manifest of null
+    deps is manifest.deps
+    names is keys of deps
+    if (len of arg_list) >= 1:
+        only is arg_list[0]
+        if (has_key of [deps, only]) == 0:
+            throw of f"update: '{only}' is not in eigs.json"
+        names is [only]
+    n is len of names
+    if n == 0:
+        print of "No dependencies in eigs.json — nothing to update."
+        return 0
+
+    lock is read_lockfile of null
+    updated is 0
+    for i in range of n:
+        name is names[i]
+        spec is deps[name]
+        git_url is spec.git
+        tag is spec.tag
+        prev_commit is ""
+        if (has_key of [lock, name]) == 1:
+            prev_entry is lock[name]
+            if (has_key of [prev_entry, "commit"]) == 1:
+                prev_commit is prev_entry.commit
+
+        fetched is fetch_dep of [name, git_url, tag]
+        if (len of (keys of fetched)) == 0:
+            throw of f"update: fetch failed for {name}"
+        lock[name] is {"git": git_url, "tag": tag,
+                       "commit": fetched.commit, "tree": fetched.tree}
+        updated is updated + 1
+        if prev_commit == fetched.commit:
+            print of f"  unchanged  {name}  {fetched.commit[0:8]}"
+        else:
+            short_prev is "(new)"
+            if prev_commit != "":
+                short_prev is prev_commit[0:8]
+            print of f"  updated    {name}  {short_prev} -> {fetched.commit[0:8]}"
+
+    write_lockfile of lock
+    print of f"Updated {updated} package(s)."
     return 0
 
 define print_usage() as:

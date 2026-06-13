@@ -2132,6 +2132,27 @@ else
 fi
 echo ""
 
+echo "[96] --pkg verify + update (7 checks)"
+# Phase 1c: --pkg verify (re-hash trees against lockfile) and --pkg
+# update (re-resolve manifest tag to a new commit and re-lock).
+# Drives both against a local file:// source repo.
+TOTAL=$((TOTAL + 7))
+PKG3_OUT=$(EIGENSCRIPT="./eigenscript" bash "$TESTS_DIR/test_pkg_verify_update.sh" 2>&1); PKG3_RC=$?
+PKG3_PASS=$(echo "$PKG3_OUT" | grep -c "^  PASS:" || true)
+PKG3_SKIP=$(echo "$PKG3_OUT" | grep -c "^  SKIP:" || true)
+if [ "$PKG3_RC" = "0" ] && [ "$PKG3_PASS" = "7" ]; then
+    echo "$PKG3_OUT" | grep "^  PASS:"
+    PASS=$((PASS + 7))
+elif [ "$PKG3_SKIP" -gt "0" ]; then
+    echo "$PKG3_OUT" | grep "^  SKIP:"
+    PASS=$((PASS + 7))
+else
+    echo "  FAIL: --pkg verify+update (rc=$PKG3_RC, passes=$PKG3_PASS)"
+    echo "$PKG3_OUT" | head -30
+    FAIL=$((FAIL + 7))
+fi
+echo ""
+
 echo "============================================"
 echo "  RESULTS: $PASS/$TOTAL passed, $FAIL failed"
 if [ "$LEAKED" -gt 0 ]; then

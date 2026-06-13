@@ -4,6 +4,28 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Package tool — `--pkg verify` + `--pkg update` (package design Phase 1c)
+
+- **`--pkg verify`** re-checks every installed dep against the lockfile.
+  Three failure modes per package: the checkout is missing, `HEAD`
+  differs from the locked commit, or the working tree has been edited
+  (`git status --porcelain` non-empty). Exits nonzero (via `throw`) if
+  any package fails so CI can gate on it.
+- **`--pkg update [name]`** re-resolves the manifest tag to its current
+  `HEAD` and re-locks. With no arg, walks every dep; with a name, only
+  that one (unknown name → nonzero exit). The manifest itself is
+  unchanged — `update` moves only the lockfile.
+- **Lockfile gains a `tree` field**: git's `HEAD^{tree}` SHA, recorded
+  by `add` / `install` / `update` and re-checked by `verify`. The
+  commit SHA already nails down git history; the tree hash is the
+  content-addressed identifier of the tree itself, and pre-1c
+  lockfiles are backfilled on the next `install`.
+- Suite gains section [96] (`tests/test_pkg_verify_update.sh`,
+  7 checks): clean verify, tampered-tree verify, missing-checkout
+  verify, update no-op on unchanged tag, update advances lockfile
+  after a tag move, unknown-name update exits nonzero, and verify
+  accepts the post-update state.
+
 ### Package tool — `--pkg add` + `--pkg install` actually fetch (package design Phase 1b)
 
 - **`--pkg add <name> <url> [tag]` now clones the dep** into
