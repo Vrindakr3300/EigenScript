@@ -15,6 +15,13 @@ A complete, standalone programming language with native observer semantics,
 real concurrency, a 44-widget GUI toolkit, embedded database, tensor math,
 and a 49-module standard library (14 STEM) — all in a single zero-dependency C binary.
 
+## Try it in your browser
+
+**[inauguralsystems.github.io/EigenScript/playground](https://inauguralsystems.github.io/EigenScript/playground/)** —
+WASM build of the interpreter; no install, runs entirely client-side.
+JIT/networking/subprocess are compiled out, everything else is the
+same runtime that ships in the CLI.
+
 ## Install
 
 ```bash
