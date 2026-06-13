@@ -53,6 +53,7 @@ emcc -O2 \
     -sEXPORTED_RUNTIME_METHODS="${EXPORTED_RUNTIME}" \
     -sNO_FILESYSTEM=1 \
     -sASSERTIONS=1 \
+    -sERROR_ON_UNDEFINED_SYMBOLS=0 \
     --no-entry \
     "${SOURCES[@]}" \
     -lm \
