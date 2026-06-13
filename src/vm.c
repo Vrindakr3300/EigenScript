@@ -3404,13 +3404,6 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         if (idx >= len) {
             ip += exit_offset;
         } else {
-            Value *elem;
-            if (iterable->type == VAL_BUFFER)
-                elem = make_num(iterable->data.buffer.data[idx]);
-            else {
-                elem = iterable->data.list.items[idx];
-                val_incref(elem);
-            }
             /* Update index — mutate in place when the existing slot is
              * an exclusive plain VAL_NUM (avoids per-iter make_num/free). */
             Value *idx_v = state->data.list.items[1];
@@ -3420,7 +3413,15 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
                 val_decref(idx_v);
                 state->data.list.items[1] = make_num(idx + 1);
             }
-            vm_push(elem);
+            if (iterable->type == VAL_BUFFER) {
+                /* Push number immediate directly — skip make_num + immediate-
+                 * promote round-trip through vm_push. */
+                vm_push_slot(slot_from_num(iterable->data.buffer.data[idx]));
+            } else {
+                Value *elem = iterable->data.list.items[idx];
+                val_incref(elem);
+                vm_push(elem);
+            }
         }
         DISPATCH();
     }
