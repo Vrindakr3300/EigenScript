@@ -1883,7 +1883,10 @@ else
     echo "$JPATH_OUTPUT" | grep -iE "FAIL|error" | head -5
 fi
 TOTAL=$((TOTAL + 1))
-if [ "$(uname -m)" = "x86_64" ]; then
+# macos-x86_64 ships JIT-disabled at build time (see CHANGELOG [0.14.2]
+# / src/jit.c EIGENSCRIPT_JIT_FORCE_OFF); the binary is correct via
+# interpreter fallback, so treat it like the arm64 case.
+if [ "$(uname -m)" = "x86_64" ] && [ "$(uname -s)" != "Darwin" ]; then
     if echo "$JPATH_OUTPUT" | grep -qE "\[jit\] scanned=[0-9]+ compiled=[1-9]"; then
         PASS=$((PASS + 1))
         echo "  PASS: JIT thunks compiled (fast paths ran native)"
@@ -1893,7 +1896,7 @@ if [ "$(uname -m)" = "x86_64" ]; then
     fi
 else
     PASS=$((PASS + 1))
-    echo "  SKIP: thunk gate (non-x86-64: interpreter fallback expected)"
+    echo "  SKIP: thunk gate (JIT not built or not supported on this platform)"
 fi
 echo ""
 

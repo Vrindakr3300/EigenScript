@@ -3728,6 +3728,16 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
 void jit_try_compile_chunk(struct EigsChunk *chunk) {
     if (!chunk) return;
     if (chunk->jit_state != 0) return;
+#if defined(EIGENSCRIPT_JIT_FORCE_OFF) && EIGENSCRIPT_JIT_FORCE_OFF
+    /* Build-time JIT disable. macos-x86_64 binaries ship with this set
+     * — JIT thunks SIGSEGV on first entry under macOS 15's hardened
+     * runtime even with MAP_JIT (see CHANGELOG [0.14.2]). Interpreter
+     * fallback is correct and ~3-5× slower; revisit when the runtime
+     * issue is diagnosed. */
+    chunk->jit_state = 1;
+    chunk->jit_code = NULL;
+    return;
+#endif
     /* EIGS_JIT_OFF: hard-disable native compilation. Useful for bisecting
      * suspected JIT bugs against the interpreter. */
     if (getenv("EIGS_JIT_OFF")) {
@@ -3765,6 +3775,11 @@ void jit_try_compile_chunk_osr(struct EigsChunk *chunk, int entry_offset,
         chunk->jit_osr[slot].code = NULL;
         return;
     }
+#if defined(EIGENSCRIPT_JIT_FORCE_OFF) && EIGENSCRIPT_JIT_FORCE_OFF
+    chunk->jit_osr[slot].state = 1;
+    chunk->jit_osr[slot].code = NULL;
+    return;
+#endif
     if (getenv("EIGS_JIT_OFF") || getenv("EIGS_JIT_OSR_OFF")) {
         chunk->jit_osr[slot].state = 1;
         chunk->jit_osr[slot].code = NULL;

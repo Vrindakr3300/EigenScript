@@ -2,6 +2,29 @@
 
 All notable changes to EigenScript are documented here.
 
+## [0.14.2] — 2026-06-13
+
+### Ship — macOS Intel binary, interpreter-only
+
+- **macos-x86_64 release binary now ships JIT-disabled at build time.**
+  The MAP_JIT switch in 0.14.1 wasn't enough — thunks still SIGSEGV on
+  first entry on the macos-15-intel runner, with a failure pattern that
+  doesn't match the standard hardened-runtime symptoms (Intel
+  pthread_jit_write_protect_np is a no-op, MAP_JIT is set, the compile
+  is clean, simple interpreter tests pass). Root cause is unresolved
+  and not reproducible without a macOS Intel machine, so 0.14.2 takes
+  the pragmatic route: `build.sh` defines
+  `EIGENSCRIPT_JIT_FORCE_OFF=1` when `uname -s = Darwin && uname -m =
+  x86_64`, `src/jit.c`'s `jit_try_compile_chunk[_osr]` honor it as an
+  early return, and `tests/run_all_tests.sh`'s `[82]` thunk-gate skips
+  on Darwin x86_64 the way it already does on non-x86_64. Net effect
+  for users: the macos-x86_64 binary is interpreter-only (≈3–5× slower
+  on hot loops); correctness is unchanged. macOS arm64 was already
+  interpreter-only (no ARM64 emitter yet), so this gap is now
+  consistent across Apple platforms. v0.14.0 and v0.14.1 tags exist on
+  the remote but never produced artifacts — first published release of
+  the 0.14 line is 0.14.2.
+
 ## [0.14.1] — 2026-06-13
 
 ### Fix — macOS Intel JIT page mapping

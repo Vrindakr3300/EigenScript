@@ -136,14 +136,18 @@ make jit-smoke  # standalone emitter tests (jit_smoke.c stubs all helpers)
   /dev/null — `test_terminal.eigs` blocks forever reading a pipe that
   never EOFs (e.g. backgrounded runs).
 
-## Current state: 0.14.1 released; next up
+## Current state: 0.14.2 released; next up
 
-0.14.1 is a one-fix release on top of 0.14.0 — see CHANGELOG.md
-[0.14.1]: the JIT cache pages now use `MAP_JIT` +
-`pthread_jit_write_protect_np` on Apple platforms so macOS 15's
-hardened runtime doesn't SIGSEGV on first thunk entry (the latent bug
-the 0.14.0 release run on the new macos-15-intel runner surfaced; the
-tag v0.14.0 exists but has no published artifacts). 0.14.0 is cut
+0.14.2 is the first published 0.14-line release — v0.14.0 and v0.14.1
+tags exist but never produced artifacts (macos-x86_64 release leg
+failed twice; the 0.14.1 `MAP_JIT` patch was necessary but not
+sufficient and the deeper cause isn't reproducible without a macOS
+Intel box). 0.14.2 ships the macos-x86_64 binary interpreter-only via
+a `EIGENSCRIPT_JIT_FORCE_OFF` build flag set in `build.sh` when
+`uname -s = Darwin && uname -m = x86_64`; `src/jit.c` honors it,
+`tests/run_all_tests.sh` skips the `[82]` thunk-gate on Darwin x86_64.
+Net: macos-x86_64 is correct + slow; macos-arm64 was already
+interpreter-only; Linux x86_64 keeps the JIT. 0.14.0 is the rollup
 (CHANGELOG.md [0.14.0] is the full record). It rolls up
 the closure-cycle collector, the package ecosystem Phase 0–2 (`--pkg`
 tool + `eigs_modules/` resolver + sibling repos), runtime perf wins
