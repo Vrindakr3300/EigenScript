@@ -38,6 +38,23 @@ All notable changes to EigenScript are documented here.
   every remaining report is byte-identical to the pre-collector
   baseline (spawn-thread programs + pre-existing non-closure shapes).
 
+### Distribution — macOS release binaries, checksums, stability contract
+
+- The Release workflow now builds and publishes macOS binaries —
+  `eigenscript-macos-x86_64` (Intel, JIT enabled) and
+  `eigenscript-macos-arm64` (Apple Silicon, interpreter-only until the
+  ARM64 JIT exists) — alongside the Linux assets, each leg running the
+  full suite against the exact binary it uploads. Releases also gain a
+  `CHECKSUMS` file (`sha256sum -c` / `shasum -a 256 -c` verifiable).
+- The Makefile's hardened link flags (`-z relro`/`-z now`) are now
+  Linux-only: macOS's ld64 rejects them, which silently broke every
+  Makefile link target on macOS — `make lsp` most visibly. The macOS CI
+  leg now compile-checks the LSP so this can't regress unseen.
+- README gains a **Stability** section: the executable spec
+  (docs/SPEC.md) is the pre-1.0 compatibility surface — patch releases
+  never change documented behavior, minor releases may with a CHANGELOG
+  entry, and everything outside the spec is explicitly unstable.
+
 ## [0.13.0] — 2026-06-12
 
 A language-features release.

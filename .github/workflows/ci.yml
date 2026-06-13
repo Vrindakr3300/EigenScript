@@ -43,6 +43,12 @@ jobs:
       - name: Run test suite
         run: cd tests && bash run_all_tests.sh
 
+      # Linux LSP coverage lives in the extensions job; this leg exists
+      # because the LSP build had macOS-only link failures nothing surfaced.
+      - name: Compile-check LSP (macOS)
+        if: runner.os == 'macOS'
+        run: make lsp CC=${{ matrix.cc }}
+
   # Build the http+model variant and run the suite against it: the suite's
   # probe-gated sections ([44]-[45] HTTP, [47] model roundtrip/overflow,
   # transformer smoke) silently skip on the minimal build, so without this
