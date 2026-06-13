@@ -191,8 +191,12 @@ portability, and the ecosystem story):
    (macos-15-intel runner for x86_64, macos-latest for arm64;
    arm64 is interpreter-only until the ARM64 JIT exists) and a
    CHECKSUMS file, each leg suite-tested against its own binary —
-   **unverified until the next release run; watch it**. Next: a
-   Homebrew tap/formula (needs a separate tap repo). Follow-ons:
+   **unverified until the next release run; watch it**. **Homebrew
+   tap** lives at github.com/InauguralSystems/homebrew-eigenscript —
+   from-source formula pinned to v0.13.0, with an `inreplace` to drop
+   the GNU-ld-only `-z relro`/`-z now` LDFLAGS from v0.13.0's Makefile
+   (the gating fix is in main but landed after the tag; the inreplace
+   stops matching on the next release, forcing a bump). Follow-ons:
    Docker image, AUR, asdf/mise plugin, artifact attestation.
 2. **Package/dependency story** — design pass done
    (docs/PACKAGE_DESIGN.md: vendored `eigs_modules/`, git-pinned
