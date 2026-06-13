@@ -200,6 +200,21 @@ int main(int argc, char **argv) {
         return eigenscript_lint(argv[2]);
     }
 
+    /* --pkg flag: dispatch to lib/pkg.eigs with the rest of the argv as
+     * its args. `args of null` returns argv[2:], so the EigenScript
+     * side sees [subcommand, ...rest]. The script reads ./eigs.json and
+     * writes ./eigs_modules/ via cwd-relative file I/O — g_script_dir
+     * only affects import resolution, not those builtins. */
+    static char pkg_path[8192];
+    if (argc >= 2 && strcmp(argv[1], "--pkg") == 0) {
+        if (!resolve_eigenscript_file("lib/pkg.eigs", pkg_path, sizeof(pkg_path))) {
+            fprintf(stderr, "Error: cannot locate lib/pkg.eigs (stdlib not installed?)\n");
+            return 1;
+        }
+        argv[1] = pkg_path;
+        /* fall through to script execution */
+    }
+
     /* No arguments: enter REPL */
     if (argc < 2) {
         srand(time(NULL));

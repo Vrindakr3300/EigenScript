@@ -1,0 +1,168 @@
+# ============================================================
+# Package tool — `eigenscript --pkg <subcommand>`
+# ============================================================
+#
+# Vendoring-first package manager: eigs_modules/<name>/<name>.eigs is
+# a checked-out git tree at a pinned commit. Layout:
+#
+#   ./eigs.json        manifest (name, version, deps)
+#   ./eigs.lock.json   resolved commit SHAs + content hashes
+#   ./eigs_modules/<name>/   one directory per dep, a git checkout
+#
+# Subcommands:
+#   --pkg add <name> <git-url> [tag]   add to manifest + clone + lock
+#   --pkg install                      reproduce eigs_modules/ from lock
+#   --pkg update [name]                re-resolve tag and re-lock
+#   --pkg verify                       re-hash trees against lock
+#   --pkg list                         print installed deps
+#
+# Design intent:
+#   - The tool is the only thing that touches the network.
+#   - The runtime never reads eigs.json — resolution is by directory
+#     convention so a missing or corrupt manifest never breaks `import`.
+#   - Install is `git clone --depth 1` + checkout + hash. No code from
+#     the dep is ever executed at install time.
+
+MANIFEST_PATH is "eigs.json"
+LOCKFILE_PATH is "eigs.lock.json"
+
+# ---- Manifest helpers ------------------------------------------------
+
+define read_manifest() as:
+    text is read_text of MANIFEST_PATH
+    if text == "":
+        return {"name": "", "version": "0.0.0", "deps": {}}
+    parsed is json_decode of text
+    if (type of parsed) != "dict":
+        throw of "eigs.json is malformed (not a JSON object)"
+    if (has_key of [parsed, "name"]) == 0:
+        parsed.name is ""
+    if (has_key of [parsed, "version"]) == 0:
+        parsed.version is "0.0.0"
+    if (has_key of [parsed, "deps"]) == 0:
+        parsed.deps is {}
+    return parsed
+
+define write_manifest(manifest) as:
+    encoded is json_encode of manifest
+    write_text of [MANIFEST_PATH, encoded + "\n"]
+
+define read_lockfile() as:
+    text is read_text of LOCKFILE_PATH
+    if text == "":
+        return {}
+    parsed is json_decode of text
+    if (type of parsed) != "dict":
+        return {}
+    return parsed
+
+define write_lockfile(lock) as:
+    encoded is json_encode of lock
+    write_text of [LOCKFILE_PATH, encoded + "\n"]
+
+# ---- Subcommands -----------------------------------------------------
+
+define cmd_list() as:
+    manifest is read_manifest of null
+    deps is manifest.deps
+    names is keys of deps
+    n is len of names
+    if n == 0:
+        print of "No dependencies in eigs.json."
+        return 0
+    lock is read_lockfile of null
+    suffix is "y"
+    if n != 1:
+        suffix is "ies"
+    print of f"{n} dependenc{suffix}:"
+    for i in range of n:
+        name is names[i]
+        spec is deps[name]
+        git_url is "(missing url)"
+        if (has_key of [spec, "git"]) == 1:
+            git_url is spec.git
+        tag is "(no tag)"
+        if (has_key of [spec, "tag"]) == 1:
+            tag is spec.tag
+        marker is ""
+        if (has_key of [lock, name]) == 1:
+            short_commit is (text of lock[name].commit)[0:8]
+            marker is "  [locked @ " + short_commit + "]"
+        print of f"  {name}  {git_url}  {tag}{marker}"
+    return 0
+
+# Manifest-only add: record the dep + tag, don't fetch yet. Phase 1b
+# wires the git clone + commit resolution + content hash in.
+define cmd_add(arg_list) as:
+    if (len of arg_list) < 2:
+        print of "Usage: eigenscript --pkg add <name> <git-url> [tag]"
+        return 1
+    name is arg_list[0]
+    git_url is arg_list[1]
+    tag is "main"
+    if (len of arg_list) >= 3:
+        tag is arg_list[2]
+
+    manifest is read_manifest of null
+    if (has_key of [manifest, "deps"]) == 0:
+        manifest.deps is {}
+    manifest.deps[name] is {"git": git_url, "tag": tag}
+    write_manifest of manifest
+    print of f"Added {name} -> {git_url} @ {tag}"
+    print of "(run --pkg install to fetch — not yet implemented in Phase 1a)"
+    return 0
+
+define cmd_install() as:
+    print of "install: not yet implemented (Phase 1b)"
+    return 0
+
+define cmd_verify() as:
+    print of "verify: not yet implemented (Phase 1c)"
+    return 0
+
+define cmd_update(arg_list) as:
+    print of "update: not yet implemented (Phase 1c)"
+    return 0
+
+define print_usage() as:
+    print of "Usage: eigenscript --pkg <subcommand> [args]"
+    print of ""
+    print of "Subcommands:"
+    print of "  add <name> <git-url> [tag]   add to manifest"
+    print of "  install                      reproduce eigs_modules/ from lock"
+    print of "  update [name]                re-resolve tag"
+    print of "  verify                       re-hash trees against lock"
+    print of "  list                         print installed deps"
+
+# ---- Dispatch --------------------------------------------------------
+
+# Failure paths throw, which leaves the process with a nonzero exit
+# (main.c flips g_has_error → rc=1). Success paths return 0 and let the
+# script complete normally.
+argv is args of null
+if (len of argv) == 0:
+    print_usage of null
+    throw of "missing subcommand"
+
+subcommand is argv[0]
+rest is []
+if (len of argv) > 1:
+    rest is argv[1:]
+
+if subcommand == "list":
+    cmd_list of null
+elif subcommand == "add":
+    cmd_add of rest
+elif subcommand == "install":
+    cmd_install of null
+elif subcommand == "verify":
+    cmd_verify of null
+elif subcommand == "update":
+    cmd_update of rest
+elif subcommand == "help" or subcommand == "--help" or subcommand == "-h":
+    print_usage of null
+else:
+    print of f"error: unknown subcommand '{subcommand}'"
+    print of ""
+    print_usage of null
+    throw of f"unknown subcommand: {subcommand}"

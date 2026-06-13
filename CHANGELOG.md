@@ -4,6 +4,21 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Package tool — `--pkg` skeleton (package design Phase 1a)
+
+- **New CLI: `eigenscript --pkg <subcommand>`.** Dispatcher loads
+  `lib/pkg.eigs` and forwards subcommand args to it. Wired alongside
+  `--fmt` and `--lint` in `src/main.c`. The tool is written in
+  EigenScript itself (`lib/pkg.eigs`) so it dogfoods the JSON,
+  subprocess, and file-I/O surface.
+- **Subcommands landed: `list`, `add`, `help`.** `add` writes the dep
+  to `eigs.json`; `list` prints what's recorded plus the locked
+  commit if present in `eigs.lock.json`. `install`, `verify`,
+  `update` are stubs in this slice — they land in Phase 1b and 1c.
+- **Unknown subcommand exits nonzero** via `throw`, so CI / shell
+  pipelines fail loudly on typos. The manifest and lockfile use the
+  built-in `json_encode`/`json_decode` — no new dependency.
+
 ### Modules — import cache + per-file resolution + eigs_modules/ (package design Phase 0a/b/c)
 
 - **`import name` now searches `eigs_modules/<name>/<name>.eigs`,

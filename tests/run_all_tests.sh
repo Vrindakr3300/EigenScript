@@ -2091,6 +2091,24 @@ else
 fi
 echo ""
 
+echo "[94] --pkg skeleton (6 checks)"
+# Phase 1a of the package design: --pkg dispatcher, manifest read/write,
+# help, list, add (manifest-only — git fetch is Phase 1b), unknown
+# subcommand exits nonzero. Shell-driven because the tool's I/O is
+# cwd-relative and we want hermetic tmpdirs.
+TOTAL=$((TOTAL + 6))
+PKG_OUT=$(EIGENSCRIPT="./eigenscript" bash "$TESTS_DIR/test_pkg_skeleton.sh" 2>&1); PKG_RC=$?
+PKG_PASS=$(echo "$PKG_OUT" | grep -c "^  PASS:" || true)
+if [ "$PKG_RC" = "0" ] && [ "$PKG_PASS" = "6" ]; then
+    echo "$PKG_OUT" | grep "^  PASS:"
+    PASS=$((PASS + 6))
+else
+    echo "  FAIL: --pkg skeleton (rc=$PKG_RC, passes=$PKG_PASS)"
+    echo "$PKG_OUT" | head -15
+    FAIL=$((FAIL + 6))
+fi
+echo ""
+
 echo "============================================"
 echo "  RESULTS: $PASS/$TOTAL passed, $FAIL failed"
 if [ "$LEAKED" -gt 0 ]; then
