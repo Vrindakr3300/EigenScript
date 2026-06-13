@@ -224,8 +224,14 @@ portability, and the ecosystem story):
    driven by `web/{index.html,app.js,style.css}`; JIT is arch-gated
    in `src/jit.c` (`__x86_64__`) so wasm32 compiles cleanly. Needs
    `-sSTACK_SIZE=4194304` (default 64KB overflows the C compiler's
-   recursive `compile_node` on nested defines). Not yet deployed —
-   Pages workflow + landing-page link still TODO.
+   recursive `compile_node` on nested defines) and
+   `-sERROR_ON_UNDEFINED_SYMBOLS=0` (emcc 3.1.74 refuses to link
+   `pipe()` refs from builtins.c's `exec_capture`/`proc_spawn` under
+   `-sNO_FILESYSTEM=1`; playground never calls them). Live at
+   https://inauguralsystems.github.io/EigenScript/playground/ via the
+   Docs site Pages workflow, which now sets up emsdk, runs the build,
+   and `sudo`-stages `web/dist` into `_site/playground` (Jekyll's
+   container writes `_site` under a different UID).
 - Perf carryover from 0.12.0 (ROADMAP.md): NaN-boxing for *container*
   storage, extending GET_LOCAL/SET_LOCAL to all locals, per-call env
   churn. Re-profile before picking: every stage last cycle moved the
