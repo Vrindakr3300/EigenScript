@@ -3,6 +3,9 @@
 Start here. Each document has a stable filename and stable headings —
 link to sections freely.
 
+**Try it in your browser:** [playground/](playground/) — interpreter-only
+WASM build, no install required.
+
 ## Learn the language
 
 | document | what it answers |

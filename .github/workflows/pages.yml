@@ -10,6 +10,9 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "web/**"
+      - "src/**"
+      - "VERSION"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -36,6 +39,17 @@ jobs:
         with:
           source: ./docs
           destination: ./_site
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+          actions-cache-folder: emsdk-cache
+      - name: Build WASM playground
+        run: bash web/build.sh
+      - name: Stage playground under _site/playground
+        run: |
+          mkdir -p _site/playground
+          cp -v web/dist/* _site/playground/
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
 
