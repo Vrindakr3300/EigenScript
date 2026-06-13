@@ -10,6 +10,18 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#if defined(__APPLE__)
+/* macOS 11+ requires JIT memory to be created with MAP_JIT and toggled
+ * between writable/executable via pthread_jit_write_protect_np —
+ * plain mprotect(PROT_READ|PROT_EXEC) on a region that was previously
+ * writable in the same mapping is rejected under hardened runtime
+ * (SIGSEGV on first thunk entry on macos-15-intel, latent before the
+ * 0.14.0 release run that first exercised that runner). On Intel Mac
+ * pthread_jit_write_protect_np is a no-op, but MAP_JIT is still
+ * required for the mapping to be exec-eligible. */
+#include <pthread.h>
+#endif
+
 /* Stage 5b: the inline SET-name fast path guards on the trace flag so
  * traced assignments always route to the helper (which runs the trace
  * hook). Plain global in trace.c — its address is baked as a movabs
@@ -29,8 +41,14 @@ EigsJitCache *jit_cache_new(size_t page_count) {
     long ps = sysconf(_SC_PAGESIZE);
     if (ps <= 0) ps = 4096;
     size_t cap = page_count * (size_t)ps;
-    void *p = mmap(NULL, cap, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#if defined(__APPLE__)
+    int prot = PROT_READ | PROT_WRITE | PROT_EXEC;
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_JIT;
+#else
+    int prot = PROT_READ | PROT_WRITE;
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#endif
+    void *p = mmap(NULL, cap, prot, flags, -1, 0);
     if (p == MAP_FAILED) return NULL;
     EigsJitCache *jc = calloc(1, sizeof *jc);
     if (!jc) {
@@ -59,7 +77,13 @@ void *jit_cache_alloc(EigsJitCache *jc, size_t bytes) {
 int jit_cache_seal(EigsJitCache *jc) {
     if (!jc) return -1;
     if (jc->sealed) return 0;
+#if defined(__APPLE__)
+    /* MAP_JIT region — flip the thread to exec mode. No-op on Intel,
+     * the actual W^X enforcement on Apple Silicon. */
+    pthread_jit_write_protect_np(1);
+#else
     if (mprotect(jc->base, jc->capacity, PROT_READ | PROT_EXEC) != 0) return -1;
+#endif
 #if !defined(__wasm__)
     /* clang's wasm backend doesn't implement llvm.clear_cache; the WASM
      * build is interpreter-only (see the __x86_64__ gate below) so this
@@ -73,7 +97,11 @@ int jit_cache_seal(EigsJitCache *jc) {
 int jit_cache_unseal(EigsJitCache *jc) {
     if (!jc) return -1;
     if (!jc->sealed) return 0;
+#if defined(__APPLE__)
+    pthread_jit_write_protect_np(0);
+#else
     if (mprotect(jc->base, jc->capacity, PROT_READ | PROT_WRITE) != 0) return -1;
+#endif
     jc->sealed = 0;
     return 0;
 }

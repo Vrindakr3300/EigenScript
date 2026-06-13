@@ -2,6 +2,24 @@
 
 All notable changes to EigenScript are documented here.
 
+## [0.14.1] — 2026-06-13
+
+### Fix — macOS Intel JIT page mapping
+
+- **JIT cache pages now use `MAP_JIT` + `pthread_jit_write_protect_np`
+  on Apple platforms.** The previous
+  `mmap(PROT_READ|PROT_WRITE)` → `mprotect(PROT_READ|PROT_EXEC)` W→X
+  transition is rejected under macOS 15's hardened runtime — every
+  thunk SIGSEGV'd on first entry, taking 348/1857 tests down on the
+  macos-15-intel runner during the 0.14.0 release build. The
+  macos-x86_64 runner is new for 0.14.0; v0.13.0's single-job workflow
+  never exercised it, so the failure mode was latent. `src/jit.c`
+  branches on `__APPLE__` for the mapping flags and seal/unseal
+  primitives; Linux behavior is unchanged. macos-arm64 stays
+  interpreter-only (the JIT itself remains x86_64-gated).
+- Suite remains 1857/1857 release + ASan with `detect_leaks=1` (leak
+  tally still 13).
+
 ## [0.14.0] — 2026-06-13
 
 ### Trust/identity — OpenSSF badge, CodeQL, Scorecard 7.5/10, signed releases, OSS-Fuzz in flight

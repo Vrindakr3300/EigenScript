@@ -136,9 +136,15 @@ make jit-smoke  # standalone emitter tests (jit_smoke.c stubs all helpers)
   /dev/null — `test_terminal.eigs` blocks forever reading a pipe that
   never EOFs (e.g. backgrounded runs).
 
-## Current state: 0.14.0 released; next up
+## Current state: 0.14.1 released; next up
 
-0.14.0 is cut (CHANGELOG.md [0.14.0] is the full record). It rolls up
+0.14.1 is a one-fix release on top of 0.14.0 — see CHANGELOG.md
+[0.14.1]: the JIT cache pages now use `MAP_JIT` +
+`pthread_jit_write_protect_np` on Apple platforms so macOS 15's
+hardened runtime doesn't SIGSEGV on first thunk entry (the latent bug
+the 0.14.0 release run on the new macos-15-intel runner surfaced; the
+tag v0.14.0 exists but has no published artifacts). 0.14.0 is cut
+(CHANGELOG.md [0.14.0] is the full record). It rolls up
 the closure-cycle collector, the package ecosystem Phase 0–2 (`--pkg`
 tool + `eigs_modules/` resolver + sibling repos), runtime perf wins
 (OP_LINE dedup, single-alloc strcat, ITER_NEXT buffer fast path),
