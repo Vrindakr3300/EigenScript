@@ -42,7 +42,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/eigenscript
           tags: |
-            type=ref,event=branch,enable=${{ github.ref == 'refs/heads/main' }},suffix=,value=edge
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
