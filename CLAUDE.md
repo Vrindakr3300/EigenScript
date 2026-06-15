@@ -136,7 +136,16 @@ make jit-smoke  # standalone emitter tests (jit_smoke.c stubs all helpers)
   /dev/null — `test_terminal.eigs` blocks forever reading a pipe that
   never EOFs (e.g. backgrounded runs).
 
-## Current state: 0.14.2 released; next up
+## Current state: 0.15.0 released; next up
+
+0.15.0 ships the multi-state refactor + embedding API
+(`src/eigs_embed.h` — see [docs/EMBEDDING.md](docs/EMBEDDING.md)).
+The runtime now supports multiple `EigsState` instances concurrently
+in the same process; a C/C++ host can open, eval, set/get globals,
+construct ref-counted values, and register host functions callable
+from script. Phases 1–9 lifted every `__thread` global onto EigsState
+(per-interpreter) or EigsThread (per-OS-thread); Phase 10 is the
+opaque public API wrapping them.
 
 0.14.2 is the first published 0.14-line release — v0.14.0 and v0.14.1
 tags exist but never produced artifacts (macos-x86_64 release leg
@@ -188,7 +197,7 @@ recv_timeout, multi-arg spawn) and the twelve post-merge fixes
   builds in the same run. Note: this remote environment's git proxy
   cannot push tags, and GITHUB_TOKEN-pushed tags don't retrigger
   workflows — hence the dispatch path.
-- **Embedding API + multi-state refactor (Unreleased)**:
+- **Embedding API + multi-state refactor (0.15.0)**:
   `src/eigs_embed.h` is the public C surface for embedding the
   runtime — lifecycle (`eigs_open`/`eigs_close` or finer-grained
   `eigs_state_new`/`eigs_thread_attach`/`eigs_state_init_runtime`),

@@ -4,6 +4,8 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-06-15
+
 ### Embedding API — `eigs_embed.h` makes the runtime hostable from C (multi-state refactor, Phase 10)
 
 - **Public C surface for embedding EigenScript in a host program.**

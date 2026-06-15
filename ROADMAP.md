@@ -90,7 +90,7 @@ when picked up:
 
 ## Completed
 
-### Unreleased — multi-state refactor + embedding API
+### 0.15.0 (2026-06-15) — multi-state refactor + embedding API
 
 - [x] **Multi-state refactor (Phases 1–9).** Every `__thread` global in
       the runtime now lives on `EigsState` (per-interpreter: global env,
