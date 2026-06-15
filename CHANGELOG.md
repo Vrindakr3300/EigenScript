@@ -4,6 +4,42 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Embedding API — `eigs_embed.h` makes the runtime hostable from C (multi-state refactor, Phase 10)
+
+- **Public C surface for embedding EigenScript in a host program.**
+  `src/eigs_embed.h` exposes a small, opaque API: state/thread
+  lifecycle (`eigs_open`/`eigs_close`, or the finer-grained
+  `eigs_state_new` + `eigs_thread_attach` + `eigs_state_init_runtime`
+  for hosts that need to attach multiple OS threads to the same
+  state), source eval (`eigs_eval_string`, `eigs_eval_file` — both
+  REPL-style, so top-level names accumulate in the global env and
+  the host can read them back through `eigs_get_global`), error
+  retrieval (`eigs_last_error_message`/`eigs_has_error`/
+  `eigs_clear_error`), ref-counted `EigsValue` handles with
+  num/string/list/dict constructors + type inspection + accessors,
+  and FFI registration (`eigs_register_function` adopts the existing
+  `BuiltinFn` shape so a C function receives a single `EigsValue *arg`
+  — raw value for 1-arg calls, `VAL_LIST` for multi-arg).
+- **`src/embed_smoke.c` is the contract test.** A standalone host
+  harness that registers a `host_add` C function, evaluates scripts
+  that read host-set globals and call back into C, and checks the
+  error path through an undefined-name lookup. Wired up as `make
+  embed-smoke` (links the runtime minus `main.c` the same way `make
+  fuzz`/`make lsp` do, so it stays in lockstep with the runtime).
+- **Wraps the multi-state refactor (Phases 1–9, lifted every
+  `__thread` global onto `EigsState` per-interpreter or `EigsThread`
+  per-OS-thread).** The embedding API is what those nine phases were
+  building toward — they did the structural work; Phase 10 just gives
+  embedders a stable, opaque contract that doesn't expose the
+  internal bridge-macro identifiers (`g_global_env`, `g_has_error`,
+  etc.). Net effect: a C/C++ host can now embed multiple interpreter
+  instances concurrently in the same process, each with its own
+  global env, JIT cache, module cache, observer thresholds, and
+  per-thread arena/error state.
+- Suite: release 1855/1855; ASan 1855/1855 with the unchanged
+  13-program leak tally. All variants (release, http, lsp,
+  jit-smoke, embed-smoke) build clean.
+
 ### Package tool — `<owner>/<name>` is now required
 
 - **`--pkg add` rejects bare package names.** Identifiers must be
