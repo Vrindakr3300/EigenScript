@@ -347,7 +347,9 @@ static const char* get_content_type(const char *path) {
     if (strcmp(ext, ".html") == 0) return "text/html; charset=utf-8";
     if (strcmp(ext, ".css") == 0) return "text/css; charset=utf-8";
     if (strcmp(ext, ".js") == 0) return "application/javascript; charset=utf-8";
+    if (strcmp(ext, ".mjs") == 0) return "application/javascript; charset=utf-8";
     if (strcmp(ext, ".json") == 0) return "application/json; charset=utf-8";
+    if (strcmp(ext, ".wasm") == 0) return "application/wasm";
     if (strcmp(ext, ".png") == 0) return "image/png";
     if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0) return "image/jpeg";
     if (strcmp(ext, ".gif") == 0) return "image/gif";
