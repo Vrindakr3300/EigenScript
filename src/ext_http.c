@@ -5,6 +5,7 @@
  */
 
 #include "ext_http_internal.h"
+#include "state.h"
 #include "trace.h"
 #include <pthread.h>
 #include <sys/socket.h>
@@ -709,9 +710,19 @@ static void handle_request(int fd) {
             if (strcmp(r->kind, "file") == 0) {
                 send_file(fd, r->payload);
             } else if (strcmp(r->kind, "code") == 0) {
-                /* Route-level auth: reject before running handler */
+                /* Code routes evaluate against the worker state's global env
+                 * (g_global_env), not the spawning state's. The worker was
+                 * spun up in http_conn_thread with a fresh stdlib but no
+                 * startup-defined globals — concurrent requests don't race
+                 * on script state and mutations don't leak across requests.
+                 *
+                 * Route-level auth: require_auth is looked up in the worker
+                 * env too. http_route_authed users need require_auth to be
+                 * either self-contained in the route source or accessible
+                 * through a shared-state primitive (not yet built); until
+                 * then, authed routes 500 with "require_auth not defined". */
                 if (r->requires_auth) {
-                    Value *auth_fn = env_get(g_server.global_env, "require_auth");
+                    Value *auth_fn = env_get(g_global_env, "require_auth");
                     if (!auth_fn || (auth_fn->type != VAL_FN && auth_fn->type != VAL_BUILTIN)) {
                         send_response(fd, 500, "Internal Server Error", "application/json",
                             "{\"error\": \"require_auth not defined or not callable\"}", 53);
@@ -719,7 +730,7 @@ static void handle_request(int fd) {
                     }
                     TokenList auth_tl = tokenize("require_auth of null");
                     ASTNode *auth_ast = parse(&auth_tl);
-                    Env *auth_env = env_new(g_server.global_env);
+                    Env *auth_env = env_new(g_global_env);
                     EigsChunk *auth_chunk = compile_ast(auth_ast, auth_env);
                     Value *auth_result = vm_execute(auth_chunk, auth_env);
                     chunk_free(auth_chunk);
@@ -737,7 +748,7 @@ static void handle_request(int fd) {
                 }
                 TokenList tl = tokenize(r->payload);
                 ASTNode *ast = parse(&tl);
-                Env *req_env = env_new(g_server.global_env);
+                Env *req_env = env_new(g_global_env);
                 EigsChunk *req_chunk = compile_ast(ast, req_env);
                 Value *result = vm_execute(req_chunk, req_env);
                 chunk_free(req_chunk);
@@ -772,9 +783,15 @@ done:
 
 /* Detached worker thread: owns the client fd, runs the request, decrements
  * the live-connection counter on exit. The accept loop hands ownership of
- * the malloc'd ConnArg and never touches it again. The worker inherits
- * eigs_http_active from the parent (set in ConnArg) so g_server bridges
- * read the spawning state's server, not whichever happens to be in TLS. */
+ * the malloc'd ConnArg and never touches it again.
+ *
+ * Per-worker isolation: each connection gets a fresh EigsState with stdlib
+ * + per-request HTTP builtins registered. `code` routes (kind="code")
+ * evaluate against the worker state's env, so concurrent requests don't
+ * race on script globals and one request's mutations never leak into the
+ * next. `eigs_http_active` is then pointed at the spawning state's Server
+ * so route-table lookups in handle_request still hit the main routes that
+ * the startup script registered. */
 typedef struct {
     int fd;
     Server *server;
@@ -783,9 +800,41 @@ typedef struct {
 static void *http_conn_thread(void *arg) {
     ConnArg *ca = arg;
     int fd = ca->fd;
-    eigs_http_active = ca->server;
+    Server *main_server = ca->server;
     free(ca);
+
+    EigsState *worker = eigs_state_new();
+    if (!worker) goto drop;
+    if (!eigs_thread_attach(worker)) {
+        eigs_state_destroy(worker);
+        goto drop;
+    }
+
+    Env *global = env_new(NULL);
+    register_builtins(global);
+    register_store_builtins(global);
+    g_global_env = global;
+
+    /* register_http_builtins allocated a scratch Server on the worker
+     * state (so http_route/http_serve called inside a code route don't
+     * crash) and pointed eigs_http_active at it. Re-point at the spawning
+     * Server so handle_request reads the main route table. */
+    eigs_http_active = main_server;
+
     handle_request(fd);
+    fd = -1;  /* handle_request closed it */
+
+    trace_shutdown();
+    gc_collect_at_exit(global);
+    env_decref(global);
+    g_global_env = NULL;
+    eigs_thread_detach();
+    eigs_state_destroy(worker);
+    goto done;
+
+drop:
+    if (fd >= 0) close(fd);
+done:
     __atomic_sub_fetch(&g_conn_count, 1, __ATOMIC_RELAXED);
     return NULL;
 }
@@ -928,6 +977,16 @@ static Value* builtin_http_cors(Value *arg) {
     return make_str(clean);
 }
 
+/* Per-request builtins only: read the current request's body / session /
+ * headers, send an outbound http_post. No Server allocation, no
+ * eigs_http_active wiring. Safe to call on a fresh worker state. */
+void register_http_request_builtins(Env *env) {
+    env_set_local_owned(env, "http_request_body", make_builtin(builtin_http_request_body));
+    env_set_local_owned(env, "http_session_id", make_builtin(builtin_http_session_id));
+    env_set_local_owned(env, "http_post", make_builtin(builtin_http_post));
+    env_set_local_owned(env, "http_request_headers", make_builtin(builtin_http_request_headers));
+}
+
 void register_http_builtins(Env *env) {
     /* Lazily allocate the per-state Server on first registration and wire
      * the active-pointer TLS for this thread. Idempotent: a second call
@@ -945,11 +1004,8 @@ void register_http_builtins(Env *env) {
     env_set_local_owned(env, "http_static", make_builtin(builtin_http_static));
     env_set_local_owned(env, "http_early_bind", make_builtin(builtin_http_early_bind));
     env_set_local_owned(env, "http_serve", make_builtin(builtin_http_serve));
-    env_set_local_owned(env, "http_request_body", make_builtin(builtin_http_request_body));
-    env_set_local_owned(env, "http_session_id", make_builtin(builtin_http_session_id));
-    env_set_local_owned(env, "http_post", make_builtin(builtin_http_post));
-    env_set_local_owned(env, "http_request_headers", make_builtin(builtin_http_request_headers));
     env_set_local_owned(env, "http_cors", make_builtin(builtin_http_cors));
+    register_http_request_builtins(env);
 }
 
 void ext_http_state_destroy(EigsState *st) {

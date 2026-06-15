@@ -4,6 +4,40 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### HTTP `code` routes evaluate in a per-worker `EigsState` (concurrency + isolation)
+
+- **Each connection now runs its `code` route in a fresh worker
+  `EigsState`** (created in `http_conn_thread` via `eigs_state_new` +
+  `eigs_thread_attach` + `register_builtins`). The worker's global env
+  starts empty — `code` route source has access to stdlib and the
+  per-request HTTP builtins, but **does not see any globals defined
+  by the startup script**, and mutations in one request never leak
+  into another.
+- **Why this changes behavior.** Previously, workers were detached
+  pthreads that set `eigs_http_active` but never called
+  `eigs_thread_attach`, so `vm_execute` inside a worker ran with
+  `eigs_current == NULL` and the bridge macros derefed null — `code`
+  routes were structurally unsafe from worker threads. With a real
+  `EigsState` attached per worker, they're safe to evaluate, including
+  concurrently across many connections.
+- **Migration:** `code` routes that closed over startup-time globals
+  (counters, route registries, request logs) will see those globals
+  missing. To share state across requests, use a host-provided shared
+  store (planned next; until then, `code` routes must be self-contained
+  or read shared state through `http_post`/file I/O). `http_route_authed`
+  regresses to 500 unless `require_auth` is self-contained in the route
+  source — auth on shared session state is blocked on the shared-store
+  primitive.
+- **New tests:** `tests/test_http_server.sh` HS14 (code route runs and
+  returns the last expression), HS15 (10 sequential calls each see
+  fresh state), HS16 (16 concurrent calls all return the isolated
+  value — proves no cross-worker globals trampling).
+- **Internal split:** `register_http_request_builtins` exposes the
+  read-the-current-request subset (`http_request_body`,
+  `http_session_id`, `http_request_headers`, `http_post`) without
+  allocating a `Server` — useful for any future embedder that wants
+  to host code routes from its own worker pool.
+
 ## [0.15.0] — 2026-06-15
 
 ### Embedding API — `eigs_embed.h` makes the runtime hostable from C (multi-state refactor, Phase 10)

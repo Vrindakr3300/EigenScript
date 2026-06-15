@@ -38,6 +38,15 @@ r2 is http_route of ["GET", "/json", "{\"ok\":true}"]
 # Static-file dir mounted under /files
 s is http_static of ["/files", "$STATIC_DIR"]
 
+# Code route: evaluates per-request in a worker EigsState. Sets a local
+# var and returns it — used to check per-worker isolation (a mutation
+# in one request must not be visible from a later one).
+r_code is http_route of ["GET", "/codeval", "code", "x is 1\nx is x + 1\nx"]
+
+# Code route that mutates a name with the same identifier across calls.
+# Reads stdlib; never sees startup-scope globals.
+r_iso is http_route of ["GET", "/iso", "code", "counter is 100\ncounter"]
+
 # Serve forever.
 serve is http_serve of $PORT
 EIGS
@@ -258,6 +267,55 @@ if command -v timeout >/dev/null 2>&1; then
     for p in "${SLOW_PIDS[@]}"; do
         wait "$p" 2>/dev/null || true
     done
+fi
+
+# ---- Code routes evaluate in per-worker EigsState ----
+# Each request gets a fresh worker state with stdlib + per-request HTTP
+# builtins. The route source must be self-contained — no startup globals
+# leak in, no mutations leak out across requests.
+RESP=$(curl -s --max-time 2 "http://127.0.0.1:$PORT/codeval")
+if [ "$RESP" = "2" ]; then
+    ok "HS14 code route evaluates and returns final-expression value"
+else
+    fail "HS14 code route" "got '$RESP'"
+fi
+
+# Hit /iso N times — each call must see counter=100 (i.e. no leak from
+# the previous worker into the next).
+ISO_FAILS=0
+for _ in $(seq 1 10); do
+    RESP=$(curl -s --max-time 2 "http://127.0.0.1:$PORT/iso")
+    if [ "$RESP" != "100" ]; then
+        ISO_FAILS=$((ISO_FAILS+1))
+    fi
+done
+if [ "$ISO_FAILS" -eq 0 ]; then
+    ok "HS15 code routes isolated across 10 sequential requests"
+else
+    fail "HS15 code-route isolation" "$ISO_FAILS/10 saw stale state"
+fi
+
+# Fire 16 concurrent code-route calls. They must all 200 with "100" —
+# proves per-worker states don't trample each other's globals when running
+# in parallel. Each curl writes to its own file to avoid output interleave.
+if command -v timeout >/dev/null 2>&1; then
+    CONC_DIR=$(mktemp -d /tmp/eigs_conc_XXXXXX)
+    PIDS=()
+    for i in $(seq 1 16); do
+        ( curl -s --max-time 3 "http://127.0.0.1:$PORT/iso" > "$CONC_DIR/r$i" 2>/dev/null ) &
+        PIDS+=($!)
+    done
+    for p in "${PIDS[@]}"; do wait "$p" 2>/dev/null || true; done
+    GOOD=0
+    for i in $(seq 1 16); do
+        [ "$(cat "$CONC_DIR/r$i" 2>/dev/null)" = "100" ] && GOOD=$((GOOD+1))
+    done
+    if [ "$GOOD" -eq 16 ]; then
+        ok "HS16 16 concurrent code-route calls all returned isolated state"
+    else
+        fail "HS16 concurrent code routes" "only $GOOD/16 returned '100'"
+    fi
+    rm -rf "$CONC_DIR"
 fi
 
 # ---- Summary ----

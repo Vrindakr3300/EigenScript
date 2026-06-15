@@ -40,6 +40,11 @@ extern __thread Server *eigs_http_active;
 #define g_server (*eigs_http_active)
 
 void register_http_builtins(Env *env);
+/* Subset for worker states: registers only the read-the-current-request
+ * builtins (request_body / session_id / request_headers / http_post).
+ * Skips the server-config builtins and does NOT allocate a Server, so
+ * pooled per-connection states stay cheap. */
+void register_http_request_builtins(Env *env);
 void http_serve_blocking(int port);
 /* Called from eigs_state_destroy. Frees route allocations + the Server
  * struct itself and nils state->ext_http_server. No-op when the state
