@@ -18,27 +18,14 @@
 #include "model_internal.h"
 #endif
 
-/* HTTP server globals and health thread are in ext_http.c */
-__thread jmp_buf g_return_buf;
-__thread Value *g_return_val = NULL;
-__thread int g_returning = 0;
-__thread int g_parse_errors = 0;
-__thread char g_error_msg[4096] = "";
-/* First syntax/parse error of the current tokenize+parse pass, captured
- * for consumers that can't see the parser's stderr (the LSP, which turns
- * it into a publishDiagnostics squiggle). Reset at the top of tokenize().
- * g_first_error_line is 1-based and 0 when no error has been recorded. */
-__thread int g_first_error_line = 0;
-__thread char g_first_error_msg[256] = "";
-
-void eigs_record_first_error(int line, const char *msg) {
-    if (g_first_error_line) return;   /* keep only the first */
-    g_first_error_line = line;
-    snprintf(g_first_error_msg, sizeof(g_first_error_msg), "%s", msg ? msg : "syntax error");
-}
-__thread int g_has_error = 0;
-__thread int g_breaking = 0;
-__thread int g_continuing = 0;
+/* HTTP server globals and health thread are in ext_http.c.
+ *
+ * The control-flow/error-state TLS globals (g_return_val, g_returning,
+ * g_breaking, g_continuing, g_parse_errors, g_error_msg,
+ * g_first_error_line, g_first_error_msg, g_has_error, g_try_depth,
+ * g_error_value) now live as fields on `eigs_current` (EigsThread, see
+ * eigenscript.h). The g_* identifiers are macros that expand to
+ * `eigs_current->field`. */
 
 /* Per-import resolution base (Phase 0b). Empty string means "fall back
  * to g_script_dir". OP_IMPORT saves/restores around module body. */
@@ -50,17 +37,20 @@ __thread char g_import_resolve_dir[4096] = "";
  * Most workloads (DMG, MiniSat, Tidepool, REPL) never spawn. */
 int g_vm_multithreaded = 0;
 
-/* Set runtime error — captured by try/catch, or printed to stderr.
- * Inside try blocks, the error is silently captured.
- * Outside try blocks, it also prints to stderr. */
-__thread int g_try_depth = 0;
+/* First syntax/parse error of the current tokenize+parse pass, captured
+ * for consumers that can't see the parser's stderr (the LSP, which turns
+ * it into a publishDiagnostics squiggle). Reset at the top of tokenize().
+ * g_first_error_line is 1-based and 0 when no error has been recorded. */
+void eigs_record_first_error(int line, const char *msg) {
+    if (g_first_error_line) return;   /* keep only the first */
+    g_first_error_line = line;
+    snprintf(g_first_error_msg, sizeof(g_first_error_msg), "%s", msg ? msg : "syntax error");
+}
 
 /* Structured error payload: set by `throw` so catch can bind the thrown
  * value (dict/list/...) instead of a stringified copy. NULL for plain
  * runtime errors. Owned ref; consumed by vm_take_error_value, cleared
  * by eigs_clear_error_value on the uncaught path. */
-__thread Value *g_error_value = NULL;
-
 void eigs_clear_error_value(void) {
     if (g_error_value) {
         val_decref(g_error_value);

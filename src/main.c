@@ -198,7 +198,14 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Usage: eigenscript --lint file.eigs\n");
             return 1;
         }
-        return eigenscript_lint(argv[2]);
+        /* Lint tokenizes + parses, so it needs an EigsState/Thread
+         * (arena + parse_errors live on eigs_current). No VM runs. */
+        EigsState *eigs_st = eigs_state_new();
+        eigs_thread_attach(eigs_st);
+        int rc = eigenscript_lint(argv[2]);
+        eigs_thread_detach();
+        eigs_state_destroy(eigs_st);
+        return rc;
     }
 
     /* --pkg flag: dispatch to lib/pkg.eigs with the rest of the argv as

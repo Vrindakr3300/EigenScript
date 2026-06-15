@@ -249,16 +249,59 @@ typedef struct {
     int mark_fallback_count;
 } Arena;
 
-/* Phase 1 of the multi-state refactor: g_arena now resolves through a
- * per-OS-thread Arena* set up by eigs_thread_attach. Same indirection
- * cost as the old __thread Arena (compiler folds the deref + field
- * offset into one addressing mode). See state.h.
+/* ---- Per-thread execution context ---------------------------------
  *
- * The header doesn't pull state.h to avoid a circular include — the
- * pointer declaration here is enough for the macro, and TUs that
- * actually call attach/detach include state.h directly. */
-extern __thread Arena *eigs_arena_ptr;
-#define g_arena (*eigs_arena_ptr)
+ * EigsThread carries every datum that used to be a __thread global so
+ * the runtime can host multiple interpreter states side by side. Set
+ * up by eigs_thread_attach (state.h), reachable as `eigs_current` on
+ * any OS thread that has entered a state.
+ *
+ * Hot fields live up front so the compiler can fold the indirection
+ * into a single `[fs:TLS + offset]` addressing mode — same cost as
+ * the legacy direct __thread access. Identifiers used everywhere in
+ * the runtime (g_arena, g_returning, ...) are macros that expand to
+ * `eigs_current->field`.
+ *
+ * The struct is fully transparent to internal TUs; the public
+ * embedding API (Phase 10, embed.h) will expose it through accessor
+ * functions only, so the field layout can still evolve. */
+typedef struct EigsThread EigsThread;
+struct EigsThread {
+    struct EigsState *state;        /* owning interpreter; opaque (state.c) */
+    Arena       arena;
+    /* Control-flow propagation (return/break/continue out of nested
+     * blocks). All three are checked + cleared by the interpreter
+     * walk and the VM dispatch loop. */
+    struct Value *return_val;
+    int          returning;
+    int          breaking;
+    int          continuing;
+    /* Error reporting / try-catch. */
+    int          parse_errors;
+    int          has_error;
+    int          try_depth;
+    int          first_error_line;
+    char         error_msg[4096];
+    char         first_error_msg[256];
+    struct Value *error_value;      /* thrown payload for structured catch */
+    /* Registry list — set by eigs_thread_attach. */
+    EigsThread *next;
+};
+
+extern __thread EigsThread *eigs_current;
+
+#define g_arena            (eigs_current->arena)
+#define g_return_val       (eigs_current->return_val)
+#define g_returning        (eigs_current->returning)
+#define g_breaking         (eigs_current->breaking)
+#define g_continuing       (eigs_current->continuing)
+#define g_parse_errors     (eigs_current->parse_errors)
+#define g_has_error        (eigs_current->has_error)
+#define g_try_depth        (eigs_current->try_depth)
+#define g_first_error_line (eigs_current->first_error_line)
+#define g_error_msg        (eigs_current->error_msg)
+#define g_first_error_msg  (eigs_current->first_error_msg)
+#define g_error_value      (eigs_current->error_value)
 
 /* ---- OOM-safe allocation wrappers ----
  * Abort with a diagnostic on allocation failure. Used by value constructors
@@ -502,21 +545,13 @@ int resolve_eigenscript_file_from(const char *base, const char *path,
 Value* eigs_json_parse_value(const char *s, int *pos);
 
 /* ---- Control flow (return statement) ---- */
-
-extern __thread jmp_buf g_return_buf;
-extern __thread Value *g_return_val;
-extern __thread int g_returning;
-extern __thread int g_parse_errors;
-extern __thread char g_error_msg[4096];
-extern __thread Value *g_error_value;  /* thrown value for structured catch; see throw */
+/* return_val, returning, parse_errors, error_msg, error_value,
+ * first_error_line, first_error_msg, has_error, breaking, continuing,
+ * try_depth are EigsThread fields (see Per-thread execution context
+ * above). The declarations below cover the not-yet-migrated globals. */
 void eigs_clear_error_value(void);
 void vm_print_stack_trace(FILE *out);  /* uncaught-error call stack (vm.c); no-ops without a VM */
-extern __thread int g_first_error_line;     /* 1-based; 0 = none. Reset in tokenize(). */
-extern __thread char g_first_error_msg[256];
 void eigs_record_first_error(int line, const char *msg);
-extern __thread int g_has_error;
-extern __thread int g_breaking;
-extern __thread int g_continuing;
 extern __thread Value *g_last_observer;
 extern char g_script_dir[4096];
 extern char g_exe_dir[4096];

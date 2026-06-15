@@ -23,15 +23,11 @@ static __thread int g_loop_stall_count = 0;
 static __thread int g_loop_iterations = 0;
 static __thread const char *g_loop_exit_reason = "normal";
 
-/* ---- External globals from eval.c / eigenscript.c ---- */
-extern __thread Value *g_return_val;
-extern __thread int g_returning;
-extern __thread int g_breaking;
-extern __thread int g_continuing;
-extern __thread char g_error_msg[4096];
-extern __thread Value *g_error_value;
-extern __thread int g_has_error;
-extern __thread int g_try_depth;
+/* ---- External globals from eval.c / eigenscript.c ----
+ * Control-flow / error-state globals (g_return_val, g_returning,
+ * g_breaking, g_continuing, g_error_msg, g_error_value, g_has_error,
+ * g_try_depth) are EigsThread fields; the g_* identifiers are macros
+ * in eigenscript.h. No extern decls needed here. */
 extern __thread int g_unobserved_depth;
 extern __thread Value *g_last_observer;
 extern __thread Env *g_builtin_call_env;
@@ -3897,7 +3893,6 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         extern int resolve_eigenscript_file_from(const char *base, const char *name,
                                                   char *out, size_t outlen);
         extern char *read_file_util(const char *path, long *size);
-        extern __thread int g_parse_errors;
         extern __thread Env *g_load_env;
         extern Env *g_global_env;
         extern TokenList tokenize(const char *source);

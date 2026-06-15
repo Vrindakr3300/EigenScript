@@ -5,9 +5,6 @@
 
 #include "eigenscript.h"
 
-/* Parse-error counter owned by eigenscript.c. */
-extern __thread int g_parse_errors;
-
 /* Recursion depth guard for nested f-string tokenization. */
 static __thread int g_tokenize_depth = 0;
 #define MAX_TOKENIZE_DEPTH 64

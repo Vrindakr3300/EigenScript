@@ -1,39 +1,33 @@
 /*
  * EigsState / EigsThread — interpreter and per-thread execution context.
  *
- * Phase 1 of the multi-state refactor (see docs/EMBEDDING.md once
- * Phase 10 lands). Introduces:
+ * Part of the multi-state refactor (see docs/EMBEDDING.md once Phase 10
+ * lands):
  *
  *   - EigsState:  one per interpreter instance. Will own the global
  *                 env, script/exe dirs, observer thresholds, module
- *                 cache, handle table, ext singletons. Empty in
- *                 Phase 1 except for the attached-threads registry.
- *   - EigsThread: one per OS thread that has entered a state. Owns
- *                 the arena (Phase 1), and will grow to own the VM,
- *                 error/return state, observer-current pointer, JIT
- *                 caches, allocator freelists.
+ *                 cache, handle table, ext singletons. Currently holds
+ *                 only the attached-threads registry.
+ *   - EigsThread: one per OS thread that has entered a state. Owns the
+ *                 arena and the error/return/control-flow state
+ *                 (Phase 3). Will grow to own the VM, observer-current
+ *                 pointer, JIT caches, allocator freelists.
  *
- * Code that still names legacy globals (`g_arena`, ...) sees them via
- * compat macros in eigenscript.h that redirect through `eigs_arena_ptr`
- * — a per-OS-thread pointer that caches `&eigs_current->arena`. Setting
- * the pointer at attach time gives the macro the same single-indirection
- * cost as the old `__thread Arena g_arena` direct access.
+ * EigsThread is transparent (struct definition in eigenscript.h) so the
+ * legacy `g_arena`, `g_returning`, `g_error_msg`, ... identifiers can be
+ * macros that expand to `eigs_current->field` — same single-indirection
+ * cost as the original `__thread X g_X` direct access. EigsState stays
+ * opaque to internal TUs.
  *
- * Phase 1 explicitly forbids re-attach on the same OS thread (nested
- * states need a save/restore stack — Phase 10 work).
+ * Re-attach on the same OS thread is explicitly forbidden; nested
+ * states need a save/restore stack (Phase 10 work).
  */
 #ifndef EIGENSCRIPT_STATE_H
 #define EIGENSCRIPT_STATE_H
 
-/* Arena and eigs_arena_ptr are declared in eigenscript.h — state.h
- * doesn't redeclare them because Arena uses an anonymous-struct
- * typedef that can't be forward-declared. TUs that need the bridge
- * already include eigenscript.h. */
-
-typedef struct EigsState  EigsState;    /* opaque outside state.c */
-typedef struct EigsThread EigsThread;   /* opaque outside state.c */
-
-extern __thread EigsThread *eigs_current;
+/* EigsThread is declared in eigenscript.h (transparent struct); we
+ * only need EigsState here. */
+typedef struct EigsState EigsState;
 
 /* Construct a fresh interpreter state. The state owns no per-thread
  * resources; the caller must attach an OS thread to make it usable. */
@@ -43,14 +37,14 @@ EigsState *eigs_state_new(void);
  * attachments are reported to stderr (leak indicator). Safe on NULL. */
 void eigs_state_destroy(EigsState *st);
 
-/* Attach the calling OS thread to `st`. Allocates the EigsThread,
- * runs arena_init on its arena, links into st, sets eigs_current /
- * eigs_arena_ptr. Returns NULL on re-attach or NULL st. */
+/* Attach the calling OS thread to `st`. Allocates the EigsThread, runs
+ * arena_init on its arena, links into st, sets eigs_current. Returns
+ * NULL on re-attach or NULL st. */
 EigsThread *eigs_thread_attach(EigsState *st);
 
 /* Detach the calling OS thread. Runs arena_destroy, unlinks from the
- * owning state, frees the EigsThread, clears the TLS pointers. No-op
- * if not attached. */
+ * owning state, frees the EigsThread, clears eigs_current. No-op if
+ * not attached. */
 void eigs_thread_detach(void);
 
 /* Return the state the calling thread is attached to, or NULL. Used

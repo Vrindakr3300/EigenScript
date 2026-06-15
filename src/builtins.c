@@ -35,7 +35,6 @@ const char* val_type_name(ValType t);
 int dict_has(Value *dict, const char *key);
 void dict_remove(Value *dict, const char *key);
 extern int env_hash_find_dict(Value *dict, const char *key, uint32_t h);
-extern __thread int g_try_depth;
 
 Value* builtin_print(Value *arg) {
     char *s = value_to_string(arg);

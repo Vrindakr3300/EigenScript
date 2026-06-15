@@ -5,14 +5,7 @@
 #include "state.h"
 #include <pthread.h>
 
-__thread EigsThread *eigs_current    = NULL;
-__thread Arena      *eigs_arena_ptr  = NULL;  /* declared in eigenscript.h */
-
-struct EigsThread {
-    EigsState  *state;
-    Arena       arena;
-    EigsThread *next;
-};
+__thread EigsThread *eigs_current = NULL;
 
 struct EigsState {
     pthread_mutex_t threads_lock;
@@ -47,8 +40,7 @@ EigsThread *eigs_thread_attach(EigsState *st) {
     th->state = st;
 
     /* Wire TLS before arena_init so its writes land in th->arena. */
-    eigs_current   = th;
-    eigs_arena_ptr = &th->arena;
+    eigs_current = th;
     arena_init();
 
     pthread_mutex_lock(&st->threads_lock);
@@ -69,8 +61,7 @@ void eigs_thread_detach(void) {
     EigsState *st = th->state;
 
     arena_destroy();
-    eigs_current   = NULL;
-    eigs_arena_ptr = NULL;
+    eigs_current = NULL;
 
     pthread_mutex_lock(&st->threads_lock);
     EigsThread **slot = &st->threads;
