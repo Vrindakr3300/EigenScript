@@ -17,6 +17,11 @@
  * this stub is unreachable. */
 void eigs_jit_get_layout(EigsJitLayout *out) { (void)out; }
 
+/* Phase 5: jit_module_shutdown reads eigs_current to decide whether
+ * to flush stats — the smoke binary leaves it NULL so shutdown no-ops. */
+typedef struct EigsThread EigsThread;
+__thread EigsThread *eigs_current = NULL;
+
 /* Stage 4c references &free_value as an immediate in the decref emitter,
  * so the linker needs a definition even though the smoke path never
  * invokes the emitter. Stub returns void. */

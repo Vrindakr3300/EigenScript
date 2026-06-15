@@ -307,7 +307,7 @@ typedef struct {
 #define VM_STACK_MAX  65536
 #define VM_FRAMES_MAX 4096
 
-typedef struct {
+typedef struct VM {
     EigsSlot   stack[VM_STACK_MAX];
     int        sp;
     CallFrame  frames[VM_FRAMES_MAX];
@@ -337,5 +337,11 @@ EigsChunk *compile_ast(ASTNode *ast, Env *env);
 
 /* VM execution */
 Value     *vm_execute(EigsChunk *chunk, Env *env);
+
+/* Phase 5: free the per-thread VM struct. Called by eigs_thread_detach
+ * so the heap-allocated VM (~1MB) doesn't leak. Safe on a thread whose
+ * VM was never lazily initialized. */
+struct EigsThread;
+void       vm_thread_destroy(struct EigsThread *th);
 
 #endif /* EIGENSCRIPT_VM_H */

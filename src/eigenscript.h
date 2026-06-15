@@ -268,6 +268,9 @@ typedef struct {
  * functions only, so the field layout can still evolve. */
 typedef struct EigsState  EigsState;
 typedef struct EigsThread EigsThread;
+struct VM;
+struct EigsJitCache;
+struct EigsChunk;
 
 /* Per-interpreter-instance config + shared registry. Transparent for
  * internal TUs (Phase 10's embed.h wraps it behind accessors). Most
@@ -311,6 +314,26 @@ struct EigsThread {
     /* Dynamic caller scope for env-aware builtins (env_get/env_set
      * polymorphic dispatch needs to know "who called me"). */
     struct Env   *builtin_call_env;
+    /* Phase 5: VM execution state. Heap-allocated (the VM struct is
+     * ~1MB — stack + frames). Allocated lazily in vm_init on first
+     * vm_execute; freed in eigs_thread_detach. */
+    struct VM           *vm;
+    /* Loop-stall accounting (scoped per call frame via CallFrame.saved_*). */
+    int                  loop_stall_count;
+    int                  loop_iterations;
+    const char          *loop_exit_reason;
+    /* Per-thread JIT state — chunk → thunk cache, chunk hotness
+     * registry, and stop-opcode diagnostics. Lazily initialized;
+     * cache + chunks array freed in eigs_thread_detach. */
+    struct EigsJitCache *jit_cache;
+    struct EigsChunk   **jit_chunks;
+    int                  jit_chunks_count;
+    int                  jit_chunks_cap;
+    int                  jit_compiled_chunks;
+    int                  jit_scanned_chunks;
+    uint32_t             jit_stop_counts[256];
+    uint32_t             jit_stop_at_zero;
+    uint32_t             jit_compiled_count;
     /* Registry list — set by eigs_thread_attach. */
     EigsThread *next;
 };
@@ -332,6 +355,19 @@ extern __thread EigsThread *eigs_current;
 #define g_last_observer     (eigs_current->last_observer)
 #define g_unobserved_depth  (eigs_current->unobserved_depth)
 #define g_builtin_call_env  (eigs_current->builtin_call_env)
+#define g_vm                  (*eigs_current->vm)
+#define g_loop_stall_count    (eigs_current->loop_stall_count)
+#define g_loop_iterations     (eigs_current->loop_iterations)
+#define g_loop_exit_reason    (eigs_current->loop_exit_reason)
+#define g_jit_cache           (eigs_current->jit_cache)
+#define g_chunks              (eigs_current->jit_chunks)
+#define g_chunks_count        (eigs_current->jit_chunks_count)
+#define g_chunks_cap          (eigs_current->jit_chunks_cap)
+#define g_jit_compiled_chunks (eigs_current->jit_compiled_chunks)
+#define g_jit_scanned_chunks  (eigs_current->jit_scanned_chunks)
+#define g_jit_stop_counts     (eigs_current->jit_stop_counts)
+#define g_jit_stop_at_zero    (eigs_current->jit_stop_at_zero)
+#define g_jit_compiled_count  (eigs_current->jit_compiled_count)
 #define g_obs_dh_zero       (eigs_current->state->obs_dh_zero)
 #define g_obs_dh_small      (eigs_current->state->obs_dh_small)
 #define g_obs_h_low         (eigs_current->state->obs_h_low)

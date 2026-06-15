@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 typedef struct EigsJitCache EigsJitCache;
+typedef struct EigsThread   EigsThread;
 
 /* Allocate a code cache covering `page_count` system pages. Memory is
  * initially RW. Returns NULL on mmap failure. */
@@ -88,6 +89,10 @@ void jit_try_compile_chunk_osr(struct EigsChunk *chunk, int entry_offset,
 void jit_module_init(void);
 void jit_module_shutdown(void);
 
+/* Phase 5: free the per-thread JIT cache + chunk registry. Called by
+ * eigs_thread_detach so the cache pages and registry array don't leak. */
+void jit_thread_destroy(EigsThread *th);
+
 /* OSR threshold accessor for vm.c. vm.c caches the result thread-local
  * on the first JUMP_BACK so the dispatch loop doesn't pay a getenv per
  * iteration. The value is honors-EIGS_JIT_OSR_THRESHOLD env var. */
@@ -101,17 +106,19 @@ void jit_unregister_chunk(struct EigsChunk *chunk);
 
 /* ---- Stage 3b inline-emit layout descriptor ----
  *
- * vm.c owns g_vm (static __thread) so it is the only TU that can
- * compute the TLS @tpoff for that symbol and the VM/CallFrame field
- * offsets. The JIT emitter reads this once at first compile and uses
- * it to inline native loads/stores against g_vm without going through
- * helper functions. */
+ * vm.c owns the VM struct (per-EigsThread, heap-allocated) so it is
+ * the only TU that can compute the TLS @tpoff for `eigs_current` and
+ * the EigsThread/VM/CallFrame field offsets. The JIT emitter reads
+ * this once at first compile and uses it to inline native loads/stores
+ * against the live VM via two-level addressing (load `eigs_current`
+ * from %fs, then `eigs_current->vm` at `off_thread_vm`). */
 typedef struct {
-    long g_vm_tpoff;                /* &g_vm - %fs:0, signed bytes */
-    /* Phase 4: unobserved_depth lives on EigsThread (eigs_current).
-     * The JIT reads eigs_current via %fs:eigs_current_tpoff and then
-     * accesses the field at off_thread_unobserved_depth(%reg). */
-    long eigs_current_tpoff;        /* &eigs_current - %fs:0 */
+    /* Phase 4+5: VM and unobserved_depth live on EigsThread, reached
+     * via TLS `eigs_current`. The JIT loads eigs_current via
+     * %fs:eigs_current_tpoff once at prologue, then computes &g_vm as
+     * eigs_current->vm (load) and accesses fields off that. */
+    long eigs_current_tpoff;          /* &eigs_current - %fs:0 */
+    int  off_thread_vm;               /* offsetof(EigsThread, vm) */
     int  off_thread_unobserved_depth; /* offsetof(EigsThread, unobserved_depth) */
     int  off_sp;
     int  off_stack;

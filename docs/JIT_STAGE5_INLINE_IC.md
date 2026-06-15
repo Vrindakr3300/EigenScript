@@ -59,14 +59,14 @@ Register conventions inside a thunk (see the prologue, ~line 1575):
 
 | Reg | Meaning |
 |-----|---------|
-| `%rbx` | `&g_vm` (thread-local; prologue does `mov %fs:0` + `lea g_vm_tpoff(%rbx)`) |
+| `%rbx` | `&g_vm` (per-EigsThread, heap-allocated; prologue does `mov %fs:eigs_current_tpoff, %rbx` + `mov off_thread_vm(%rbx), %rbx`) |
 | `%ecx` | cached `g_vm.sp` — must be synced to memory before any helper call and reloaded after |
 | `%r14` | chunk pointer (loaded in prologue only when scanner set `has_bail_op`) |
 | `%r13d` | bail advance for the epilogue writeback (`chunk->jit_advance`); `-1` = RETURN sentinel |
 | `%r12` | `&g_vm.frames[frame_count-1]` — **only when `needs_env_cache`** was set by the scanner; see the prologue block. This is how you reach `frame->env`/`fn_env` without a helper. |
 
 `g_layout` (filled by `eigs_jit_get_layout`, src/vm.c ~1233) provides:
-`g_vm_tpoff`, `eigs_current_tpoff`, `off_thread_unobserved_depth`,
+`eigs_current_tpoff`, `off_thread_vm`, `off_thread_unobserved_depth`,
 `off_sp`, `off_frames`,
 `off_current_line`, `off_callframe_ip`, `off_callframe_fn_env`,
 `sizeof_callframe`, `off_env_values`, `off_env_count`. Add fields here

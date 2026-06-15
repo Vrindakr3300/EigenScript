@@ -134,30 +134,15 @@ JitConstFn jit_emit_const_return(EigsJitCache *jc, int64_t value) {
 
 /* ---- In-VM integration ---- */
 
-/* Per-thread cache so each interpreter thread compiles into its own
- * pages. Lazily initialized on first compile attempt. */
-static __thread EigsJitCache *g_jit_cache = NULL;
-static __thread int g_jit_compiled_chunks = 0;
-static __thread int g_jit_scanned_chunks = 0;
-
-/* Stop-opcode histogram. Indexed by OP code (0..OP_COUNT-1) plus an
- * extra OP_COUNT slot used for "ran off the end" — those chunks fit
- * the supported set entirely but were short. Counter rules in
- * jit_try_compile_chunk: every bail bumps g_jit_stop_counts[stop_op];
- * if prefix==0 we also bump g_jit_stop_at_zero. Compiled chunks bump
- * g_jit_compiled_count and ALSO record their trailing stop_op (the op
- * that would unlock further extension). */
-static __thread uint32_t g_jit_stop_counts[256];
-static __thread uint32_t g_jit_stop_at_zero = 0;
-static __thread uint32_t g_jit_compiled_count = 0;
-
-/* Per-thread chunk registry for the EIGS_JIT_HOT dump. Chunks self-
- * register via jit_register_chunk on first JIT visit (CALL paths) and
- * on top-level entry (vm_run). Idempotent via a linear scan — only
- * called once per chunk lifetime so the O(n²) registration is fine. */
-static __thread struct EigsChunk **g_chunks = NULL;
-static __thread int g_chunks_count = 0;
-static __thread int g_chunks_cap = 0;
+/* Phase 5: per-thread JIT state — chunk → thunk cache, hotness
+ * registry, scan counters, and stop-opcode histogram — all live on
+ * `eigs_current` (EigsThread). The `g_*` identifiers below are
+ * bridge macros (eigenscript.h) so call-site code stays unchanged.
+ * Stop-opcode histogram rules in jit_try_compile_chunk: every bail
+ * bumps g_jit_stop_counts[stop_op]; if prefix==0 we also bump
+ * g_jit_stop_at_zero. Compiled chunks bump g_jit_compiled_count and
+ * ALSO record their trailing stop_op (the op that would unlock
+ * further extension). */
 
 void jit_register_chunk(struct EigsChunk *chunk) {
     if (!chunk) return;
@@ -199,6 +184,16 @@ static void jit_register_atexit(void) {
 }
 
 void jit_module_shutdown(void) {
+    /* Runs at atexit AFTER main returns. If main detached cleanly,
+     * the dump+free already ran inside eigs_thread_detach and there's
+     * nothing to do. Otherwise (a thread is still attached) we run
+     * the same path here so spawned threads still flush. */
+    if (!eigs_current) return;
+    jit_thread_destroy(eigs_current);
+}
+
+void jit_thread_destroy(EigsThread *th) {
+    if (!th) return;
     if (getenv("EIGS_JIT_STATS")) {
         fprintf(stderr, "[jit] scanned=%d compiled=%d cache_used=%zu\n",
                 g_jit_scanned_chunks, g_jit_compiled_chunks,
@@ -368,9 +363,15 @@ void jit_module_shutdown(void) {
             free(order);
         }
     }
-    if (g_jit_cache) {
-        jit_cache_free(g_jit_cache);
-        g_jit_cache = NULL;
+    if (th->jit_cache) {
+        jit_cache_free(th->jit_cache);
+        th->jit_cache = NULL;
+    }
+    if (th->jit_chunks) {
+        free(th->jit_chunks);
+        th->jit_chunks = NULL;
+        th->jit_chunks_count = 0;
+        th->jit_chunks_cap = 0;
     }
 }
 
@@ -790,18 +791,36 @@ static uint8_t *emit_u8(uint8_t *w, uint8_t b)         { *w++ = b; return w; }
 static uint8_t *emit_u32(uint8_t *w, uint32_t v)       { memcpy(w, &v, 4); return w + 4; }
 static uint8_t *emit_u64(uint8_t *w, uint64_t v)       { memcpy(w, &v, 8); return w + 8; }
 
-/* mov %fs:0, %rbx  — load TLS base into %rbx (9 bytes) */
-static uint8_t *emit_load_fs_zero_rbx(uint8_t *w) {
+/* mov %fs:0, %rsi  — load TLS base into %rsi (9 bytes). Used in the
+ * dict-cache probe to materialize tls_base for `lea g_dict_cache_tpoff
+ * (%rsi, %rax, 1), %rsi` since %rbx is now &EigsThread.vm (heap) and
+ * no longer carries tls_base. */
+static uint8_t *emit_load_fs_zero_rsi(uint8_t *w) {
     *w++ = 0x64; *w++ = 0x48; *w++ = 0x8B;
-    *w++ = 0x1C; *w++ = 0x25;
+    *w++ = 0x34; *w++ = 0x25;
     return emit_u32(w, 0);
 }
 
-/* mov %fs:disp32, %rax  (7 bytes) — load a TLS 64-bit value into %rax.
+/* mov %fs:disp32, %rax  (9 bytes) — load a TLS 64-bit value into %rax.
  * Used to materialize `eigs_current` so subsequent disp(%rax) accesses
  * reach EigsThread fields. Encoding: 64 (FS) 48 (REX.W) 8B 04 25 disp32. */
 static uint8_t *emit_mov_fs_disp32_to_rax(uint8_t *w, int32_t disp) {
     *w++ = 0x64; *w++ = 0x48; *w++ = 0x8B; *w++ = 0x04; *w++ = 0x25;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov %fs:disp32, %rbx  (9 bytes) — load a TLS 64-bit value into %rbx.
+ * Used in the prologue to materialize `eigs_current` so the follow-up
+ * `mov off_thread_vm(%rbx), %rbx` resolves to the live VM ptr. */
+static uint8_t *emit_mov_fs_disp32_to_rbx(uint8_t *w, int32_t disp) {
+    *w++ = 0x64; *w++ = 0x48; *w++ = 0x8B; *w++ = 0x1C; *w++ = 0x25;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* mov disp32(%rbx), %rbx  (7 bytes) — load qword from [rbx+disp32]
+ * into %rbx. Encoding: 48 (REX.W) 8B 9B disp32. */
+static uint8_t *emit_mov_disp32_rbx_to_rbx(uint8_t *w, int32_t disp) {
+    *w++ = 0x48; *w++ = 0x8B; *w++ = 0x9B;
     return emit_u32(w, (uint32_t)disp);
 }
 
@@ -816,12 +835,6 @@ static uint8_t *emit_incl_disp32_rax(uint8_t *w, int32_t disp) {
  * Encoding: FF /1 with ModR/M=10 001 000. */
 static uint8_t *emit_decl_disp32_rax(uint8_t *w, int32_t disp) {
     *w++ = 0xFF; *w++ = 0x88;
-    return emit_u32(w, (uint32_t)disp);
-}
-
-/* lea disp32(%rbx), %rbx  — %rbx += disp32 (7 bytes) */
-static uint8_t *emit_lea_rbx_disp32_rbx(uint8_t *w, int32_t disp) {
-    *w++ = 0x48; *w++ = 0x8D; *w++ = 0x9B;
     return emit_u32(w, (uint32_t)disp);
 }
 
@@ -1650,10 +1663,12 @@ static uint8_t *emit_xor_imm32_eax(uint8_t *w, uint32_t imm) {
 static uint8_t *emit_and_imm32_eax(uint8_t *w, uint32_t imm) {
     *w++ = 0x25; return emit_u32(w, imm);
 }
-/* lea disp32(%rbx, %rax, 1), %rsi  (8 bytes) — dict-cache entry addr;
- * disp = g_dict_cache_tpoff - g_vm_tpoff since %rbx = tls + g_vm_tpoff. */
-static uint8_t *emit_lea_rbx_rax_to_rsi(uint8_t *w, int32_t disp) {
-    *w++ = 0x48; *w++ = 0x8D; *w++ = 0xB4; *w++ = 0x03;
+/* lea disp32(%rsi, %rax, 1), %rsi  (8 bytes) — dict-cache entry addr.
+ * Phase 5: %rbx no longer carries tls_base (it now points at the
+ * heap-allocated VM), so the probe loads tls_base into %rsi via
+ * `mov %fs:0, %rsi` and addresses g_dict_cache_tpoff off that. */
+static uint8_t *emit_lea_rsi_rax_to_rsi(uint8_t *w, int32_t disp) {
+    *w++ = 0x48; *w++ = 0x8D; *w++ = 0xB4; *w++ = 0x06;
     return emit_u32(w, (uint32_t)disp);
 }
 /* cmp %rdi, disp32(%rsi)  (7 bytes) — ce->dict == dict. */
@@ -1742,8 +1757,9 @@ static uint8_t *emit_mov_disp32_r12_to_rdi(uint8_t *w, int32_t disp) {
  * On success: %rdi = dict Value*, %rdx = entry index, %rax =
  * vals[index]. `h` and `key` are compile-time constants. Guard-failure
  * jumps append to slow_p[] (7 entries). The dict cache is TLS in vm.c;
- * its entry address derives from %rbx (= tls + g_vm_tpoff) plus the
- * tpoff delta. */
+ * Phase 5: %rbx now holds &EigsThread.vm (heap), so the probe loads
+ * tls_base into %rsi via `mov %fs:0, %rsi` and addresses
+ * g_dict_cache_tpoff off that. */
 static uint8_t *emit_dict_cache_probe(uint8_t *w, uint16_t slot,
                                       uint32_t h, const char *key,
                                       uint8_t **slow_p, int *slow_n) {
@@ -1761,8 +1777,8 @@ static uint8_t *emit_dict_cache_probe(uint8_t *w, uint16_t slot,
     w = emit_xor_imm32_eax(w, h);
     w = emit_and_imm32_eax(w, (uint32_t)g_layout.dcache_mask);
     w = emit_shl_5_rax(w);
-    w = emit_lea_rbx_rax_to_rsi(w,
-            (int32_t)(g_layout.g_dict_cache_tpoff - g_layout.g_vm_tpoff));
+    w = emit_load_fs_zero_rsi(w);
+    w = emit_lea_rsi_rax_to_rsi(w, (int32_t)g_layout.g_dict_cache_tpoff);
     /* Stage 5h: 2-way probe. Way 0 mismatch falls through to way 1;
      * way 1 mismatch goes to the helper (which inserts via the C-side
      * LRU shift, so a settled alternating pair hits both ways here). */
@@ -2242,8 +2258,11 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
         w = emit_push_r15(w);
         w = emit_push_r15(w);
     }
-    w = emit_load_fs_zero_rbx(w);                               /* mov %fs:0, %rbx */
-    w = emit_lea_rbx_disp32_rbx(w, (int32_t)g_layout.g_vm_tpoff);
+    /* Phase 5: %rbx = &eigs_current->vm. Two-instruction TLS-then-deref
+     * resolves the VM heap pointer that all subsequent disp(%rbx)
+     * accesses (sp, frames, ...) hang off. */
+    w = emit_mov_fs_disp32_to_rbx(w, (int32_t)g_layout.eigs_current_tpoff);
+    w = emit_mov_disp32_rbx_to_rbx(w, g_layout.off_thread_vm);
     w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);         /* mov sp, %ecx */
     if (has_bail_op) {
         w = emit_movabs_r14(w, (uint64_t)(uintptr_t)chunk);

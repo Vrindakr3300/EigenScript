@@ -14,18 +14,11 @@
 #include <string.h>
 #include <math.h>
 
-/* ---- Thread-local VM instance ---- */
-static __thread VM g_vm;
-static __thread int g_vm_init = 0;
-
-/* ---- Loop stall detection state ---- */
-static __thread int g_loop_stall_count = 0;
-static __thread int g_loop_iterations = 0;
-static __thread const char *g_loop_exit_reason = "normal";
-
-/* Control-flow / error-state globals (g_return_val, g_returning,
+/* Phase 5: VM execution state (g_vm), loop-stall accounting
+ * (g_loop_stall_count, g_loop_iterations, g_loop_exit_reason),
+ * control-flow / error-state globals (g_return_val, g_returning,
  * g_breaking, g_continuing, g_error_msg, g_error_value, g_has_error,
- * g_try_depth) and observer state (g_unobserved_depth, g_last_observer,
+ * g_try_depth), and observer state (g_unobserved_depth, g_last_observer,
  * g_builtin_call_env, g_obs_dh_zero/small/h_low) are EigsThread/EigsState
  * fields; the g_* identifiers are macros in eigenscript.h. No extern
  * decls needed here. */
@@ -306,9 +299,16 @@ static inline Value *vm_local_lift(Env *e, uint16_t slot) {
 /* ---- VM helpers ---- */
 
 static void vm_init(void) {
-    if (!g_vm_init) {
-        memset(&g_vm, 0, sizeof(g_vm));
-        g_vm_init = 1;
+    if (eigs_current->vm == NULL) {
+        eigs_current->vm = xcalloc(1, sizeof(VM));
+        eigs_current->loop_exit_reason = "normal";
+    }
+}
+
+void vm_thread_destroy(EigsThread *th) {
+    if (th && th->vm) {
+        free(th->vm);
+        th->vm = NULL;
     }
 }
 
@@ -1607,9 +1607,9 @@ void eigs_jit_get_layout(EigsJitLayout *out) {
      * only to satisfy the link — body collapses to a zero-fill. */
     void *tp;
     __asm__ __volatile__("mov %%fs:0, %0" : "=r"(tp));
-    out->g_vm_tpoff               = (long)((char *)&g_vm - (char *)tp);
     out->eigs_current_tpoff       = (long)((char *)&eigs_current - (char *)tp);
-    out->off_thread_unobserved_depth = (int)offsetof(EigsThread, unobserved_depth);
+    out->off_thread_vm                = (int)offsetof(EigsThread, vm);
+    out->off_thread_unobserved_depth  = (int)offsetof(EigsThread, unobserved_depth);
     out->off_sp              = (int)offsetof(VM, sp);
     out->off_stack           = (int)offsetof(VM, stack);
     out->off_frame_count     = (int)offsetof(VM, frame_count);

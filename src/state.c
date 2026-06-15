@@ -3,6 +3,8 @@
  */
 #include "eigenscript.h"
 #include "state.h"
+#include "vm.h"
+#include "jit.h"
 
 __thread EigsThread *eigs_current = NULL;
 
@@ -36,6 +38,7 @@ EigsThread *eigs_thread_attach(EigsState *st) {
     }
     EigsThread *th = xcalloc(1, sizeof(*th));
     th->state = st;
+    th->loop_exit_reason = "normal";
 
     /* Wire TLS before arena_init so its writes land in th->arena. */
     eigs_current = th;
@@ -57,6 +60,11 @@ void eigs_thread_detach(void) {
     EigsThread *th = eigs_current;
     if (!th) return;
     EigsState *st = th->state;
+
+    /* Phase 5 cleanups (must run while eigs_current still points at th
+     * so any bridge-macro reads inside the destructors stay valid). */
+    jit_thread_destroy(th);
+    vm_thread_destroy(th);
 
     arena_destroy();
     eigs_current = NULL;
