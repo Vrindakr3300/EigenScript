@@ -19,11 +19,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-Env *g_global_env = NULL;
-char g_script_dir[4096] = ".";
-char g_exe_dir[4096] = ".";
-__thread Env *g_load_env = NULL;
-
 int main(void) {
     /* Read all of stdin */
     char buf[65536];

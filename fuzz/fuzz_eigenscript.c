@@ -24,11 +24,6 @@
 #include <string.h>
 #include <unistd.h>
 
-Env *g_global_env = NULL;
-char g_script_dir[4096] = ".";
-char g_exe_dir[4096] = ".";
-__thread Env *g_load_env = NULL;
-
 int LLVMFuzzerInitialize(int *argc, char ***argv) {
     (void)argc; (void)argv;
     srand(0);
