@@ -797,17 +797,25 @@ static uint8_t *emit_load_fs_zero_rbx(uint8_t *w) {
     return emit_u32(w, 0);
 }
 
-/* incl %fs:(disp32)  — atomic-safe-on-single-thread inc of TLS i32 (9 bytes).
- * Encoding: 64 (FS prefix) ff /0 04 25 disp32. */
-static uint8_t *emit_incl_fs_disp32(uint8_t *w, int32_t disp) {
-    *w++ = 0x64; *w++ = 0xFF; *w++ = 0x04; *w++ = 0x25;
+/* mov %fs:disp32, %rax  (7 bytes) — load a TLS 64-bit value into %rax.
+ * Used to materialize `eigs_current` so subsequent disp(%rax) accesses
+ * reach EigsThread fields. Encoding: 64 (FS) 48 (REX.W) 8B 04 25 disp32. */
+static uint8_t *emit_mov_fs_disp32_to_rax(uint8_t *w, int32_t disp) {
+    *w++ = 0x64; *w++ = 0x48; *w++ = 0x8B; *w++ = 0x04; *w++ = 0x25;
     return emit_u32(w, (uint32_t)disp);
 }
 
-/* decl %fs:(disp32)  — symmetric to emit_incl_fs_disp32 (9 bytes).
- * Encoding: 64 ff /1 04 25 disp32. */
-static uint8_t *emit_decl_fs_disp32(uint8_t *w, int32_t disp) {
-    *w++ = 0x64; *w++ = 0xFF; *w++ = 0x0C; *w++ = 0x25;
+/* incl disp32(%rax)  (6 bytes) — increment dword at [rax+disp32].
+ * Encoding: FF /0 with ModR/M=10 000 000 (mod=disp32, reg=/0, rm=rax). */
+static uint8_t *emit_incl_disp32_rax(uint8_t *w, int32_t disp) {
+    *w++ = 0xFF; *w++ = 0x80;
+    return emit_u32(w, (uint32_t)disp);
+}
+
+/* decl disp32(%rax)  (6 bytes) — symmetric to emit_incl_disp32_rax.
+ * Encoding: FF /1 with ModR/M=10 001 000. */
+static uint8_t *emit_decl_disp32_rax(uint8_t *w, int32_t disp) {
+    *w++ = 0xFF; *w++ = 0x88;
     return emit_u32(w, (uint32_t)disp);
 }
 
@@ -1595,9 +1603,11 @@ static uint8_t *emit_mov_disp32_rdx_to_rdi(uint8_t *w, int32_t disp) {
 static uint8_t *emit_test_rdi_rdi(uint8_t *w) {
     *w++ = 0x48; *w++ = 0x85; *w++ = 0xFF; return w;
 }
-/* cmpl $0, %fs:disp32  (9 bytes) — g_unobserved_depth == 0 test. */
-static uint8_t *emit_cmpl_0_fs_disp32(uint8_t *w, int32_t disp) {
-    *w++ = 0x64; *w++ = 0x83; *w++ = 0x3C; *w++ = 0x25;
+/* cmpl $0, disp32(%rax)  (7 bytes) — used for the g_unobserved_depth
+ * test after `mov %fs:eigs_current_tpoff, %rax`. Encoding: 83 /7 with
+ * ModR/M=10 111 000 (mod=disp32, reg=/7, rm=rax), imm8=0. */
+static uint8_t *emit_cmpl_0_disp32_rax(uint8_t *w, int32_t disp) {
+    *w++ = 0x83; *w++ = 0xB8;
     w = emit_u32(w, (uint32_t)disp);
     *w++ = 0x00; return w;
 }
@@ -2504,7 +2514,11 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             uint8_t *nb1_p;
             w = emit_je_rel8(w, &nb1_p);
             uint8_t *nb1_after = w;
-            w = emit_cmpl_0_fs_disp32(w, (int32_t)g_layout.g_unobserved_depth_tpoff);
+            /* eigs_current is TLS, unobserved_depth is on EigsThread.
+             * %rax is dead after the IC slot_idx extract above; safe to
+             * clobber as the eigs_current cache. */
+            w = emit_mov_fs_disp32_to_rax(w, (int32_t)g_layout.eigs_current_tpoff);
+            w = emit_cmpl_0_disp32_rax(w, g_layout.off_thread_unobserved_depth);
             uint8_t *nb2_p;
             w = emit_jnz_rel8(w, &nb2_p);
             uint8_t *nb2_after = w;
@@ -2760,16 +2774,17 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
             w = emit_mov_disp32_rbx_to_ecx(w, g_layout.off_sp);
             i += 3;
         } else if (op == OP_UNOBSERVED_BEGIN) {
-            /* Stage 4q-e: inline `g_unobserved_depth++` as a single
-             * FS-prefixed `inc dword [tpoff]`. No stack interaction,
-             * no env, no bail. */
-            w = emit_incl_fs_disp32(w,
-                (int32_t)g_layout.g_unobserved_depth_tpoff);
+            /* unobserved_depth now lives on EigsThread; reach it via
+             * eigs_current. Two-instruction sequence: load TLS pointer
+             * into %rax, then increment at struct offset. No stack
+             * interaction, no env, no bail. */
+            w = emit_mov_fs_disp32_to_rax(w, (int32_t)g_layout.eigs_current_tpoff);
+            w = emit_incl_disp32_rax(w, g_layout.off_thread_unobserved_depth);
             i += 1;
         } else if (op == OP_UNOBSERVED_END) {
-            /* Stage 4q-e: symmetric `g_unobserved_depth--`. */
-            w = emit_decl_fs_disp32(w,
-                (int32_t)g_layout.g_unobserved_depth_tpoff);
+            /* Symmetric decrement through eigs_current. */
+            w = emit_mov_fs_disp32_to_rax(w, (int32_t)g_layout.eigs_current_tpoff);
+            w = emit_decl_disp32_rax(w, g_layout.off_thread_unobserved_depth);
             i += 1;
         } else if (op == OP_DUP) {
             /* %rax = stack[sp-1] */

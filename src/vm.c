@@ -23,17 +23,12 @@ static __thread int g_loop_stall_count = 0;
 static __thread int g_loop_iterations = 0;
 static __thread const char *g_loop_exit_reason = "normal";
 
-/* ---- External globals from eval.c / eigenscript.c ----
- * Control-flow / error-state globals (g_return_val, g_returning,
+/* Control-flow / error-state globals (g_return_val, g_returning,
  * g_breaking, g_continuing, g_error_msg, g_error_value, g_has_error,
- * g_try_depth) are EigsThread fields; the g_* identifiers are macros
- * in eigenscript.h. No extern decls needed here. */
-extern __thread int g_unobserved_depth;
-extern __thread Value *g_last_observer;
-extern __thread Env *g_builtin_call_env;
-extern __thread double g_obs_dh_zero;
-extern __thread double g_obs_dh_small;
-extern __thread double g_obs_h_low;
+ * g_try_depth) and observer state (g_unobserved_depth, g_last_observer,
+ * g_builtin_call_env, g_obs_dh_zero/small/h_low) are EigsThread/EigsState
+ * fields; the g_* identifiers are macros in eigenscript.h. No extern
+ * decls needed here. */
 
 /* ---- Helpers from eigenscript.c ---- */
 extern void val_incref(Value *v);
@@ -1606,14 +1601,15 @@ void jit_helper_return_null(void) {
 void eigs_jit_get_layout(EigsJitLayout *out) {
 #if defined(__x86_64__)
     /* The %fs:0 read materializes the thread pointer so the JIT can encode
-     * TLS-relative offsets to g_vm/g_unobserved_depth. Only used on x86-64;
+     * TLS-relative offsets to g_vm and eigs_current. Only used on x86-64;
      * on other arches the JIT codegen path is compiled out entirely
      * (see `#if defined(__x86_64__)` in jit.c), so this function exists
      * only to satisfy the link — body collapses to a zero-fill. */
     void *tp;
     __asm__ __volatile__("mov %%fs:0, %0" : "=r"(tp));
     out->g_vm_tpoff               = (long)((char *)&g_vm - (char *)tp);
-    out->g_unobserved_depth_tpoff = (long)((char *)&g_unobserved_depth - (char *)tp);
+    out->eigs_current_tpoff       = (long)((char *)&eigs_current - (char *)tp);
+    out->off_thread_unobserved_depth = (int)offsetof(EigsThread, unobserved_depth);
     out->off_sp              = (int)offsetof(VM, sp);
     out->off_stack           = (int)offsetof(VM, stack);
     out->off_frame_count     = (int)offsetof(VM, frame_count);

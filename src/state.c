@@ -3,18 +3,16 @@
  */
 #include "eigenscript.h"
 #include "state.h"
-#include <pthread.h>
 
 __thread EigsThread *eigs_current = NULL;
-
-struct EigsState {
-    pthread_mutex_t threads_lock;
-    EigsThread     *threads;
-};
 
 EigsState *eigs_state_new(void) {
     EigsState *st = xcalloc(1, sizeof(*st));
     pthread_mutex_init(&st->threads_lock, NULL);
+    /* Observer thresholds — same defaults as the legacy TLS globals. */
+    st->obs_dh_zero  = 0.001;
+    st->obs_dh_small = 0.01;
+    st->obs_h_low    = 0.1;
     return st;
 }
 

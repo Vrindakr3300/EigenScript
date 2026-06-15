@@ -40,6 +40,7 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <pthread.h>   /* EigsState carries the per-state lock — see below */
 #include <fcntl.h>
 #include <time.h>
 #include <poll.h>
@@ -265,9 +266,26 @@ typedef struct {
  * The struct is fully transparent to internal TUs; the public
  * embedding API (Phase 10, embed.h) will expose it through accessor
  * functions only, so the field layout can still evolve. */
+typedef struct EigsState  EigsState;
 typedef struct EigsThread EigsThread;
+
+/* Per-interpreter-instance config + shared registry. Transparent for
+ * internal TUs (Phase 10's embed.h wraps it behind accessors). Most
+ * fields are runtime-tunable: observer thresholds, eventually module
+ * cache, script/exe dirs, handle table. */
+struct EigsState {
+    pthread_mutex_t threads_lock;
+    EigsThread     *threads;
+    /* Observer-classification thresholds (set_observer_threshold builtin).
+     * Per-state because they're interpreter configuration, not execution
+     * state; one knob per host application, shared across worker threads. */
+    double          obs_dh_zero;    /* |dH| < this → "zero change"  (default 0.001) */
+    double          obs_dh_small;   /* |dH| < this → "small change" (default 0.01)  */
+    double          obs_h_low;      /* entropy < this → "low info"  (default 0.1)   */
+};
+
 struct EigsThread {
-    struct EigsState *state;        /* owning interpreter; opaque (state.c) */
+    EigsState  *state;
     Arena       arena;
     /* Control-flow propagation (return/break/continue out of nested
      * blocks). All three are checked + cleared by the interpreter
@@ -284,24 +302,39 @@ struct EigsThread {
     char         error_msg[4096];
     char         first_error_msg[256];
     struct Value *error_value;      /* thrown payload for structured catch */
+    /* Observer execution state — current observer and "unobserved {}"
+     * scope depth (incremented on entry, decremented on exit; non-zero
+     * suppresses assign-count bumps so observer interrogatives don't
+     * count instrumentation traffic). */
+    struct Value *last_observer;
+    int           unobserved_depth;
+    /* Dynamic caller scope for env-aware builtins (env_get/env_set
+     * polymorphic dispatch needs to know "who called me"). */
+    struct Env   *builtin_call_env;
     /* Registry list — set by eigs_thread_attach. */
     EigsThread *next;
 };
 
 extern __thread EigsThread *eigs_current;
 
-#define g_arena            (eigs_current->arena)
-#define g_return_val       (eigs_current->return_val)
-#define g_returning        (eigs_current->returning)
-#define g_breaking         (eigs_current->breaking)
-#define g_continuing       (eigs_current->continuing)
-#define g_parse_errors     (eigs_current->parse_errors)
-#define g_has_error        (eigs_current->has_error)
-#define g_try_depth        (eigs_current->try_depth)
-#define g_first_error_line (eigs_current->first_error_line)
-#define g_error_msg        (eigs_current->error_msg)
-#define g_first_error_msg  (eigs_current->first_error_msg)
-#define g_error_value      (eigs_current->error_value)
+#define g_arena             (eigs_current->arena)
+#define g_return_val        (eigs_current->return_val)
+#define g_returning         (eigs_current->returning)
+#define g_breaking          (eigs_current->breaking)
+#define g_continuing        (eigs_current->continuing)
+#define g_parse_errors      (eigs_current->parse_errors)
+#define g_has_error         (eigs_current->has_error)
+#define g_try_depth         (eigs_current->try_depth)
+#define g_first_error_line  (eigs_current->first_error_line)
+#define g_error_msg         (eigs_current->error_msg)
+#define g_first_error_msg   (eigs_current->first_error_msg)
+#define g_error_value       (eigs_current->error_value)
+#define g_last_observer     (eigs_current->last_observer)
+#define g_unobserved_depth  (eigs_current->unobserved_depth)
+#define g_builtin_call_env  (eigs_current->builtin_call_env)
+#define g_obs_dh_zero       (eigs_current->state->obs_dh_zero)
+#define g_obs_dh_small      (eigs_current->state->obs_dh_small)
+#define g_obs_h_low         (eigs_current->state->obs_h_low)
 
 /* ---- OOM-safe allocation wrappers ----
  * Abort with a diagnostic on allocation failure. Used by value constructors
@@ -525,7 +558,6 @@ void register_hash_builtins(Env *env);
 void eigenscript_set_args(int argc, char **argv);
 extern Env *g_global_env;
 extern __thread Env *g_load_env;  /* scope for load_file; NULL = g_global_env */
-extern __thread Env *g_builtin_call_env;  /* dynamic caller scope for env-aware builtins */
 
 /* ---- Utilities used across modules ---- */
 
@@ -552,7 +584,6 @@ Value* eigs_json_parse_value(const char *s, int *pos);
 void eigs_clear_error_value(void);
 void vm_print_stack_trace(FILE *out);  /* uncaught-error call stack (vm.c); no-ops without a VM */
 void eigs_record_first_error(int line, const char *msg);
-extern __thread Value *g_last_observer;
 extern char g_script_dir[4096];
 extern char g_exe_dir[4096];
 
@@ -579,10 +610,8 @@ void eigs_module_cache_put(const char *abs_path, Value *dict, Env *env);
  * usual snapshot collection. */
 void eigs_module_cache_clear(void);
 
-/* ---- Observer thresholds (tunable via set_observer_thresholds) ---- */
-extern __thread double g_obs_dh_zero;   /* |dH| < this → "zero change" (default 0.001) */
-extern __thread double g_obs_dh_small;  /* |dH| < this → "small change" (default 0.01)  */
-extern __thread double g_obs_h_low;     /* entropy < this → "low info"  (default 0.1)   */
+/* Observer thresholds are EigsState fields — set via set_observer_thresholds;
+ * read through g_obs_dh_zero / g_obs_dh_small / g_obs_h_low (macros above). */
 
 /* ---- Cross-file functions for MODEL tensor builtins ---- */
 /* When MODEL is enabled, these are defined in model_infer.c.

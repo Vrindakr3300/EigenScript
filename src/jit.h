@@ -108,7 +108,11 @@ void jit_unregister_chunk(struct EigsChunk *chunk);
  * helper functions. */
 typedef struct {
     long g_vm_tpoff;                /* &g_vm - %fs:0, signed bytes */
-    long g_unobserved_depth_tpoff;  /* &g_unobserved_depth - %fs:0 */
+    /* Phase 4: unobserved_depth lives on EigsThread (eigs_current).
+     * The JIT reads eigs_current via %fs:eigs_current_tpoff and then
+     * accesses the field at off_thread_unobserved_depth(%reg). */
+    long eigs_current_tpoff;        /* &eigs_current - %fs:0 */
+    int  off_thread_unobserved_depth; /* offsetof(EigsThread, unobserved_depth) */
     int  off_sp;
     int  off_stack;
     int  off_frame_count;

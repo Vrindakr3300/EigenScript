@@ -441,9 +441,8 @@ static void native_forward_with_cache(int *token_ids, int seq_len, TransformerMo
  * settable via set_observer_thresholds). Same defaults as builtins.c uses for
  * the observer_state predicate, so script-side classification and internal
  * training-time scaling stay aligned. */
-extern __thread double g_obs_dh_zero;
-extern __thread double g_obs_dh_small;
-extern __thread double g_obs_h_low;
+/* g_obs_dh_zero / g_obs_dh_small / g_obs_h_low are EigsState fields
+ * reached through the bridge macros in eigenscript.h. */
 #define OBS_DH_ZERO  g_obs_dh_zero
 #define OBS_DH_SMALL g_obs_dh_small
 #define OBS_H_LOW    g_obs_h_low

@@ -284,13 +284,9 @@ void observer_ensure_fresh(Value *v) {
     if (v && v->dirty) update_observer(v);
 }
 
-/* ---- Thread-local globals (moved from eval.c) ---- */
-__thread Value *g_last_observer = NULL;
-__thread Env *g_builtin_call_env = NULL;
-__thread int g_unobserved_depth = 0;
-__thread double g_obs_dh_zero  = 0.001;
-__thread double g_obs_dh_small = 0.01;
-__thread double g_obs_h_low    = 0.1;
+/* g_last_observer, g_builtin_call_env, g_unobserved_depth are EigsThread
+ * fields; g_obs_dh_zero/small/h_low are EigsState fields. See the macros
+ * in eigenscript.h that bridge the source identifiers to those fields. */
 
 void free_value(Value *v) {
     if (!v || v->arena) return;

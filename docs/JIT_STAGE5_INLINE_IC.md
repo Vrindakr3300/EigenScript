@@ -66,7 +66,8 @@ Register conventions inside a thunk (see the prologue, ~line 1575):
 | `%r12` | `&g_vm.frames[frame_count-1]` — **only when `needs_env_cache`** was set by the scanner; see the prologue block. This is how you reach `frame->env`/`fn_env` without a helper. |
 
 `g_layout` (filled by `eigs_jit_get_layout`, src/vm.c ~1233) provides:
-`g_vm_tpoff`, `g_unobserved_depth_tpoff`, `off_sp`, `off_frames`,
+`g_vm_tpoff`, `eigs_current_tpoff`, `off_thread_unobserved_depth`,
+`off_sp`, `off_frames`,
 `off_current_line`, `off_callframe_ip`, `off_callframe_fn_env`,
 `sizeof_callframe`, `off_env_values`, `off_env_count`. Add fields here
 (and in `EigsJitLayout`, src/jit.h) if you need more struct offsets —
@@ -137,8 +138,11 @@ SET:  env_store_slot(target, ic->slot_idx, s); assign_counts bump
   emit a movabs load) and guard-fail to the helper when set, so trace
   semantics stay helper-side.
 - `assign_counts` bump: `target->assign_counts && g_unobserved_depth
-  == 0` — g_unobserved_depth is TLS (`g_unobserved_depth_tpoff`
-  already in g_layout).
+  == 0` — g_unobserved_depth now lives on `EigsThread` reached via
+  TLS `eigs_current` (two-level addressing: `eigs_current_tpoff`
+  loads `%fs:eigs_current` into `%rax`, then
+  `off_thread_unobserved_depth(%rax)` is the int field — both already
+  in g_layout).
 - IC-miss / version-mismatch → helper (which also populates the IC, so
   the next iteration hits the inline path).
 
