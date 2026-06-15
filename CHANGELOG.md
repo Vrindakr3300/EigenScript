@@ -4,6 +4,34 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### HTTP shared store: cross-worker key/value primitive
+
+- **New builtins**: `shared_set(k,v)`, `shared_get(k)`, `shared_has(k)`,
+  `shared_delete(k)`, `shared_keys()`, `shared_size()`, `shared_clear()`.
+  Available in main and worker code-route contexts (registered via
+  `register_http_request_builtins`, so workers get them automatically).
+- **Storage**: keyed map on the main `EigsHttpServer`. Values are
+  JSON-serialized on `shared_set` (`eigs_json_encode`, now publicly
+  exposed) and re-parsed on `shared_get` into a value owned by the
+  caller's `EigsState`. JSON-as-storage sidesteps cross-state `Value*`
+  lifetime — workers die with their arena, the stored string stays
+  heap-owned by the Server.
+- **Concurrency**: a `pthread_mutex_t` on the Server guards every op,
+  so individual reads/writes are atomic. The API does **not** provide
+  read-modify-write atomicity (no CAS / increment primitive yet) —
+  scripts that need it must serialize externally, or risk losing
+  updates under concurrent writers.
+- **Effect on `http_route_authed`**: a startup script can now publish
+  a session table (or token-validity flag, or rate-limit bucket) via
+  `shared_set`, and authed `code` routes look it up via `shared_get`.
+  Function values still can't be shared (encoded as `null` per
+  `json_encode` semantics) — the route source itself runs the auth
+  check, what crosses the worker boundary is the *data* it checks.
+- **Tests**: HS17–HS21 in `tests/test_http_server.sh` — string and
+  nested-dict round-trips across worker states, `shared_delete`,
+  `shared_clear` + size, 32 concurrent `shared_get` calls all return
+  the intact value.
+
 ### HTTP `code` routes evaluate in a per-worker `EigsState` (concurrency + isolation)
 
 - **Each connection now runs its `code` route in a fresh worker

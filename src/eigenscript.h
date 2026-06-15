@@ -751,6 +751,9 @@ int resolve_eigenscript_file(const char *path, char *resolved, size_t resolved_c
 int resolve_eigenscript_file_from(const char *base, const char *path,
                                    char *resolved, size_t resolved_cap);
 Value* eigs_json_parse_value(const char *s, int *pos);
+/* Encode any Value as JSON. Returns heap-owned string (caller frees).
+ * Functions/builtins emit "null" (matches the json_encode builtin). */
+char* eigs_json_encode(Value *v);
 
 /* ---- Control flow (return statement) ---- */
 /* return_val, returning, parse_errors, error_msg, error_value,

@@ -47,6 +47,15 @@ r_code is http_route of ["GET", "/codeval", "code", "x is 1\nx is x + 1\nx"]
 # Reads stdlib; never sees startup-scope globals.
 r_iso is http_route of ["GET", "/iso", "code", "counter is 100\ncounter"]
 
+# Shared-store routes: cross-worker key/value store, JSON-serialized.
+# Each shared_* call is mutex-guarded; the API guarantees individual op
+# atomicity, NOT read-modify-write atomicity (no CAS primitive yet).
+r_sset  is http_route of ["GET", "/sset",  "code", "shared_set of [\"k\", \"hello\"]\n\"ok\""]
+r_sget  is http_route of ["GET", "/sget",  "code", "shared_get of \"k\""]
+r_sdict is http_route of ["GET", "/sdict", "code", "shared_set of [\"d\", {\"a\": 1, \"b\": [2, 3]}]\njson_encode of (shared_get of \"d\")"]
+r_sdel  is http_route of ["GET", "/sdel",  "code", "shared_set of [\"x\", 42]\nshared_delete of \"x\"\nshared_has of \"x\""]
+r_sclr  is http_route of ["GET", "/sclr",  "code", "shared_clear of null\nshared_set of [\"a\", 1]\nshared_set of [\"b\", 2]\nshared_size of null"]
+
 # Serve forever.
 serve is http_serve of $PORT
 EIGS
@@ -314,6 +323,66 @@ if command -v timeout >/dev/null 2>&1; then
         ok "HS16 16 concurrent code-route calls all returned isolated state"
     else
         fail "HS16 concurrent code routes" "only $GOOD/16 returned '100'"
+    fi
+    rm -rf "$CONC_DIR"
+fi
+
+# ---- Shared-store: set then get across two requests ----
+# Each request runs in a fresh worker EigsState, so the only way /sset's
+# write survives to /sget is through the per-Server shared store.
+curl -s --max-time 2 "http://127.0.0.1:$PORT/sset" > /dev/null
+RESP=$(curl -s --max-time 2 "http://127.0.0.1:$PORT/sget")
+if [ "$RESP" = "hello" ]; then
+    ok "HS17 shared_set/get round-trips a string across worker states"
+else
+    fail "HS17 shared store string round-trip" "got '$RESP'"
+fi
+
+# ---- Shared-store: dict round-trip (set in one worker, get in next) ----
+RESP=$(curl -s --max-time 2 "http://127.0.0.1:$PORT/sdict")
+if [ "$RESP" = '{"a":1,"b":[2,3]}' ]; then
+    ok "HS18 shared store round-trips nested dict"
+else
+    fail "HS18 shared store dict" "got '$RESP'"
+fi
+
+# ---- Shared-store: delete clears the entry ----
+RESP=$(curl -s --max-time 2 "http://127.0.0.1:$PORT/sdel")
+if [ "$RESP" = "0" ]; then
+    ok "HS19 shared_delete removes the key"
+else
+    fail "HS19 shared_delete" "got '$RESP'"
+fi
+
+# ---- Shared-store: clear then set two; size must be 2 ----
+RESP=$(curl -s --max-time 2 "http://127.0.0.1:$PORT/sclr")
+if [ "$RESP" = "2" ]; then
+    ok "HS20 shared_clear + two sets => size 2"
+else
+    fail "HS20 shared_clear/size" "got '$RESP'"
+fi
+
+# ---- Shared-store: 32 concurrent reads of a seeded value ----
+# Re-seed "k" (HS20 cleared it), then fire 32 parallel /sget calls.
+# Every response must be the intact value — proves the mutex serializes
+# the get against any concurrent set so readers never see torn state.
+curl -s --max-time 2 "http://127.0.0.1:$PORT/sset" > /dev/null
+if command -v timeout >/dev/null 2>&1; then
+    CONC_DIR=$(mktemp -d /tmp/eigs_sread_XXXXXX)
+    PIDS=()
+    for i in $(seq 1 32); do
+        ( curl -s --max-time 5 "http://127.0.0.1:$PORT/sget" > "$CONC_DIR/r$i" 2>/dev/null ) &
+        PIDS+=($!)
+    done
+    for p in "${PIDS[@]}"; do wait "$p" 2>/dev/null || true; done
+    GOOD=0
+    for i in $(seq 1 32); do
+        [ "$(cat "$CONC_DIR/r$i" 2>/dev/null)" = "hello" ] && GOOD=$((GOOD+1))
+    done
+    if [ "$GOOD" -eq 32 ]; then
+        ok "HS21 32 concurrent shared_get reads all returned intact value"
+    else
+        fail "HS21 concurrent reads" "only $GOOD/32 returned 'hello'"
     fi
     rm -rf "$CONC_DIR"
 fi

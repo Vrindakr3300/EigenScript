@@ -737,6 +737,15 @@ Value* builtin_json_encode(Value *arg) {
     return result;
 }
 
+char* eigs_json_encode(Value *v) {
+    strbuf out;
+    strbuf_init(&out);
+    eigs_json_encode_value(v, &out);
+    char *result = xstrdup(out.data);
+    strbuf_free(&out);
+    return result;
+}
+
 Value* eigs_json_parse_value(const char *s, int *pos);
 
 static void eigs_json_skip_ws(const char *s, int *pos) {

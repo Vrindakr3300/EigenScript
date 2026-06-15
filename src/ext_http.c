@@ -339,6 +339,134 @@ Value* builtin_http_request_headers(Value *arg) {
 }
 
 /* ================================================================
+ * SHARED STORE
+ *
+ * In-process key/value store keyed by string, scoped to the main HTTP
+ * Server. Each worker code route runs in its own EigsState (arenas die
+ * with the worker), so values are JSON-serialized on set and re-parsed
+ * on get — there's no live cross-state Value* pointer. pthread_mutex
+ * guards every operation. Functions/builtins encode as "null", matching
+ * json_encode semantics; don't try to share callable values.
+ * ================================================================ */
+
+static int shared_find(Server *s, const char *key) {
+    for (int i = 0; i < s->shared_count; i++) {
+        if (strcmp(s->shared[i].key, key) == 0) return i;
+    }
+    return -1;
+}
+
+Value* builtin_shared_set(Value *arg) {
+    if (!arg || arg->type != VAL_LIST || arg->data.list.count < 2) return make_null();
+    Value *key_v = arg->data.list.items[0];
+    Value *val = arg->data.list.items[1];
+    if (key_v->type != VAL_STR) return make_null();
+    Server *s = eigs_http_active;
+    if (!s) return make_null();
+
+    char *json = eigs_json_encode(val);
+    pthread_mutex_lock(&s->shared_mu);
+    int idx = shared_find(s, key_v->data.str);
+    if (idx >= 0) {
+        free(s->shared[idx].json);
+        s->shared[idx].json = json;
+    } else {
+        if (s->shared_count == s->shared_cap) {
+            int new_cap = s->shared_cap ? s->shared_cap * 2 : 16;
+            s->shared = xrealloc_array(s->shared, new_cap, sizeof(SharedEntry));
+            s->shared_cap = new_cap;
+        }
+        s->shared[s->shared_count].key = xstrdup(key_v->data.str);
+        s->shared[s->shared_count].json = json;
+        s->shared_count++;
+    }
+    pthread_mutex_unlock(&s->shared_mu);
+    return make_null();
+}
+
+Value* builtin_shared_get(Value *arg) {
+    if (!arg || arg->type != VAL_STR) return make_null();
+    Server *s = eigs_http_active;
+    if (!s) return make_null();
+    pthread_mutex_lock(&s->shared_mu);
+    int idx = shared_find(s, arg->data.str);
+    char *json_copy = (idx >= 0) ? xstrdup(s->shared[idx].json) : NULL;
+    pthread_mutex_unlock(&s->shared_mu);
+    if (!json_copy) return make_null();
+    int pos = 0;
+    Value *v = eigs_json_parse_value(json_copy, &pos);
+    free(json_copy);
+    return v ? v : make_null();
+}
+
+Value* builtin_shared_has(Value *arg) {
+    if (!arg || arg->type != VAL_STR) return make_num(0);
+    Server *s = eigs_http_active;
+    if (!s) return make_num(0);
+    pthread_mutex_lock(&s->shared_mu);
+    int idx = shared_find(s, arg->data.str);
+    pthread_mutex_unlock(&s->shared_mu);
+    return make_num(idx >= 0 ? 1 : 0);
+}
+
+Value* builtin_shared_delete(Value *arg) {
+    if (!arg || arg->type != VAL_STR) return make_num(0);
+    Server *s = eigs_http_active;
+    if (!s) return make_num(0);
+    pthread_mutex_lock(&s->shared_mu);
+    int idx = shared_find(s, arg->data.str);
+    int removed = 0;
+    if (idx >= 0) {
+        free(s->shared[idx].key);
+        free(s->shared[idx].json);
+        for (int i = idx + 1; i < s->shared_count; i++) {
+            s->shared[i - 1] = s->shared[i];
+        }
+        s->shared_count--;
+        removed = 1;
+    }
+    pthread_mutex_unlock(&s->shared_mu);
+    return make_num(removed);
+}
+
+Value* builtin_shared_keys(Value *arg) {
+    (void)arg;
+    Server *s = eigs_http_active;
+    Value *list = make_list(8);
+    if (!s) return list;
+    pthread_mutex_lock(&s->shared_mu);
+    for (int i = 0; i < s->shared_count; i++) {
+        list_append_owned(list, make_str(s->shared[i].key));
+    }
+    pthread_mutex_unlock(&s->shared_mu);
+    return list;
+}
+
+Value* builtin_shared_size(Value *arg) {
+    (void)arg;
+    Server *s = eigs_http_active;
+    if (!s) return make_num(0);
+    pthread_mutex_lock(&s->shared_mu);
+    int n = s->shared_count;
+    pthread_mutex_unlock(&s->shared_mu);
+    return make_num(n);
+}
+
+Value* builtin_shared_clear(Value *arg) {
+    (void)arg;
+    Server *s = eigs_http_active;
+    if (!s) return make_null();
+    pthread_mutex_lock(&s->shared_mu);
+    for (int i = 0; i < s->shared_count; i++) {
+        free(s->shared[i].key);
+        free(s->shared[i].json);
+    }
+    s->shared_count = 0;
+    pthread_mutex_unlock(&s->shared_mu);
+    return make_null();
+}
+
+/* ================================================================
  * HTTP SERVER UTILITIES
  * ================================================================ */
 
@@ -978,13 +1106,21 @@ static Value* builtin_http_cors(Value *arg) {
 }
 
 /* Per-request builtins only: read the current request's body / session /
- * headers, send an outbound http_post. No Server allocation, no
+ * headers, send an outbound http_post, and the shared-store API used to
+ * communicate across worker code routes. No Server allocation, no
  * eigs_http_active wiring. Safe to call on a fresh worker state. */
 void register_http_request_builtins(Env *env) {
     env_set_local_owned(env, "http_request_body", make_builtin(builtin_http_request_body));
     env_set_local_owned(env, "http_session_id", make_builtin(builtin_http_session_id));
     env_set_local_owned(env, "http_post", make_builtin(builtin_http_post));
     env_set_local_owned(env, "http_request_headers", make_builtin(builtin_http_request_headers));
+    env_set_local_owned(env, "shared_set", make_builtin(builtin_shared_set));
+    env_set_local_owned(env, "shared_get", make_builtin(builtin_shared_get));
+    env_set_local_owned(env, "shared_has", make_builtin(builtin_shared_has));
+    env_set_local_owned(env, "shared_delete", make_builtin(builtin_shared_delete));
+    env_set_local_owned(env, "shared_keys", make_builtin(builtin_shared_keys));
+    env_set_local_owned(env, "shared_size", make_builtin(builtin_shared_size));
+    env_set_local_owned(env, "shared_clear", make_builtin(builtin_shared_clear));
 }
 
 void register_http_builtins(Env *env) {
@@ -995,6 +1131,7 @@ void register_http_builtins(Env *env) {
     EigsState *st = eigs_current->state;
     if (!st->ext_http_server) {
         st->ext_http_server = xcalloc(1, sizeof(Server));
+        pthread_mutex_init(&st->ext_http_server->shared_mu, NULL);
     }
     eigs_http_active = st->ext_http_server;
     g_server.global_env = env;
@@ -1021,6 +1158,12 @@ void ext_http_state_destroy(EigsState *st) {
     free(s->static_prefix);
     free(s->static_dir);
     free(s->cors_origin);
+    for (int i = 0; i < s->shared_count; i++) {
+        free(s->shared[i].key);
+        free(s->shared[i].json);
+    }
+    free(s->shared);
+    pthread_mutex_destroy(&s->shared_mu);
     /* global_env is aliased, not owned — env teardown happens in eigs_close
      * before this runs. early_bind_fd is the listening socket; closed by
      * http_serve_blocking on shutdown (or process exit). */

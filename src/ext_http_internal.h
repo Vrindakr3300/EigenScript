@@ -8,6 +8,7 @@
 
 #include "eigenscript.h"
 #include "vm.h"
+#include <pthread.h>
 
 #define MAX_ROUTES 256
 
@@ -19,6 +20,13 @@ typedef struct {
     int requires_auth;
 } Route;
 
+/* Shared-store entry: JSON-encoded value keyed by string. Storage is
+ * heap-owned so it outlives any worker EigsState. */
+typedef struct {
+    char *key;
+    char *json;
+} SharedEntry;
+
 struct EigsHttpServer {
     Route routes[MAX_ROUTES];
     int route_count;
@@ -27,6 +35,15 @@ struct EigsHttpServer {
     Env *global_env;
     int early_bind_fd;
     char *cors_origin;  /* NULL = no CORS headers, "*" = wildcard */
+
+    /* Cross-worker shared store: pthread_mutex-guarded JSON map. Read
+     * and written by code routes via shared_set/get/has/delete/keys/
+     * size/clear. Lives on the *main* Server; workers reach it through
+     * eigs_http_active. */
+    SharedEntry *shared;
+    int shared_count;
+    int shared_cap;
+    pthread_mutex_t shared_mu;
 };
 typedef struct EigsHttpServer Server;
 
