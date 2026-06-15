@@ -272,10 +272,31 @@ struct VM;
 struct EigsJitCache;
 struct EigsChunk;
 
+/* Opaque-pointer handle table — one row per outstanding Store/Thread/
+ * Channel resource. Sized per-state; index 0 reserved as invalid. */
+#define HANDLE_TABLE_SIZE 256
+
+typedef enum {
+    HANDLE_STORE,
+    HANDLE_THREAD,
+    HANDLE_CHANNEL
+} HandleType;
+
+typedef struct {
+    void      *ptr;
+    HandleType type;
+} EigsHandleSlot;
+
+/* Import-time module cache entry (Phase 0a of the package design).
+ * Keyed on absolute resolved path; dict + env are counted refs. */
+typedef struct {
+    char  *path;
+    Value *dict;
+    Env   *env;
+} EigsModuleCacheEntry;
+
 /* Per-interpreter-instance config + shared registry. Transparent for
- * internal TUs (Phase 10's embed.h wraps it behind accessors). Most
- * fields are runtime-tunable: observer thresholds, eventually module
- * cache, script/exe dirs, handle table. */
+ * internal TUs (Phase 10's embed.h wraps it behind accessors). */
 struct EigsState {
     pthread_mutex_t threads_lock;
     EigsThread     *threads;
@@ -285,6 +306,23 @@ struct EigsState {
     double          obs_dh_zero;    /* |dH| < this → "zero change"  (default 0.001) */
     double          obs_dh_small;   /* |dH| < this → "small change" (default 0.01)  */
     double          obs_h_low;      /* entropy < this → "low info"  (default 0.1)   */
+    /* Global lexical scope for the script + REPL line bodies + sourced
+     * modules (load_file). Owned by main/eigenlsp; set after env_new. */
+    Env            *global_env;
+    /* Filesystem anchors for `import` / `load_file` resolution. */
+    char            script_dir[4096];
+    char            exe_dir[4096];
+    /* Import-time module cache — populated on first import of a path,
+     * read on subsequent imports of the same path. Single-writer in
+     * practice (main thread imports at startup); no internal lock. */
+    EigsModuleCacheEntry *module_cache;
+    size_t          module_cache_count;
+    size_t          module_cache_cap;
+    /* Opaque-pointer handle table (Store/Thread/Channel ids). Locked
+     * via handle_mutex since spawn workers can release handles too. */
+    EigsHandleSlot  handle_table[HANDLE_TABLE_SIZE];
+    pthread_mutex_t handle_mutex;
+    int             handle_next;
 };
 
 struct EigsThread {
@@ -334,6 +372,12 @@ struct EigsThread {
     uint32_t             jit_stop_counts[256];
     uint32_t             jit_stop_at_zero;
     uint32_t             jit_compiled_count;
+    /* Target scope for load_file (sourced modules push into the
+     * caller's scope, not the global env). NULL = state->global_env. */
+    Env                 *load_env;
+    /* Per-import resolution base (Phase 0b). Empty = fall back to
+     * state->script_dir. OP_IMPORT saves/restores around module body. */
+    char                 import_resolve_dir[4096];
     /* Registry list — set by eigs_thread_attach. */
     EigsThread *next;
 };
@@ -371,6 +415,11 @@ extern __thread EigsThread *eigs_current;
 #define g_obs_dh_zero       (eigs_current->state->obs_dh_zero)
 #define g_obs_dh_small      (eigs_current->state->obs_dh_small)
 #define g_obs_h_low         (eigs_current->state->obs_h_low)
+#define g_global_env          (eigs_current->state->global_env)
+#define g_script_dir          (eigs_current->state->script_dir)
+#define g_exe_dir             (eigs_current->state->exe_dir)
+#define g_load_env            (eigs_current->load_env)
+#define g_import_resolve_dir  (eigs_current->import_resolve_dir)
 
 /* ---- OOM-safe allocation wrappers ----
  * Abort with a diagnostic on allocation failure. Used by value constructors
@@ -592,8 +641,6 @@ void eigs_json_escape_string(strbuf *out, const char *s);
 void register_builtins(Env *env);
 void register_hash_builtins(Env *env);
 void eigenscript_set_args(int argc, char **argv);
-extern Env *g_global_env;
-extern __thread Env *g_load_env;  /* scope for load_file; NULL = g_global_env */
 
 /* ---- Utilities used across modules ---- */
 
@@ -620,16 +667,6 @@ Value* eigs_json_parse_value(const char *s, int *pos);
 void eigs_clear_error_value(void);
 void vm_print_stack_trace(FILE *out);  /* uncaught-error call stack (vm.c); no-ops without a VM */
 void eigs_record_first_error(int line, const char *msg);
-extern char g_script_dir[4096];
-extern char g_exe_dir[4096];
-
-/* Per-import resolution base (Phase 0b). Empty by default — the chain
- * falls back to `g_script_dir`. OP_IMPORT saves/restores this around
- * each module body so an `import` inside a module resolves relative to
- * *that* module's directory, not the main script's. `load_file` keeps
- * main-script-relative semantics — it calls `resolve_eigenscript_file`
- * directly, which always anchors at `g_script_dir`. */
-extern __thread char g_import_resolve_dir[4096];
 
 /* ---- Module cache (Phase 0a of the package design) ---- */
 /* Hit: out_dict gets a new counted ref (caller decrefs). Miss: out_dict
@@ -659,15 +696,8 @@ void ne_matmul_buf(double *a, int64_t a_rows, int64_t a_cols,
 Value* json_obj_get(Value *obj, const char *key);
 #endif
 
-/* ---- Handle table (opaque pointer indirection) ---- */
-#define HANDLE_TABLE_SIZE 256
-
-typedef enum {
-    HANDLE_STORE,
-    HANDLE_THREAD,
-    HANDLE_CHANNEL
-} HandleType;
-
+/* ---- Handle table (opaque pointer indirection) ----
+ * Table + lock + types declared up at the EigsState struct. */
 int    handle_register(void *ptr, HandleType type);
 void*  handle_lookup(int id, HandleType type);
 void   handle_release(int id);

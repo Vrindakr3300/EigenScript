@@ -312,7 +312,6 @@ typedef struct VM {
     int        sp;
     CallFrame  frames[VM_FRAMES_MAX];
     int        frame_count;
-    Env       *global_env;
     int        current_line;
 } VM;
 

@@ -27,10 +27,6 @@
  * eigenscript.h). The g_* identifiers are macros that expand to
  * `eigs_current->field`. */
 
-/* Per-import resolution base (Phase 0b). Empty string means "fall back
- * to g_script_dir". OP_IMPORT saves/restores around module body. */
-__thread char g_import_resolve_dir[4096] = "";
-
 /* Multi-thread mode flag. Set to 1 by builtin_spawn before pthread_create
  * (and never reset). When 0, refcount sites use plain ++/-- instead of
  * __atomic_*_fetch — saves ~20 cycles per LOCK-prefixed RMW on x86.
@@ -174,7 +170,7 @@ const char* val_type_name(ValType t) {
         default: return "?";
     }
 }
-/* g_global_env defined in main.c */
+/* g_global_env is an EigsState field — see eigenscript.h bridge macros. */
 
 /* Arena allocator and free_weight_val are in arena.c */
 
@@ -1779,23 +1775,14 @@ void gc_collect_cycles(void) {
  * Multi-thread: not guarded — `import` from inside a spawned thread
  * isn't a documented use case, and the population pattern is "main
  * thread imports at startup". If that changes, wrap in a mutex. */
-typedef struct {
-    char *path;
-    Value *dict;
-    Env *env;
-} EigsModuleCacheEntry;
-
-static EigsModuleCacheEntry *g_module_cache = NULL;
-static size_t g_module_cache_count = 0;
-static size_t g_module_cache_cap = 0;
-
 int eigs_module_cache_get(const char *abs_path, Value **out_dict) {
     if (out_dict) *out_dict = NULL;
-    if (!abs_path) return 0;
-    for (size_t i = 0; i < g_module_cache_count; i++) {
-        if (strcmp(g_module_cache[i].path, abs_path) == 0) {
+    if (!abs_path || !eigs_current) return 0;
+    EigsState *st = eigs_current->state;
+    for (size_t i = 0; i < st->module_cache_count; i++) {
+        if (strcmp(st->module_cache[i].path, abs_path) == 0) {
             if (out_dict) {
-                *out_dict = g_module_cache[i].dict;
+                *out_dict = st->module_cache[i].dict;
                 val_incref(*out_dict);
             }
             return 1;
@@ -1805,17 +1792,18 @@ int eigs_module_cache_get(const char *abs_path, Value **out_dict) {
 }
 
 void eigs_module_cache_put(const char *abs_path, Value *dict, Env *env) {
-    if (!abs_path || !dict) return;
-    for (size_t i = 0; i < g_module_cache_count; i++) {
-        if (strcmp(g_module_cache[i].path, abs_path) == 0) return;
+    if (!abs_path || !dict || !eigs_current) return;
+    EigsState *st = eigs_current->state;
+    for (size_t i = 0; i < st->module_cache_count; i++) {
+        if (strcmp(st->module_cache[i].path, abs_path) == 0) return;
     }
-    if (g_module_cache_count == g_module_cache_cap) {
-        size_t newcap = g_module_cache_cap ? g_module_cache_cap * 2 : 8;
-        g_module_cache = xrealloc_array(g_module_cache, newcap,
-                                         sizeof(EigsModuleCacheEntry));
-        g_module_cache_cap = newcap;
+    if (st->module_cache_count == st->module_cache_cap) {
+        size_t newcap = st->module_cache_cap ? st->module_cache_cap * 2 : 8;
+        st->module_cache = xrealloc_array(st->module_cache, newcap,
+                                          sizeof(EigsModuleCacheEntry));
+        st->module_cache_cap = newcap;
     }
-    EigsModuleCacheEntry *e = &g_module_cache[g_module_cache_count++];
+    EigsModuleCacheEntry *e = &st->module_cache[st->module_cache_count++];
     e->path = strdup(abs_path);
     e->dict = dict;
     val_incref(dict);
@@ -1824,14 +1812,16 @@ void eigs_module_cache_put(const char *abs_path, Value *dict, Env *env) {
 }
 
 void eigs_module_cache_clear(void) {
-    for (size_t i = 0; i < g_module_cache_count; i++) {
-        free(g_module_cache[i].path);
-        val_decref(g_module_cache[i].dict);
-        if (g_module_cache[i].env) env_decref(g_module_cache[i].env);
+    if (!eigs_current) return;
+    EigsState *st = eigs_current->state;
+    for (size_t i = 0; i < st->module_cache_count; i++) {
+        free(st->module_cache[i].path);
+        val_decref(st->module_cache[i].dict);
+        if (st->module_cache[i].env) env_decref(st->module_cache[i].env);
     }
-    free(g_module_cache);
-    g_module_cache = NULL;
-    g_module_cache_count = g_module_cache_cap = 0;
+    st->module_cache_count = 0;
+    /* Keep the array allocated — eigs_state_destroy frees it. The cache
+     * is cleared at gc_collect_at_exit; the state outlives that call. */
 }
 
 /* Exit-time collection. Pure value->value cycles bound at global scope
@@ -1963,49 +1953,46 @@ Value* env_get(Env *env, const char *name) {
 
 /* ================================================================
  * HANDLE TABLE — opaque pointer indirection for Store/Thread/Channel
+ * Table + lock live on EigsState (see eigenscript.h).
  * ================================================================ */
 
-#include <pthread.h>
-
-static struct {
-    void      *ptr;
-    HandleType type;
-} g_handle_table[HANDLE_TABLE_SIZE];
-
-static pthread_mutex_t g_handle_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int g_handle_next = 1; /* 0 reserved as invalid */
-
 int handle_register(void *ptr, HandleType type) {
-    pthread_mutex_lock(&g_handle_mutex);
+    if (!eigs_current) return -1;
+    EigsState *st = eigs_current->state;
+    pthread_mutex_lock(&st->handle_mutex);
     for (int i = 0; i < HANDLE_TABLE_SIZE; i++) {
-        int idx = (g_handle_next + i) % HANDLE_TABLE_SIZE;
+        int idx = (st->handle_next + i) % HANDLE_TABLE_SIZE;
         if (idx == 0) continue;
-        if (g_handle_table[idx].ptr == NULL) {
-            g_handle_table[idx].ptr = ptr;
-            g_handle_table[idx].type = type;
-            g_handle_next = (idx + 1) % HANDLE_TABLE_SIZE;
-            pthread_mutex_unlock(&g_handle_mutex);
+        if (st->handle_table[idx].ptr == NULL) {
+            st->handle_table[idx].ptr = ptr;
+            st->handle_table[idx].type = type;
+            st->handle_next = (idx + 1) % HANDLE_TABLE_SIZE;
+            pthread_mutex_unlock(&st->handle_mutex);
             return idx;
         }
     }
-    pthread_mutex_unlock(&g_handle_mutex);
+    pthread_mutex_unlock(&st->handle_mutex);
     fprintf(stderr, "Error: handle table full\n");
     return -1;
 }
 
 void* handle_lookup(int id, HandleType type) {
+    if (!eigs_current) return NULL;
     if (id <= 0 || id >= HANDLE_TABLE_SIZE) return NULL;
-    pthread_mutex_lock(&g_handle_mutex);
+    EigsState *st = eigs_current->state;
+    pthread_mutex_lock(&st->handle_mutex);
     void *ptr = NULL;
-    if (g_handle_table[id].ptr != NULL && g_handle_table[id].type == type)
-        ptr = g_handle_table[id].ptr;
-    pthread_mutex_unlock(&g_handle_mutex);
+    if (st->handle_table[id].ptr != NULL && st->handle_table[id].type == type)
+        ptr = st->handle_table[id].ptr;
+    pthread_mutex_unlock(&st->handle_mutex);
     return ptr;
 }
 
 void handle_release(int id) {
+    if (!eigs_current) return;
     if (id <= 0 || id >= HANDLE_TABLE_SIZE) return;
-    pthread_mutex_lock(&g_handle_mutex);
-    g_handle_table[id].ptr = NULL;
-    pthread_mutex_unlock(&g_handle_mutex);
+    EigsState *st = eigs_current->state;
+    pthread_mutex_lock(&st->handle_mutex);
+    st->handle_table[id].ptr = NULL;
+    pthread_mutex_unlock(&st->handle_mutex);
 }

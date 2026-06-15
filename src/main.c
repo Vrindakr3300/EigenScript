@@ -13,11 +13,6 @@
 void register_gfx_builtins(Env *env);
 #endif
 
-Env *g_global_env = NULL;
-__thread Env *g_load_env = NULL;
-char g_script_dir[4096] = ".";
-char g_exe_dir[4096] = ".";
-
 #ifndef EIGENSCRIPT_VERSION
 #define EIGENSCRIPT_VERSION "dev"
 #endif
@@ -166,16 +161,16 @@ static void set_exe_dir(const char *argv0) {
 }
 
 int main(int argc, char **argv) {
-    set_exe_dir(argc > 0 ? argv[0] : NULL);
     trace_init();
     atexit(trace_shutdown);
 
+    /* --version doesn't touch the runtime; handle it before any state. */
     if (argc >= 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
         printf("%s\n", EIGENSCRIPT_VERSION);
         return 0;
     }
 
-    /* --fmt flag */
+    /* --fmt is a pure source transformer; no VM, no arena, no state. */
     if (argc >= 2 && strcmp(argv[1], "--fmt") == 0) {
         if (argc < 3) {
             fprintf(stderr, "Usage: eigenscript --fmt [--write] file.eigs\n");
@@ -192,16 +187,20 @@ int main(int argc, char **argv) {
         return eigenscript_fmt(path, write_mode);
     }
 
+    /* Everything below uses g_script_dir / g_exe_dir / g_global_env,
+     * which are EigsState bridge macros — attach before computing. */
+    EigsState *eigs_st = eigs_state_new();
+    eigs_thread_attach(eigs_st);
+    set_exe_dir(argc > 0 ? argv[0] : NULL);
+
     /* --lint flag */
     if (argc >= 2 && strcmp(argv[1], "--lint") == 0) {
         if (argc < 3) {
             fprintf(stderr, "Usage: eigenscript --lint file.eigs\n");
+            eigs_thread_detach();
+            eigs_state_destroy(eigs_st);
             return 1;
         }
-        /* Lint tokenizes + parses, so it needs an EigsState/Thread
-         * (arena + parse_errors live on eigs_current). No VM runs. */
-        EigsState *eigs_st = eigs_state_new();
-        eigs_thread_attach(eigs_st);
         int rc = eigenscript_lint(argv[2]);
         eigs_thread_detach();
         eigs_state_destroy(eigs_st);
@@ -217,6 +216,8 @@ int main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "--pkg") == 0) {
         if (!resolve_eigenscript_file("lib/pkg.eigs", pkg_path, sizeof(pkg_path))) {
             fprintf(stderr, "Error: cannot locate lib/pkg.eigs (stdlib not installed?)\n");
+            eigs_thread_detach();
+            eigs_state_destroy(eigs_st);
             return 1;
         }
         argv[1] = pkg_path;
@@ -227,8 +228,6 @@ int main(int argc, char **argv) {
     if (argc < 2) {
         srand(time(NULL));
         eigenscript_set_args(argc, argv);
-        EigsState *eigs_st = eigs_state_new();
-        eigs_thread_attach(eigs_st);
 
         Env *global = env_new(NULL);
         register_builtins(global);
@@ -260,7 +259,8 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* Extract script directory for load_file resolution */
+    /* Extract script directory for load_file resolution. g_script_dir
+     * is an EigsState bridge macro — state is already attached above. */
     {
         const char *last_slash = strrchr(argv[1], '/');
         if (last_slash) {
@@ -277,13 +277,13 @@ int main(int argc, char **argv) {
     char *source = read_file_util(argv[1], &src_size);
     if (!source) {
         fprintf(stderr, "Error: cannot read file '%s'\n", argv[1]);
+        eigs_thread_detach();
+        eigs_state_destroy(eigs_st);
         return 1;
     }
 
     srand(time(NULL));
     eigenscript_set_args(argc, argv);
-    EigsState *eigs_st = eigs_state_new();
-    eigs_thread_attach(eigs_st);
 
     Env *global = env_new(NULL);
     register_builtins(global);
@@ -306,6 +306,10 @@ int main(int argc, char **argv) {
     if (g_parse_errors > 0) {
         fprintf(stderr, "%d parse error(s) — aborting\n", g_parse_errors);
         free(source);
+        free_tokenlist(&tl);
+        env_decref(global);
+        eigs_thread_detach();
+        eigs_state_destroy(eigs_st);
         return 1;
     }
     g_compile_module_slots = 1;

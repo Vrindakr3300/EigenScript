@@ -11,10 +11,15 @@ __thread EigsThread *eigs_current = NULL;
 EigsState *eigs_state_new(void) {
     EigsState *st = xcalloc(1, sizeof(*st));
     pthread_mutex_init(&st->threads_lock, NULL);
+    pthread_mutex_init(&st->handle_mutex, NULL);
+    st->handle_next = 1;  /* 0 reserved as invalid */
     /* Observer thresholds — same defaults as the legacy TLS globals. */
     st->obs_dh_zero  = 0.001;
     st->obs_dh_small = 0.01;
     st->obs_h_low    = 0.1;
+    /* Filesystem anchor defaults; main/eigenlsp overwrite after attach. */
+    st->script_dir[0] = '.'; st->script_dir[1] = '\0';
+    st->exe_dir[0]    = '.'; st->exe_dir[1]    = '\0';
     return st;
 }
 
@@ -25,7 +30,11 @@ void eigs_state_destroy(EigsState *st) {
                 "eigs_state_destroy: %s\n",
                 "thread(s) still attached on destroy");
     }
+    /* Module-cache refs were dropped at gc_collect_at_exit; the array
+     * itself may still be allocated (capacity bumped past zero). */
+    free(st->module_cache);
     pthread_mutex_destroy(&st->threads_lock);
+    pthread_mutex_destroy(&st->handle_mutex);
     free(st);
 }
 

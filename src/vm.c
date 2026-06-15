@@ -3889,8 +3889,6 @@ static Value *vm_run(EigsChunk *chunk, Env *env) {
         extern int resolve_eigenscript_file_from(const char *base, const char *name,
                                                   char *out, size_t outlen);
         extern char *read_file_util(const char *path, long *size);
-        extern __thread Env *g_load_env;
-        extern Env *g_global_env;
         extern TokenList tokenize(const char *source);
         extern ASTNode *parse(TokenList *tl);
         extern void free_tokenlist(TokenList *tl);
@@ -4277,10 +4275,6 @@ vm_error_halt:
 
 Value *vm_execute(EigsChunk *chunk, Env *env) {
     vm_init();
-    if (g_vm.global_env == NULL) {
-        /* First call — initialize */
-        g_vm.global_env = env;
-    }
     /* Re-entrant safe: vm_run pushes/pops its own frame and cleans
      * the stack back to its base pointer on return. */
     return vm_run(chunk, env);
