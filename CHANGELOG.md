@@ -4,6 +4,37 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+### Fix — macOS Intel JIT enabled
+
+- **macos-x86_64 ships with the JIT live again.** The 0.14.2 holding
+  pattern (`EIGENSCRIPT_JIT_FORCE_OFF=1` on Darwin x86_64) is gone. The
+  root cause was that the JIT prologue inlined Linux ELF
+  `mov %fs:eigs_current_tpoff, %rbx` for TLS, which has no Mach-O
+  equivalent — every thunk SIGSEGV'd on first entry. Fix:
+  - Prologue is platform-split. Darwin calls a C helper
+    `eigs_jit_load_eigs_current()` in `src/vm.c` (the C compiler emits
+    the TLV descriptor sequence around the load) and copies `%rax` to
+    `%rbx`. Linux keeps the inline `%fs:tpoff` read. End-state is the
+    same — `%rbx = EigsThread*` — and the existing
+    `mov off_thread_vm(%rbx), %rbx` resolves the VM pointer identically
+    on both.
+  - Mid-thunk reads of `eigs_current` (unobserved_depth guards) can't
+    derive the thread back from `%rbx` because `vm` is a heap-allocated
+    `VM*`, not embedded. Added `struct EigsThread *owner` to `VM` (set
+    in `vm_init`), exposed via `off_vm_owner` in `EigsJitLayout`. The
+    three mid-thunk sites do `mov off_vm_owner(%rbx), %rax` followed by
+    a probe at `off_thread_unobserved_depth(%rax)`. Same encoding on
+    both platforms — no `#ifdef` in the thunk body.
+  - The dict-field inline cache stays off on Darwin (`dcache_ways=0`
+    in the layout trips the existing `dcache_ways == 2` guard), so
+    `LOCAL_DOT_GET/SET` route to the slow-path helper. Porting the
+    inline probe is the only remaining Darwin-specific follow-on.
+- **CI**: `macos-15-intel` is now in the `build-and-test` matrix, so
+  every push runs the full 1855-check suite with JIT live on macOS x86_64.
+  The `[82]` thunk-gate's Darwin skip is gone.
+- `EIGENSCRIPT_JIT_FORCE_OFF` stays in `src/jit.c` as a bisection kill
+  switch but is no longer set by `build.sh`.
+
 ## [0.15.1] — 2026-06-15
 
 ### HTTP `http_route_authed`: source-based auth via shared store

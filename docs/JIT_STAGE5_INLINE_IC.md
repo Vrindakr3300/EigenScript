@@ -59,7 +59,7 @@ Register conventions inside a thunk (see the prologue, ~line 1575):
 
 | Reg | Meaning |
 |-----|---------|
-| `%rbx` | `&g_vm` (per-EigsThread, heap-allocated; prologue does `mov %fs:eigs_current_tpoff, %rbx` + `mov off_thread_vm(%rbx), %rbx`) |
+| `%rbx` | `&g_vm` (per-EigsThread, heap-allocated; Linux prologue does `mov %fs:eigs_current_tpoff, %rbx` + `mov off_thread_vm(%rbx), %rbx`; Darwin prologue calls `eigs_jit_load_eigs_current` to get the EigsThread\* via TLV, then the same `mov off_thread_vm(%rbx), %rbx`) |
 | `%ecx` | cached `g_vm.sp` — must be synced to memory before any helper call and reloaded after |
 | `%r14` | chunk pointer (loaded in prologue only when scanner set `has_bail_op`) |
 | `%r13d` | bail advance for the epilogue writeback (`chunk->jit_advance`); `-1` = RETURN sentinel |
@@ -138,11 +138,12 @@ SET:  env_store_slot(target, ic->slot_idx, s); assign_counts bump
   emit a movabs load) and guard-fail to the helper when set, so trace
   semantics stay helper-side.
 - `assign_counts` bump: `target->assign_counts && g_unobserved_depth
-  == 0` — g_unobserved_depth now lives on `EigsThread` reached via
-  TLS `eigs_current` (two-level addressing: `eigs_current_tpoff`
-  loads `%fs:eigs_current` into `%rax`, then
-  `off_thread_unobserved_depth(%rax)` is the int field — both already
-  in g_layout).
+  == 0` — g_unobserved_depth lives on `EigsThread`. Mid-thunk reach is
+  via the `VM->owner` back-pointer (set in `vm_init`, off_vm_owner in
+  g_layout), not a second TLS read: `mov off_vm_owner(%rbx), %rax`
+  loads the EigsThread\*, then `off_thread_unobserved_depth(%rax)` is
+  the int field. Same encoding on Linux and Darwin — only the prologue
+  is platform-split for the TLS load itself.
 - IC-miss / version-mismatch → helper (which also populates the IC, so
   the next iteration hits the inline path).
 
@@ -187,3 +188,9 @@ examples/tests for `__loop_iterations__` before changing semantics).
   machinery — the inline guard-fail jump target is the start of the
   full helper sequence for the *same* op, not the epilogue.
 - x86-64 only: everything here is inside `#if defined(__x86_64__)`.
+- Platform gates: the only Linux/Darwin split lives in the prologue's
+  TLS load (`#if defined(__APPLE__)` calls `eigs_jit_load_eigs_current`,
+  Linux inlines `mov %fs:tpoff, %rbx`). On Darwin the dict-field inline
+  cache stays off because `eigs_jit_get_layout` publishes
+  `dcache_ways=0`, tripping the existing `dcache_ways == 2` guard so
+  `LOCAL_DOT_GET/SET` use the slow-path helper.
