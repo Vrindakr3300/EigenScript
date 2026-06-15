@@ -4,6 +4,8 @@ All notable changes to EigenScript are documented here.
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-06-15
+
 ### HTTP `http_route_authed`: source-based auth via shared store
 
 - `http_route_authed`'s auth check now resolves the auth source from
