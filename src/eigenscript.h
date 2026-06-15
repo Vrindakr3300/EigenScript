@@ -323,6 +323,13 @@ struct EigsState {
     EigsHandleSlot  handle_table[HANDLE_TABLE_SIZE];
     pthread_mutex_t handle_mutex;
     int             handle_next;
+    /* Set to 1 by builtin_spawn before pthread_create; stays 1 for the
+     * state's lifetime. Gates the LOCK-prefixed __atomic_* RMW in
+     * val_incref / val_decref / chunk_incref / chunk_decref /
+     * env_incref / env_decref / slot_incref / slot_decref. Single-
+     * threaded states (the common case — DMG, MiniSat, Tidepool, REPL)
+     * keep it at 0 and skip the atomic ~20-cycle penalty on x86. */
+    int             multithreaded;
 };
 
 struct EigsThread {
@@ -378,6 +385,16 @@ struct EigsThread {
     /* Per-import resolution base (Phase 0b). Empty = fall back to
      * state->script_dir. OP_IMPORT saves/restores around module body. */
     char                 import_resolve_dir[4096];
+    /* Cycle-collector per-thread state (docs/CLOSURE_CYCLE_GC.md).
+     * The registry holds captured envs (intrusive list, gc_prev/gc_next);
+     * gc_threshold drives the off-hot-path collection trigger; gc_enabled
+     * gates registration (gc_disable_for_threads flips it off when the
+     * state goes multithreaded); in_gc is the re-entrancy guard. */
+    Env                 *gc_envs;
+    int                  gc_captured_live;
+    int                  gc_threshold;
+    int                  gc_enabled;
+    int                  in_gc;
     /* Registry list — set by eigs_thread_attach. */
     EigsThread *next;
 };
@@ -420,6 +437,16 @@ extern __thread EigsThread *eigs_current;
 #define g_exe_dir             (eigs_current->state->exe_dir)
 #define g_load_env            (eigs_current->load_env)
 #define g_import_resolve_dir  (eigs_current->import_resolve_dir)
+#define g_vm_multithreaded    (eigs_current->state->multithreaded)
+#define g_gc_envs             (eigs_current->gc_envs)
+#define g_gc_captured_live    (eigs_current->gc_captured_live)
+#define g_gc_threshold        (eigs_current->gc_threshold)
+#define g_gc_enabled          (eigs_current->gc_enabled)
+#define g_in_gc               (eigs_current->in_gc)
+
+/* Cycle collector floor: never collect more often than every 64 captured-
+ * env registrations. State.c reads this when initializing EigsThread. */
+#define GC_THRESHOLD_MIN 64
 
 /* ---- OOM-safe allocation wrappers ----
  * Abort with a diagnostic on allocation failure. Used by value constructors
@@ -505,13 +532,13 @@ static inline double num_guard(double x) {
     return x;
 }
 
-/* Set to 1 by builtin_spawn before pthread_create, then stays 1. Single-
- * threaded scripts (the common case — DMG, MiniSat, Tidepool, REPL) keep
- * it at 0, which lets val_incref/decref, slot_incref/decref, and
- * env_refcount sites skip the LOCK-prefixed atomic RMW (mandatory on x86
- * for any __atomic_*_fetch). The branch is well-predicted to false until
- * spawn() fires. */
-extern int g_vm_multithreaded;
+/* The g_vm_multithreaded flag (state->multithreaded, bridge macro above)
+ * is set to 1 by builtin_spawn before pthread_create, then stays 1.
+ * Single-threaded scripts (the common case — DMG, MiniSat, Tidepool,
+ * REPL) keep it at 0, which lets val_incref/decref, slot_incref/decref,
+ * and env_refcount sites skip the LOCK-prefixed atomic RMW (mandatory
+ * on x86 for any __atomic_*_fetch). The branch is well-predicted to
+ * false until spawn() fires. */
 
 static inline void val_incref(Value *v) {
     if (v && !v->arena) {

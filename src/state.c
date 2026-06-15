@@ -49,6 +49,10 @@ EigsThread *eigs_thread_attach(EigsState *st) {
     th->state = st;
     th->loop_exit_reason = "normal";
 
+    /* Cycle collector defaults — matches the old TLS initializers. */
+    th->gc_enabled = 1;
+    th->gc_threshold = GC_THRESHOLD_MIN;
+
     /* Wire TLS before arena_init so its writes land in th->arena. */
     eigs_current = th;
     arena_init();

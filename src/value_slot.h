@@ -77,14 +77,9 @@ static inline EigsSlot slot_true(void)               { EigsSlot s; s.u = SLOT_TR
 static inline EigsSlot slot_false(void)              { EigsSlot s; s.u = SLOT_FALSE_BITS; return s; }
 static inline EigsSlot slot_from_bool(int b)         { EigsSlot s; s.u = TAG_BOOL | (b ? 1ULL : 0ULL); return s; }
 
-/* Single-thread refcount gate: see eigenscript.h for the full doc. */
-#ifdef __cplusplus
-extern "C" {
-#endif
-extern int g_vm_multithreaded;
-#ifdef __cplusplus
-}
-#endif
+/* Single-thread refcount gate (g_vm_multithreaded) is now provided as a
+ * bridge macro by eigenscript.h, which is already included transitively
+ * by every site that includes this header. */
 
 /* Refcount fast path:
  *   immediate (number / null / bool) -> no-op

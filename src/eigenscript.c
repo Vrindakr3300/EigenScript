@@ -27,12 +27,6 @@
  * eigenscript.h). The g_* identifiers are macros that expand to
  * `eigs_current->field`. */
 
-/* Multi-thread mode flag. Set to 1 by builtin_spawn before pthread_create
- * (and never reset). When 0, refcount sites use plain ++/-- instead of
- * __atomic_*_fetch — saves ~20 cycles per LOCK-prefixed RMW on x86.
- * Most workloads (DMG, MiniSat, Tidepool, REPL) never spawn. */
-int g_vm_multithreaded = 0;
-
 /* First syntax/parse error of the current tokenize+parse pass, captured
  * for consumers that can't see the parser's stderr (the LSP, which turns
  * it into a publishDiagnostics squiggle). Reset at the top of tokenize().
@@ -1396,12 +1390,10 @@ void env_destroy_final(Env *env) {
  * registry is drained up front.
  * ================================================================ */
 
-static __thread Env *g_gc_envs = NULL;     /* captured-env registry head */
-static __thread int g_gc_captured_live = 0;
-#define GC_THRESHOLD_MIN 64
-static __thread int g_gc_threshold = GC_THRESHOLD_MIN;
-static __thread int g_gc_enabled = 1;
-static __thread int g_in_gc = 0;
+/* Cycle-collector per-thread state (gc_envs, gc_captured_live,
+ * gc_threshold, gc_enabled, in_gc) now lives on EigsThread; the g_*
+ * names are bridge macros from eigenscript.h. GC_THRESHOLD_MIN is also
+ * defined there so state.c can seed gc_threshold on attach. */
 
 static void gc_unregister_env(Env *env) {
     if (!env->in_gc_list) return;
