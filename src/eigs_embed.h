@@ -1,0 +1,136 @@
+/*
+ * eigs_embed.h — public embedding API for EigenScript (Phase 10).
+ *
+ * The minimal surface a C/C++ host needs to embed the runtime:
+ *
+ *   - lifecycle (open/close, or finer-grained state_new/thread_attach)
+ *   - eval source strings / files
+ *   - read + write global bindings
+ *   - construct, inspect, and release values
+ *   - register C functions callable from EigenScript
+ *
+ * Multi-state (Phases 1-9) means the host can keep several interpreters
+ * alive concurrently; eigs_thread_attach binds the calling OS thread to
+ * one of them. All API calls operate on the attached state implicitly via
+ * the eigs_current TLS pointer — pass NULL/no state argument to value or
+ * eval calls and they target whichever state the calling thread is on.
+ *
+ * Ownership: every API that returns an EigsValue* returns a counted ref
+ * the caller owns and must release with eigs_value_release. APIs that
+ * accept an EigsValue* either store it (consuming the caller's ref) or
+ * leave the caller's ref untouched — the comment on each prototype says
+ * which.
+ */
+#ifndef EIGS_EMBED_H
+#define EIGS_EMBED_H
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct EigsState  EigsState;
+typedef struct EigsThread EigsThread;
+/* EigsValue is the internal `Value` — kept opaque for embedders, so the
+ * field layout can change without breaking the API. */
+typedef struct Value      EigsValue;
+
+/* ---- Lifecycle ---------------------------------------------------- */
+
+/* One-shot: state_new + thread_attach + register builtins. Returns NULL on
+ * failure (already attached, OOM). The returned state must be closed with
+ * eigs_close from the same OS thread. */
+EigsState  *eigs_open(void);
+void        eigs_close(EigsState *st);
+
+/* Finer-grained lifecycle for hosts that need to attach multiple threads
+ * to the same state, or build the state in stages. */
+EigsState  *eigs_state_new(void);
+void        eigs_state_destroy(EigsState *st);
+EigsThread *eigs_thread_attach(EigsState *st);
+void        eigs_thread_detach(void);
+/* Set up the global env + register stdlib builtins on the calling thread's
+ * state. Idempotent: returns 0 if already initialized. -1 if not attached. */
+int         eigs_state_init_runtime(EigsState *st);
+
+/* ---- Eval --------------------------------------------------------- */
+
+/* Tokenize, parse, compile, and execute `src` in the attached state's
+ * global env. Returns the script's last expression value (a counted ref
+ * the caller must release) or NULL on parse/runtime error — call
+ * eigs_last_error_message() for details. */
+EigsValue *eigs_eval_string(const char *src);
+/* Read `path` and eval its contents. Sets script_dir for `import`/
+ * `load_file` resolution to the file's directory. */
+EigsValue *eigs_eval_file(const char *path);
+
+/* ---- Errors ------------------------------------------------------- */
+
+/* Error message from the most recent eval/runtime failure on this thread,
+ * or NULL when no error is pending. The returned pointer is owned by the
+ * thread state — copy it if you need to keep it past the next API call. */
+const char *eigs_last_error_message(void);
+int         eigs_has_error(void);
+void        eigs_clear_error(void);
+
+/* ---- Globals ------------------------------------------------------ */
+
+/* Bind `val` into the global env under `name`. The store retains its own
+ * reference; the caller's ref on `val` is left untouched (release it if
+ * the value was freshly constructed). */
+void        eigs_set_global(const char *name, EigsValue *val);
+/* Look up `name` in the global env. Returns a counted ref (caller releases)
+ * or NULL if not bound. */
+EigsValue  *eigs_get_global(const char *name);
+
+/* ---- Values ------------------------------------------------------- */
+
+typedef enum {
+    EIGS_TYPE_NULL = 0,
+    EIGS_TYPE_NUM,
+    EIGS_TYPE_STR,
+    EIGS_TYPE_LIST,
+    EIGS_TYPE_DICT,
+    EIGS_TYPE_FN,
+    EIGS_TYPE_OTHER
+} EigsValueType;
+
+EigsValue     *eigs_value_new_num(double n);
+EigsValue     *eigs_value_new_string(const char *s);
+EigsValue     *eigs_value_new_null(void);
+EigsValue     *eigs_value_new_list(int capacity);
+EigsValue     *eigs_value_new_dict(int capacity);
+void           eigs_value_retain(EigsValue *v);
+void           eigs_value_release(EigsValue *v);
+
+EigsValueType  eigs_value_type(EigsValue *v);
+double         eigs_value_as_num(EigsValue *v);     /* 0.0 if not num */
+const char    *eigs_value_as_string(EigsValue *v);  /* NULL if not str; borrowed */
+
+int            eigs_value_list_len(EigsValue *v);
+EigsValue     *eigs_value_list_get(EigsValue *v, int i);   /* counted ref */
+/* Appends `item` to `v`. The list retains its own ref; the caller's ref on
+ * `item` is left untouched. */
+void           eigs_value_list_append(EigsValue *v, EigsValue *item);
+
+/* Counted ref on hit; NULL on miss or wrong type. */
+EigsValue     *eigs_value_dict_get(EigsValue *v, const char *k);
+/* Same ownership semantics as list_append. */
+void           eigs_value_dict_set(EigsValue *v, const char *k, EigsValue *val);
+
+/* ---- FFI ---------------------------------------------------------- */
+
+/* Host function signature mirrors the internal BuiltinFn: `arg` is the
+ * raw single argument when the script called with one arg, a VAL_LIST of
+ * args for multi-arg calls, or NULL for zero-arg calls. The returned
+ * value's ref is adopted by the runtime — return a fresh make_*-style
+ * EigsValue and don't release it yourself. */
+typedef EigsValue *(*EigsHostFn)(EigsValue *arg);
+void eigs_register_function(const char *name, EigsHostFn fn);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* EIGS_EMBED_H */

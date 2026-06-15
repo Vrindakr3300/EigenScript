@@ -13,7 +13,7 @@ LDFLAGS := -pie -Wl,-z,relro,-z,now -lm -lpthread
 endif
 
 SRC_DIR := src
-SOURCES := $(SRC_DIR)/eigenscript.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/builtins.c $(SRC_DIR)/builtins_tensor.c $(SRC_DIR)/hash.c $(SRC_DIR)/arena.c $(SRC_DIR)/state.c $(SRC_DIR)/strbuf.c $(SRC_DIR)/ext_store.c $(SRC_DIR)/fmt.c $(SRC_DIR)/lint.c $(SRC_DIR)/chunk.c $(SRC_DIR)/compiler.c $(SRC_DIR)/vm.c $(SRC_DIR)/jit.c $(SRC_DIR)/trace.c $(SRC_DIR)/main.c
+SOURCES := $(SRC_DIR)/eigenscript.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/builtins.c $(SRC_DIR)/builtins_tensor.c $(SRC_DIR)/hash.c $(SRC_DIR)/arena.c $(SRC_DIR)/state.c $(SRC_DIR)/strbuf.c $(SRC_DIR)/ext_store.c $(SRC_DIR)/fmt.c $(SRC_DIR)/lint.c $(SRC_DIR)/chunk.c $(SRC_DIR)/compiler.c $(SRC_DIR)/vm.c $(SRC_DIR)/jit.c $(SRC_DIR)/trace.c $(SRC_DIR)/eigs_embed.c $(SRC_DIR)/main.c
 BINARY  := $(SRC_DIR)/eigenscript
 
 FULL_SOURCES := $(SOURCES) $(SRC_DIR)/ext_http.c $(SRC_DIR)/ext_db.c \
@@ -27,7 +27,7 @@ PREFIX  := $(HOME)/.local
 LSP_SOURCES := $(SRC_DIR)/eigenlsp.c $(filter-out $(SRC_DIR)/main.c,$(SOURCES))
 LSP_BINARY  := $(SRC_DIR)/eigenlsp
 
-.PHONY: all build full http gfx test install install-gfx clean coverage coverage-clean fuzz fuzz-run lsp jit-smoke asan pgo
+.PHONY: all build full http gfx test install install-gfx clean coverage coverage-clean fuzz fuzz-run lsp jit-smoke embed-smoke asan pgo
 
 all: build
 
@@ -107,6 +107,18 @@ lsp:
 jit-smoke:
 	$(CC) -Wall -Wextra -O2 -o /tmp/jit_smoke $(SRC_DIR)/jit.c $(SRC_DIR)/jit_smoke.c -lm
 	/tmp/jit_smoke
+
+# Phase 10 embedding API smoke test. Links the runtime (minus main.c) plus
+# the standalone host harness; exercises eigs_open/eval/globals/FFI.
+EMBED_SOURCES := $(filter-out $(SRC_DIR)/main.c,$(SOURCES))
+embed-smoke:
+	$(CC) $(CFLAGS) -o /tmp/embed_smoke $(SRC_DIR)/embed_smoke.c $(EMBED_SOURCES) \
+		-DEIGENSCRIPT_EXT_HTTP=0 \
+		-DEIGENSCRIPT_EXT_MODEL=0 \
+		-DEIGENSCRIPT_EXT_DB=0 \
+		-DEIGENSCRIPT_VERSION='"$(VERSION)"' \
+		-lm -lpthread
+	/tmp/embed_smoke
 
 # AddressSanitizer + UndefinedBehaviorSanitizer build. Catches
 # use-after-free, buffer overflow, leaks, and undefined behavior that
