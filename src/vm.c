@@ -1344,7 +1344,8 @@ void jit_helper_index_get(void) {
  * thunk frames), unlike the interpreter's flat frame array. Cap the
  * native depth; deeper recursion runs interpreted via return code 1. */
 #define JIT_NATIVE_CALL_DEPTH_MAX 64
-static __thread int g_native_call_depth = 0;
+/* g_native_call_depth lives on EigsThread (Phase 8); bridge macro from
+ * eigenscript.h. */
 
 int jit_helper_call(EigsChunk *caller_chunk, int argc, int resume_off) {
     if (g_vm.sp < argc + 1) return 1;

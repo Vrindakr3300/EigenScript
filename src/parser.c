@@ -457,7 +457,8 @@ static ASTNode* parse_statement(Parser *p);
  * input — would exhaust the C stack and crash. 256 levels is far beyond any
  * human-written program. */
 #define PARSE_MAX_DEPTH 256
-static __thread int g_parse_depth = 0;
+/* g_parse_depth now lives on EigsThread (Phase 8); the identifier is a
+ * bridge macro from eigenscript.h. */
 
 static ASTNode** parse_block(Parser *p, int *count) {
     ASTNode **stmts = xmalloc_array(MAX_STMTS, sizeof(ASTNode*));

@@ -181,24 +181,12 @@ static int env_hash_find(const EnvHash *ht, const char *name, uint32_t h, char *
 
 /* Recursively free a heap-allocated Value tree.
  * Skips arena-allocated values (v->arena flag). */
-#define NUM_FREELIST_CAP 4096
-static __thread Value *g_num_freelist = NULL;
-static __thread int g_num_freelist_count = 0;
-
-#define ENV_FREELIST_CAP 1024
-#define ENV_FREELIST_MAX_BINDINGS 64
-static __thread Env *g_env_freelist = NULL;
-static __thread int g_env_freelist_count = 0;
-
-#define ENV_NAME_INTERN_BUCKETS 4096
-typedef struct EnvNameIntern {
-    char *name;
-    uint32_t hash;
-    struct EnvNameIntern *next;
-} EnvNameIntern;
-static __thread EnvNameIntern *g_env_name_interns[ENV_NAME_INTERN_BUCKETS];
-
-/* (debug counters removed) */
+/* NUM_FREELIST_CAP / ENV_FREELIST_CAP / ENV_FREELIST_MAX_BINDINGS /
+ * ENV_NAME_INTERN_BUCKETS and the EnvNameIntern typedef now live in
+ * eigenscript.h so EigsThread can carry the freelist heads + intern
+ * table inline. The g_num_freelist / g_env_freelist / g_env_name_interns
+ * identifiers are bridge macros — same access syntax, one extra TLS
+ * deref through eigs_current. */
 
 /* Refcount-aware teardown. Called by val_decref when refcount hits 0.
  * Children are val_decref'd (not recursively freed), so shared values
@@ -277,6 +265,56 @@ void observer_ensure_fresh(Value *v) {
 /* g_last_observer, g_builtin_call_env, g_unobserved_depth are EigsThread
  * fields; g_obs_dh_zero/small/h_low are EigsState fields. See the macros
  * in eigenscript.h that bridge the source identifiers to those fields. */
+
+/* Phase 8: release per-thread freelist memory + intern table at detach.
+ * The freelists store recyclable Value/Env structs that would otherwise
+ * leak on thread teardown; the intern table owns its `name` strings.
+ * Called from eigs_thread_detach BEFORE eigs_current is cleared, so
+ * the bridge macros still resolve. */
+void eigs_thread_drain_caches(EigsThread *th) {
+    if (!th) return;
+
+    /* num_freelist: each entry's first sizeof(Value*) bytes of data are
+     * overlaid with the next-pointer. Save next, free node, advance. */
+    Value *vn = th->num_freelist;
+    while (vn) {
+        Value *next;
+        memcpy(&next, &vn->data, sizeof(Value *));
+        free(vn);
+        vn = next;
+    }
+    th->num_freelist = NULL;
+    th->num_freelist_count = 0;
+
+    /* env_freelist: parked envs use ->parent as the next pointer and
+     * retain their names/values/assign_counts/hash arrays for reuse. */
+    Env *en = th->env_freelist;
+    while (en) {
+        Env *next = en->parent;
+        free(en->names);
+        free(en->values);
+        free(en->assign_counts);
+        free(en->hash.hashes);
+        free(en->hash.indices);
+        free(en->hash.generations);
+        free(en);
+        en = next;
+    }
+    th->env_freelist = NULL;
+    th->env_freelist_count = 0;
+
+    /* env_name_interns: bucket heads + linked-list nodes own ->name. */
+    for (int i = 0; i < ENV_NAME_INTERN_BUCKETS; i++) {
+        EnvNameIntern *it = th->env_name_interns[i];
+        while (it) {
+            EnvNameIntern *next = it->next;
+            free(it->name);
+            free(it);
+            it = next;
+        }
+        th->env_name_interns[i] = NULL;
+    }
+}
 
 void free_value(Value *v) {
     if (!v || v->arena) return;
@@ -788,8 +826,6 @@ static int values_equal_impl(Value *a, Value *b, int depth) {
 }
 
 int values_equal(Value *a, Value *b) { return values_equal_impl(a, b, 0); }
-
-static __thread int g_vts_depth = 0;
 
 char* value_to_string(Value *v) {
     if (!v) return xstrdup("null");

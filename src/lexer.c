@@ -5,8 +5,8 @@
 
 #include "eigenscript.h"
 
-/* Recursion depth guard for nested f-string tokenization. */
-static __thread int g_tokenize_depth = 0;
+/* Recursion depth guard for nested f-string tokenization. g_tokenize_depth
+ * now lives on EigsThread (Phase 8); the identifier is a bridge macro. */
 #define MAX_TOKENIZE_DEPTH 64
 
 static void tok_add(TokenList *tl, TokType type, double num, const char *str, int line, int col) {

@@ -295,6 +295,20 @@ typedef struct {
     Env   *env;
 } EigsModuleCacheEntry;
 
+/* Per-thread freelist + intern table sizing — surfaced here so EigsThread
+ * can carry the storage inline and so state.c can drain at detach.
+ * (Phase 8: these moved off file-static __thread storage in eigenscript.c.) */
+#define NUM_FREELIST_CAP          4096
+#define ENV_FREELIST_CAP          1024
+#define ENV_FREELIST_MAX_BINDINGS 64
+#define ENV_NAME_INTERN_BUCKETS   4096
+
+typedef struct EnvNameIntern {
+    char                 *name;
+    uint32_t              hash;
+    struct EnvNameIntern *next;
+} EnvNameIntern;
+
 /* Per-interpreter-instance config + shared registry. Transparent for
  * internal TUs (Phase 10's embed.h wraps it behind accessors). */
 struct EigsState {
@@ -395,9 +409,30 @@ struct EigsThread {
     int                  gc_threshold;
     int                  gc_enabled;
     int                  in_gc;
+    /* Per-thread freelists + intern table (Phase 8). The freelists hold
+     * recyclable Value/Env memory that survives until thread detach;
+     * eigs_thread_drain_caches frees the held memory before the struct
+     * itself goes away. Interns own their `name` strings. */
+    Value               *num_freelist;
+    int                  num_freelist_count;
+    Env                 *env_freelist;
+    int                  env_freelist_count;
+    EnvNameIntern       *env_name_interns[ENV_NAME_INTERN_BUCKETS];
+    /* Recursion-depth guards (parse/tokenize/value_to_string/JSON/native
+     * call). Reset per top-level entry; reside here so multiple states
+     * sharing an OS thread don't see each other's mid-walk depth. */
+    int                  parse_depth;
+    int                  tokenize_depth;
+    int                  vts_depth;
+    int                  json_depth;
+    int                  native_call_depth;
     /* Registry list — set by eigs_thread_attach. */
     EigsThread *next;
 };
+
+/* Phase 8: free freelist + intern memory held on the thread. Called from
+ * eigs_thread_detach before the EigsThread struct itself is released. */
+void eigs_thread_drain_caches(EigsThread *th);
 
 extern __thread EigsThread *eigs_current;
 
@@ -443,6 +478,16 @@ extern __thread EigsThread *eigs_current;
 #define g_gc_threshold        (eigs_current->gc_threshold)
 #define g_gc_enabled          (eigs_current->gc_enabled)
 #define g_in_gc               (eigs_current->in_gc)
+#define g_num_freelist        (eigs_current->num_freelist)
+#define g_num_freelist_count  (eigs_current->num_freelist_count)
+#define g_env_freelist        (eigs_current->env_freelist)
+#define g_env_freelist_count  (eigs_current->env_freelist_count)
+#define g_env_name_interns    (eigs_current->env_name_interns)
+#define g_parse_depth         (eigs_current->parse_depth)
+#define g_tokenize_depth      (eigs_current->tokenize_depth)
+#define g_vts_depth           (eigs_current->vts_depth)
+#define g_json_depth          (eigs_current->json_depth)
+#define g_native_call_depth   (eigs_current->native_call_depth)
 
 /* Cycle collector floor: never collect more often than every 64 captured-
  * env registrations. State.c reads this when initializing EigsThread. */

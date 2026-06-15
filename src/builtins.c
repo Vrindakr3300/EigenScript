@@ -807,7 +807,7 @@ static Value* eigs_json_parse_number(const char *s, int *pos) {
  * untrusted input like "[[[[...]]]]" would otherwise exhaust the C stack and
  * crash (SIGSEGV). 200 is far beyond any legitimate document. */
 #define JSON_MAX_DEPTH 200
-static __thread int g_json_depth = 0;
+/* g_json_depth lives on EigsThread (Phase 8); bridge macro from eigenscript.h. */
 
 static Value* eigs_json_parse_array(const char *s, int *pos) {
     (*pos)++;

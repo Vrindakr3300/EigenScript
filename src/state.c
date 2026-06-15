@@ -79,6 +79,11 @@ void eigs_thread_detach(void) {
     jit_thread_destroy(th);
     vm_thread_destroy(th);
 
+    /* Phase 8: release freelist + intern memory before the EigsThread
+     * struct itself goes. Must run while eigs_current still points at th
+     * so the bridge macros inside free_value/env destructors resolve. */
+    eigs_thread_drain_caches(th);
+
     arena_destroy();
     eigs_current = NULL;
 
