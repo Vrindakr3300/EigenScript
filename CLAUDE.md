@@ -136,7 +136,22 @@ make jit-smoke  # standalone emitter tests (jit_smoke.c stubs all helpers)
   /dev/null — `test_terminal.eigs` blocks forever reading a pipe that
   never EOFs (e.g. backgrounded runs).
 
-## Current state: 0.15.0 released; next up
+## Current state: 0.15.1 released; next up
+
+0.15.1 is the HTTP-extension rollup on top of 0.15.0's multi-state
+refactor: per-worker `EigsState` for `code` routes (so route source
+evaluates in a fresh worker state per request, isolated from startup
+globals and from other in-flight requests), plus a cross-worker
+shared-store primitive (`shared_set/get/has/delete/keys/size/clear/incr`)
+that lets routes hand state across worker boundaries via JSON-as-
+storage on a mutex-guarded map. The store is bounded by
+`EIGS_HTTP_SHARED_MAX_BYTES` (default 64 MiB) with predictable refusal
+on over-cap writes; `shared_incr` is a single-lock atomic RMW for
+counters. `http_route_authed` resolves its auth source from
+`shared_get("require_auth")` first (re-evaluated per request), with
+the legacy in-env `require_auth` function as a back-compat fallback.
+HTTP-suite coverage is 28/28 (HS14–HS26 cover the new surface);
+release 1855/1855, ASan 1922/1922.
 
 0.15.0 ships the multi-state refactor + embedding API
 (`src/eigs_embed.h` — see [docs/EMBEDDING.md](docs/EMBEDDING.md)).
@@ -238,10 +253,11 @@ portability, and the ecosystem story):
    as `attestation.sigstore.json`; verify with `gh attestation verify
    eigenscript-<label> --repo InauguralSystems/EigenScript`).
    **Homebrew tap** lives at github.com/InauguralSystems/homebrew-eigenscript —
-   the v0.13.0 formula's `inreplace` to drop the GNU-ld-only
-   `-z relro`/`-z now` LDFLAGS no longer matches as of v0.14.0, so the
-   tap must bump and remove the workaround. Follow-ons: Docker image,
-   AUR, asdf/mise plugin.
+   tracks the latest release tag (v0.15.1 as of 2026-06-15). The old
+   `inreplace` workaround for the GNU-ld-only `-z relro`/`-z now`
+   LDFLAGS was dropped at v0.14.2 (Makefile gates them on Linux now,
+   so the formula stays clean). Follow-ons: Docker image, AUR,
+   asdf/mise plugin.
 2. **Package/dependency story** — **Phase 0–2 landed in v0.14.0**:
    import cache + per-file resolution base + `eigs_modules/<name>/<name>.eigs`
    resolver (Phase 0), `--pkg` tool with `add`/`install`/`verify`/`update`
