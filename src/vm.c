@@ -1617,12 +1617,13 @@ void jit_helper_return_null(void) {
 /* Helper called by the JIT prologue on platforms where the JIT can't
  * encode TLS access directly — Darwin/Mach-O uses TLV descriptors
  * (per-variable callable thunks), not the fixed-offset %fs:tpoff that
- * Linux ELF uses. By going through this helper the compiler emits the
- * platform-correct TLS sequence; the JIT just CALLs it and reads %rax.
- * Used on Darwin x86_64; on Linux x86_64 the JIT keeps inlining
- * `mov %fs:eigs_current_tpoff, %rbx` directly. */
-void *eigs_jit_load_eigs_current_addr(void) {
-    return (void *)&eigs_current;
+ * Linux ELF uses. Returns the *value* of `eigs_current` (the
+ * EigsThread* the calling thread is attached to), matching what the
+ * Linux prologue gets from a single `mov %fs:tpoff, %rbx`. The C
+ * compiler emits the platform-correct TLS sequence around the load.
+ * Used on Darwin x86_64; Linux x86_64 keeps inlining the %fs read. */
+void *eigs_jit_load_eigs_current(void) {
+    return (void *)eigs_current;
 }
 
 void eigs_jit_get_layout(EigsJitLayout *out) {
@@ -1647,7 +1648,7 @@ void eigs_jit_get_layout(EigsJitLayout *out) {
 #if defined(__APPLE__)
     /* Mach-O __thread access goes through TLV descriptor calls, not a
      * fixed %fs:tpoff offset. The JIT prologue reaches `eigs_current`
-     * via `eigs_jit_load_eigs_current_addr` instead of inline %fs read,
+     * via `eigs_jit_load_eigs_current` instead of inline %fs read,
      * so the tpoffs aren't needed (and aren't meaningful). The
      * dict-cache inline probe is keyed on a separate TLS global with
      * no relationship to eigs_current; zeroing dcache_ways routes

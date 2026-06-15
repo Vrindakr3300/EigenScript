@@ -813,7 +813,7 @@ static uint8_t *emit_load_fs_zero_rsi(uint8_t *w) {
 /* mov %fs:disp32, %rbx  (9 bytes) — load a TLS 64-bit value into %rbx.
  * Used in the prologue (Linux only) to materialize `eigs_current` so
  * the follow-up `mov off_thread_vm(%rbx), %rbx` resolves to the live
- * VM ptr. On Darwin the prologue calls eigs_jit_load_eigs_current_addr
+ * VM ptr. On Darwin the prologue calls eigs_jit_load_eigs_current
  * instead. */
 static uint8_t *emit_mov_fs_disp32_to_rbx(uint8_t *w, int32_t disp) {
     *w++ = 0x64; *w++ = 0x48; *w++ = 0x8B; *w++ = 0x1C; *w++ = 0x25;
@@ -2281,15 +2281,15 @@ static void jit_compile_to_thunk(struct EigsChunk *chunk,
     /* Phase 5: %rbx = &eigs_current->vm. Two-instruction TLS-then-deref
      * resolves the VM heap pointer that all subsequent disp(%rbx)
      * accesses (sp, frames, ...) hang off. On Darwin/Mach-O the TLS
-     * load goes through `eigs_jit_load_eigs_current_addr` (TLV
-     * descriptor call); on Linux/ELF the inline %fs:tpoff read is
-     * still cheapest. */
+     * load goes through `eigs_jit_load_eigs_current` (TLV descriptor
+     * call returns the eigs_current value, matching what the Linux
+     * %fs:tpoff read yields); on Linux/ELF the inline read is cheapest. */
 #if defined(__APPLE__)
     /* push %rcx aligns %rsp to ≡ 0 (mod 16) for the CALL — %rcx isn't
      * loaded with its sp-cache value until line 2261, so its prior
      * contents are throwaway. */
     w = emit_push_rcx(w);
-    w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&eigs_jit_load_eigs_current_addr);
+    w = emit_movabs_rax(w, (uint64_t)(uintptr_t)&eigs_jit_load_eigs_current);
     w = emit_call_rax(w);
     w = emit_pop_rcx(w);
     w = emit_mov_rax_to_rbx(w);

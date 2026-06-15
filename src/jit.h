@@ -157,7 +157,7 @@ void eigs_jit_get_layout(EigsJitLayout *out);
 /* Darwin/Mach-O TLV-aware helper for the JIT prologue. See vm.c for
  * the full story. Linux x86_64 JIT thunks don't call this — they
  * inline `mov %fs:eigs_current_tpoff, %rbx` directly. */
-void *eigs_jit_load_eigs_current_addr(void);
+void *eigs_jit_load_eigs_current(void);
 
 /* Stage 4k: out-of-line helper invoked by JIT-emitted OP_GET_NAME
  * sites. Doing the IC walk inline would cost ~80 bytes of native
