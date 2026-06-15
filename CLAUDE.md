@@ -136,7 +136,15 @@ make jit-smoke  # standalone emitter tests (jit_smoke.c stubs all helpers)
   /dev/null — `test_terminal.eigs` blocks forever reading a pipe that
   never EOFs (e.g. backgrounded runs).
 
-## Current state: 0.15.1 released; next up
+## Current state: 0.15.2 released; next up
+
+0.15.2 re-enables the macOS Intel JIT — the 0.14.2 holding pattern
+(`EIGENSCRIPT_JIT_FORCE_OFF=1` on Darwin x86_64) is gone. The fix is
+detailed below ("macos-x86_64 JIT is live"); user-visible delta is
+that the macos-x86_64 release binary now ships with the JIT live
+(≈3–5× on hot loops vs. interpreter-only), and macos-15-intel is now
+in the CI build-and-test matrix. macOS arm64 stays interpreter-only
+until the ARM64 JIT exists.
 
 0.15.1 is the HTTP-extension rollup on top of 0.15.0's multi-state
 refactor: per-worker `EigsState` for `code` routes (so route source
@@ -169,7 +177,7 @@ sufficient). The root cause was that the JIT prologue inlined Linux
 ELF `mov %fs:tpoff, %rbx` for TLS, which has no Mach-O equivalent.
 0.14.2 shipped macos-x86_64 interpreter-only as a holding pattern.
 
-**2026-06-15 (post-0.15.1, on `main`): macos-x86_64 JIT is live.**
+**2026-06-15 (v0.15.2): macos-x86_64 JIT is live.**
 Prologue split by platform: Darwin calls a C helper
 `eigs_jit_load_eigs_current()` (vm.c — the compiler emits the TLV
 sequence), Linux keeps the inline `%fs:tpoff` read. Mid-thunk reads of
