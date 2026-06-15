@@ -162,16 +162,25 @@ from script. Phases 1–9 lifted every `__thread` global onto EigsState
 (per-interpreter) or EigsThread (per-OS-thread); Phase 10 is the
 opaque public API wrapping them.
 
-0.14.2 is the first published 0.14-line release — v0.14.0 and v0.14.1
+0.14.2 was the first published 0.14-line release — v0.14.0 and v0.14.1
 tags exist but never produced artifacts (macos-x86_64 release leg
 failed twice; the 0.14.1 `MAP_JIT` patch was necessary but not
-sufficient and the deeper cause isn't reproducible without a macOS
-Intel box). 0.14.2 ships the macos-x86_64 binary interpreter-only via
-a `EIGENSCRIPT_JIT_FORCE_OFF` build flag set in `build.sh` when
-`uname -s = Darwin && uname -m = x86_64`; `src/jit.c` honors it,
-`tests/run_all_tests.sh` skips the `[82]` thunk-gate on Darwin x86_64.
-Net: macos-x86_64 is correct + slow; macos-arm64 was already
-interpreter-only; Linux x86_64 keeps the JIT. 0.14.0 is the rollup
+sufficient). The root cause was that the JIT prologue inlined Linux
+ELF `mov %fs:tpoff, %rbx` for TLS, which has no Mach-O equivalent.
+0.14.2 shipped macos-x86_64 interpreter-only as a holding pattern.
+
+**2026-06-15 (post-0.15.1, on `main`): macos-x86_64 JIT is live.**
+Prologue split by platform: Darwin calls a C helper
+`eigs_jit_load_eigs_current()` (vm.c — the compiler emits the TLV
+sequence), Linux keeps the inline `%fs:tpoff` read. Mid-thunk reads of
+`eigs_current` use a new `VM->owner` back-pointer + `off_vm_owner` in
+EigsJitLayout, so the body has no `#ifdef`. The dict-cache inline
+probe still routes to the slow-path helper on Darwin (layout publishes
+`dcache_ways=0`, trips the existing `dcache_ways == 2` guard).
+`EIGENSCRIPT_JIT_FORCE_OFF` kill switch remains in jit.c for bisection
+but is no longer set on Darwin. CI now covers macos-15-intel in the
+build-and-test matrix; `[82]` thunk-gate enforces there too. macOS
+arm64 stays interpreter-only — the ARM64 JIT is unbuilt. 0.14.0 is the rollup
 (CHANGELOG.md [0.14.0] is the full record). It rolls up
 the closure-cycle collector, the package ecosystem Phase 0–2 (`--pkg`
 tool + `eigs_modules/` resolver + sibling repos), runtime perf wins
