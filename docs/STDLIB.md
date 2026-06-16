@@ -53,6 +53,10 @@ signature comment above each function (e.g., `# clamp of [value, lo, hi]`).
 | `clamp` | `clamp of [value, lo, hi]` | Restrict to range |
 | `lerp` | `lerp of [a, b, t]` | Linear interpolation |
 | `dot` | `dot of [list_a, list_b]` | Dot product |
+| `sign` | `sign of value` | Return sign of number (-1, 0, 1) |
+| `gcd` | `gcd of [a, b]` | Greatest common divisor |
+| `lcm` | `lcm of [a, b]` | Least common multiple |
+
 
 ### lib/list.eigs — Functional List Operations
 
@@ -64,6 +68,8 @@ signature comment above each function (e.g., `# clamp of [value, lo, hi]`).
 | `reverse` | `reverse of list` | Reverse a list |
 | `zip` | `zip of [list_a, list_b]` | Pair elements from two lists |
 | `flatten` | `flatten of list` | Flatten one level of nesting |
+| `take` | `take of [list, n]` | First n elements of list |
+| `drop` | `drop of [list, n]` | Remove first n elements |
 
 Higher-order functions take EigenScript functions as arguments:
 
@@ -92,6 +98,7 @@ total is reduce of [[1,2,3], add_fn, 0]  # 6
 | `repeat` | `repeat of [string, count]` | Repeat string n times |
 | `pad_left` | `pad_left of [string, width, char]` | Left-pad to width |
 | `pad_right` | `pad_right of [string, width, char]` | Right-pad to width |
+| `capitalize` | `capitalize of string` | Capitalize first character of string |
 
 ### lib/text_builder.eigs — Buffered Text Assembly
 
